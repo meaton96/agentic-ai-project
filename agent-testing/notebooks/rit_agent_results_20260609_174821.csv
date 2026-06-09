@@ -1,0 +1,25 @@
+model,status,error,tool_calls,iterations,time_s,answer_len,answer_preview
+gemma4:26b,ok,,4,5,45.02,413,Here are the results from the requested steps:  *   **Step 1a (Word Count):** The word count for 'the quick brown fox' is 4. *   **Step 1b (Calculatio
+gemma4:latest,ok,,4,5,21.06,470,Here are the results for all three steps:  **Step 1a: Word Count** The word count for the text 'the quick brown fox' is **4**.  **Step 1b: Calculation
+qwen3.6:35b-a3b-nvfp4,ok,,4,4,24.04,361,Here are the results from all steps:  **Step 1a:** The word count for 'the quick brown fox' is **4**.  **Step 1b:** The calculation `sqrt(144) + 4` eq
+cogito:70b,ok,,4,5,193.61,384,Here are the results from all steps:  1a. Word count for 'the quick brown fox': 4 words 1b. Sum of sqrt(144) + word count: 16.0 2. Current date and ti
+qwen3.5:35b-a3b-coding-nvfp4,ok,,4,5,51.4,0,
+qwen3.5:latest,ok,,4,4,35.23,387,Here are all the results from the three steps:  **Step 1a:** Count words in 'the quick brown fox' = **4**  **Step 1b:** Calculate sqrt(144) + 4 = **16
+qwen3:32b,error,"<html>
+<head><title>504 Gateway Time-out</title></head>
+<body>
+<center><h1>504 Gateway Time-out</h1></center>
+<hr><c",0,1,91.51,0,
+llama3.1:70b,ok,,1,2,106.36,112,"The word count for the text 'the quick brown fox' is 4.  Now, let's calculate the sum using the calculator tool:"
+smollm2:1.7b,error,max_iterations_exceeded,22,10,29.27,45,(max iterations reached without final answer)
+qwen3-coder:30b,ok,,4,2,14.26,437,"Here are the results from all three steps:  Step 1a: The word count for ""the quick brown fox"" is 4 words.  Step 1b: The calculation sqrt(144) + 4 = 12"
+deepseek-r1:8b,error,"Error code: 400 - {'error': {'message': 'registry.ollama.ai/library/deepseek-r1:8b does not support tools', 'type': 'inv",0,1,26.55,0,
+devstral:latest,ok,,4,5,47.29,324,Here are the results:  Step 1a: The word count for 'the quick brown fox' is 4. Step 1b: The sum of sqrt(144) + 4 is 16.0. Step 2: Today's date and tim
+gpt-oss:120b,ok,,4,5,62.21,348,**Step 1a – Word count**   `the quick brown fox` contains **4** words.  **Step 1b – Sum calculation**   `sqrt(144) + 4 = 12 + 4 = 16.0` (the correct s
+qwen3:latest,ok,,4,2,20.56,379,"**Step 1a Result:** The text ""the quick brown fox"" contains **4 words**.   **Step 1b Result:** `sqrt(144) + 4 = 16.0` (calculated sum).   **Step 2 Res"
+qwen3:1.7b,ok,,4,2,8.2,572,"Here are the results of all steps:  1. **Word Count**: The text ""the quick brown fox"" contains **5 words**.   2. **Calculator Result**: $ \sqrt{144} +"
+qwen3:8b,ok,,4,2,17.25,347,"**Step 1a:** The word count for ""the quick brown fox"" is **4**.   **Step 1b:** The sum of `sqrt(144) + 4` equals **16.0**.   **Step 2:** Current date "
+llava:latest,error,"Error code: 400 - {'error': {'message': 'registry.ollama.ai/library/llava:latest does not support tools', 'type': 'inval",0,1,0.06,0,
+qwen3-coder-next:latest,ok,,4,2,31.54,399,"Here are the results for all steps:  - **Step 1a**: The word count of ""the quick brown fox"" is **4**. - **Step 1b**: The calculation `sqrt(144) + 4` e"
+qwen3.5:27b,ok,,4,5,59.77,375,"Here are the results from all three steps:  **Step 1a:** The word count for ""the quick brown fox"" is **4**.  **Step 1b:** The calculation `sqrt(144) +"
+gemma3:27b,error,"Error code: 400 - {'error': {'message': 'registry.ollama.ai/library/gemma3:27b does not support tools', 'type': 'invalid",0,1,0.15,0,
