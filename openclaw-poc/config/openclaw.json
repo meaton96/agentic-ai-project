@@ -1,0 +1,30 @@
+{
+  "gateway": { "mode": "local", "bind": "lan" },
+  "tools": {
+    "deny": ["cron", "gateway", "sessions_spawn", "subagents"]
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "/home/node/workspace",
+      "model": { "primary": "vllm/RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic" }
+    }
+  },
+  "models": {
+    "providers": {
+      "vllm": {
+        "baseUrl": "http://host.docker.internal:8000/v1",
+        "apiKey": "vllm-local",
+        "api": "openai-completions",
+        "models": [{
+          "id": "RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic",
+          "name": "Llama 3.3 70B Local",
+          "reasoning": false,
+          "input": ["text"],
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+          "contextWindow": 65536,
+          "maxTokens": 16384
+        }]
+      }
+    }
+  }
+}

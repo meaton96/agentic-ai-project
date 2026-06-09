@@ -1,0 +1,81 @@
+{
+  "269204a5f998af512d3040b85a2bed605733a732e18e95079999b5f53ffada91": {
+    "deviceId": "269204a5f998af512d3040b85a2bed605733a732e18e95079999b5f53ffada91",
+    "publicKey": "bi-ou-q7Q9SGrfJMolFaea1AtcToZRTzINncTYYGJlk",
+    "platform": "Linux x86_64",
+    "clientId": "openclaw-control-ui",
+    "clientMode": "webchat",
+    "role": "operator",
+    "roles": [
+      "operator"
+    ],
+    "scopes": [
+      "operator.admin",
+      "operator.read",
+      "operator.write",
+      "operator.approvals",
+      "operator.pairing"
+    ],
+    "approvedScopes": [
+      "operator.admin",
+      "operator.read",
+      "operator.write",
+      "operator.approvals",
+      "operator.pairing"
+    ],
+    "remoteIp": "172.18.0.1",
+    "tokens": {
+      "operator": {
+        "token": "4IXc5pJ3SPIhdNrSk8KegYj37s--RCSr1RuiG_81ORk",
+        "role": "operator",
+        "scopes": [
+          "operator.admin",
+          "operator.approvals",
+          "operator.pairing",
+          "operator.read",
+          "operator.write"
+        ],
+        "issuer": {
+          "kind": "shared-gateway-auth",
+          "generation": "Rxcc_h9jJqrWqRxJTPzNccakHMPJWSTKDUkw1MBxDfw"
+        },
+        "createdAtMs": 1780502361635,
+        "rotatedAtMs": 1780502361639,
+        "lastUsedAtMs": 1780524929602
+      }
+    },
+    "createdAtMs": 1780502361635,
+    "approvedAtMs": 1780502361635
+  },
+  "a5719a1659873d0cafe87220d93a2486b1118a8db0fe84ea48613ab965d5649d": {
+    "deviceId": "a5719a1659873d0cafe87220d93a2486b1118a8db0fe84ea48613ab965d5649d",
+    "publicKey": "CpNq2GTqtSnTRUsSYs6QXjEM_49o3MVojZitaMfYAAU",
+    "platform": "linux",
+    "clientId": "cli",
+    "clientMode": "cli",
+    "role": "operator",
+    "roles": [
+      "operator"
+    ],
+    "scopes": [
+      "operator.admin"
+    ],
+    "approvedScopes": [
+      "operator.admin"
+    ],
+    "tokens": {
+      "operator": {
+        "token": "t8EywagKS8bAXvhVyhFnH7M8IEcdB1UOmRip999HGRQ",
+        "role": "operator",
+        "scopes": [
+          "operator.admin",
+          "operator.read",
+          "operator.write"
+        ],
+        "createdAtMs": 1780515909496
+      }
+    },
+    "createdAtMs": 1780515909496,
+    "approvedAtMs": 1780515909496
+  }
+}

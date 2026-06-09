@@ -1,0 +1,30 @@
+services:
+  openclaw-gateway:
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: openclaw-poc
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18789:18789"
+    volumes:
+      - ./config:/home/node/.openclaw:rw
+      - ./workspace:/home/node/workspace:rw
+      - openclaw-secrets:/home/node/.config/openclaw
+    environment:
+      OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN}"
+      VLLM_API_KEY: "${VLLM_API_KEY:-vllm-local}"
+      OPENCLAW_SKIP_ONBOARDING: "1"
+      OPENCLAW_DISABLE_BONJOUR: "1"
+      OPENCLAW_WORKSPACE_DIR: "/home/node/workspace"
+
+    extra_hosts:
+      # Allows container to reach vLLM running on the host
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: [ "CMD", "curl", "-fsS", "http://127.0.0.1:18789/healthz" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+volumes:
+  openclaw-secrets:

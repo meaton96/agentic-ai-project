@@ -1,0 +1,39 @@
+services:
+  docs-agent:
+    build: .
+    environment:
+      - OPENCLAW_GATEWAY_TOKEN=your-local-token-here
+      - VLLM_API_KEY=dummy-key
+      - VLLM_BASE_URL=http://localhost:8000/v1
+      - OPENCLAW_CONFIG_PATH=/config/openclaw.json
+
+      # ── doc_generator.py settings ──────────────────────────────────────────
+      # Which model to use for documentation generation (must match your vLLM --model)
+      - DOC_MODEL=RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic
+      # Max source characters to include per file (reduces context usage for huge files)
+      - DOC_MAX_FILE_CHARS=12000
+      # Max tokens for each file doc response
+      - DOC_MAX_TOKENS=2048
+      # Seconds to wait for each vLLM call (large files can be slow)
+      - DOC_VLLM_TIMEOUT=300
+      # Path inside the container where your codebase is mounted
+      - CODEBASE_PATH=/root/.openclaw/workspace/codebase
+
+    # Required: lets the container reach your host's localhost:8000 (vLLM)
+    network_mode: "host"
+
+    volumes:
+      # OpenClaw workspace (skills, tools, docs output all live here)
+      - ./workspace:/root/.openclaw/workspace
+
+      # Shared openclaw config
+      - ./openclaw.json:/config/openclaw.json:ro
+
+      # ── YOUR CODEBASE MOUNT ────────────────────────────────────────────────
+      # Replace the left side with the absolute path to your project root.
+      # The right side must match CODEBASE_PATH above.
+      # :ro makes it read-only so the agent can never accidentally modify your source.
+      - /home/ubuntupc/Documents/Github/Capstone/Capstone/Assets/Scripts:/root/.openclaw/workspace/codebase:ro
+
+    # Restart automatically if the gateway crashes
+    restart: unless-stopped

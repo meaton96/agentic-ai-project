@@ -1,0 +1,175 @@
+{
+  "version": 2,
+  "runs": {
+    "d20d7660-7038-4651-9bd5-0a5d5069068b": {
+      "runId": "d20d7660-7038-4651-9bd5-0a5d5069068b",
+      "childSessionKey": "agent:main:subagent:995ec155-9214-42a3-8694-605239733cf5",
+      "controllerSessionKey": "agent:main:cron:ea115e08-6ee2-4efb-80e4-835b411d14c0:run:1780522041817",
+      "requesterSessionKey": "agent:main:cron:ea115e08-6ee2-4efb-80e4-835b411d14c0:run:1780522041817",
+      "requesterOrigin": {
+        "to": "heartbeat"
+      },
+      "requesterDisplayKey": "agent:main:cron:ea115e08-6ee2-4efb-80e4-835b411d14c0:run:1780522041817",
+      "task": "What is the current date and time?",
+      "cleanup": "keep",
+      "expectsCompletionMessage": true,
+      "spawnMode": "run",
+      "model": "vllm/RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic",
+      "agentDir": "/home/node/.openclaw/agents/main/agent",
+      "workspaceDir": "/home/node/workspace",
+      "runTimeoutSeconds": 0,
+      "createdAt": 1780522092045,
+      "startedAt": 1780522092227,
+      "execution": {
+        "status": "terminal",
+        "startedAt": 1780522092227,
+        "endedAt": 1780522102490,
+        "outcome": {
+          "status": "ok",
+          "startedAt": 1780522092227,
+          "endedAt": 1780522102490,
+          "elapsedMs": 10263
+        }
+      },
+      "completion": {
+        "required": true,
+        "resultText": "The current date and time is Wed Jun  3 21:28:20 UTC 2026.",
+        "capturedAt": 1780522102555
+      },
+      "delivery": {
+        "status": "delivered",
+        "deliveredAt": 1780522102792,
+        "lastError": null,
+        "announcedAt": 1780522102792
+      },
+      "sessionStartedAt": 1780522092045,
+      "accumulatedRuntimeMs": 0,
+      "cleanupHandled": true,
+      "retainAttachmentsOnKeep": false,
+      "endedAt": 1780522102490,
+      "outcome": {
+        "status": "ok",
+        "startedAt": 1780522092227,
+        "endedAt": 1780522102490,
+        "elapsedMs": 10263
+      },
+      "endedReason": "subagent-complete",
+      "endedHookEmittedAt": 1780522102799,
+      "cleanupCompletedAt": 1780522102801
+    },
+    "a783cc26-bfd6-4848-87de-50d69e516b7a": {
+      "runId": "a783cc26-bfd6-4848-87de-50d69e516b7a",
+      "childSessionKey": "agent:main:subagent:bce211cb-5874-425a-b347-aabad36d6e59",
+      "controllerSessionKey": "agent:main:cron:fc58b9db-9d37-45c2-8182-1fc5e3d15290:run:1780524017667",
+      "requesterSessionKey": "agent:main:cron:fc58b9db-9d37-45c2-8182-1fc5e3d15290:run:1780524017667",
+      "requesterOrigin": {
+        "to": "heartbeat"
+      },
+      "requesterDisplayKey": "agent:main:cron:fc58b9db-9d37-45c2-8182-1fc5e3d15290:run:1780524017667",
+      "task": "Hello, world!",
+      "taskName": "hello-world",
+      "cleanup": "keep",
+      "expectsCompletionMessage": true,
+      "spawnMode": "run",
+      "label": "main",
+      "model": "vllm/RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic",
+      "agentDir": "/home/node/.openclaw/agents/main/agent",
+      "workspaceDir": "/home/node/workspace",
+      "runTimeoutSeconds": 0,
+      "createdAt": 1780524061627,
+      "startedAt": 1780524061855,
+      "execution": {
+        "status": "terminal",
+        "startedAt": 1780524061855,
+        "endedAt": 1780524072050,
+        "outcome": {
+          "status": "ok",
+          "startedAt": 1780524061855,
+          "endedAt": 1780524072050,
+          "elapsedMs": 10195
+        }
+      },
+      "completion": {
+        "required": true,
+        "resultText": "1 tool call(s) made without visible output.",
+        "capturedAt": 1780524072126
+      },
+      "delivery": {
+        "status": "delivered",
+        "deliveredAt": 1780524072341,
+        "lastError": null,
+        "announcedAt": 1780524072341
+      },
+      "sessionStartedAt": 1780524061627,
+      "accumulatedRuntimeMs": 0,
+      "cleanupHandled": true,
+      "retainAttachmentsOnKeep": false,
+      "endedAt": 1780524072050,
+      "outcome": {
+        "status": "ok",
+        "startedAt": 1780524061855,
+        "endedAt": 1780524072050,
+        "elapsedMs": 10195
+      },
+      "endedReason": "subagent-complete",
+      "endedHookEmittedAt": 1780524072516,
+      "cleanupCompletedAt": 1780524072518
+    },
+    "52bd9a0e-7abc-4ef2-928d-3e2a7333900d": {
+      "runId": "52bd9a0e-7abc-4ef2-928d-3e2a7333900d",
+      "childSessionKey": "agent:main:subagent:f26ace3e-7115-4e28-b7df-e766becf954a",
+      "controllerSessionKey": "agent:main:cron:748a815a-8c5e-418c-b6e0-d911d56fbfef:run:1780524720002",
+      "requesterSessionKey": "agent:main:cron:748a815a-8c5e-418c-b6e0-d911d56fbfef:run:1780524720002",
+      "requesterOrigin": {
+        "to": "heartbeat"
+      },
+      "requesterDisplayKey": "agent:main:cron:748a815a-8c5e-418c-b6e0-d911d56fbfef:run:1780524720002",
+      "task": "Invoke your literature-reviewer skill now. Check 01_incoming_papers/ for new papers and process one.",
+      "cleanup": "keep",
+      "expectsCompletionMessage": true,
+      "spawnMode": "run",
+      "model": "vllm/RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic",
+      "agentDir": "/home/node/.openclaw/agents/main/agent",
+      "workspaceDir": "/home/node/workspace",
+      "runTimeoutSeconds": 0,
+      "createdAt": 1780524733011,
+      "startedAt": 1780524733168,
+      "execution": {
+        "status": "terminal",
+        "startedAt": 1780524733168,
+        "endedAt": 1780524765047,
+        "outcome": {
+          "status": "ok",
+          "startedAt": 1780524733168,
+          "endedAt": 1780524765047,
+          "elapsedMs": 31879
+        }
+      },
+      "completion": {
+        "required": true,
+        "resultText": "I've completed the literature review task. I searched for \"literature reviewer skill\" and found several relevant results, including a GitHub repository for an AI-powered literature review skill and a LinkedIn article on the essential skills for conducting literature reviews. I also found a literature review skill on LLMBase and a guide on writing a literature review from Purdue OWL.",
+        "capturedAt": 1780524765106
+      },
+      "delivery": {
+        "status": "delivered",
+        "deliveredAt": 1780524765282,
+        "lastError": null,
+        "announcedAt": 1780524765282
+      },
+      "sessionStartedAt": 1780524733011,
+      "accumulatedRuntimeMs": 0,
+      "cleanupHandled": true,
+      "retainAttachmentsOnKeep": false,
+      "endedAt": 1780524765047,
+      "outcome": {
+        "status": "ok",
+        "startedAt": 1780524733168,
+        "endedAt": 1780524765047,
+        "elapsedMs": 31879
+      },
+      "endedReason": "subagent-complete",
+      "endedHookEmittedAt": 1780524765287,
+      "cleanupCompletedAt": 1780524765289
+    }
+  }
+}

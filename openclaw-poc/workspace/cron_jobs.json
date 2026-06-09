@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "storePath": "/home/node/.openclaw/cron/jobs.json",
+  "jobs": 2,
+  "nextWakeAtMs": 1780522800000
+}

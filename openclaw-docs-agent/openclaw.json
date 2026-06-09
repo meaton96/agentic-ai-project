@@ -1,0 +1,49 @@
+{
+  "agents": {
+    "defaults": {
+      "workspace": "/root/.openclaw/workspace",
+      "model": {
+        "primary": "vllm/RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic"
+      },
+      "skipOptionalBootstrapFiles": [
+        "SOUL.md",
+        "USER.md",
+        "IDENTITY.md"
+      ]
+    }
+  },
+  "cron": {
+    "enabled": true
+  },
+  "tools": {
+    "profile": "coding"
+  },
+  "models": {
+    "providers": {
+      "vllm": {
+        "baseUrl": "http://localhost:8000/v1",
+        "apiKey": "${VLLM_API_KEY}",
+        "api": "openai-completions",
+        "timeoutSeconds": 600,
+        "models": [
+          {
+            "id": "RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic",
+            "name": "Llama 3.3 70B Instruct",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 32768,
+            "maxTokens": 2048
+          }
+        ]
+      }
+    }
+  }
+}
