@@ -3487,8 +3487,12 @@
   },
   "agent:main:cron:a1000000-0000-4000-8000-000000000003": {
     "label": "Cron: pipeline-synthesizer",
-    "updatedAt": 1781051640689,
+    "sessionId": "43534bbd-186b-4b6b-8989-ce565af21dc1",
+    "updatedAt": 1781108761825,
+    "sessionStartedAt": 1781108760042,
+    "lastInteractionAt": 1781108760042,
     "systemSent": true,
+    "sessionFile": "/home/node/.openclaw/agents/main/sessions/43534bbd-186b-4b6b-8989-ce565af21dc1.jsonl",
     "skillsSnapshot": {
       "skills": [
         {
@@ -3548,12 +3552,137 @@
         "bytes": 3780
       }
     },
-    "modelProvider": "rit",
-    "model": "qwen3:8b"
+    "modelProvider": "vllm",
+    "model": "qwen3:8b",
+    "systemPromptReport": {
+      "source": "run",
+      "generatedAt": 1781108761931,
+      "sessionId": "43534bbd-186b-4b6b-8989-ce565af21dc1",
+      "sessionKey": "agent:main:cron:a1000000-0000-4000-8000-000000000003:run:43534bbd-186b-4b6b-8989-ce565af21dc1",
+      "provider": "vllm",
+      "model": "qwen3:8b",
+      "workspaceDir": "/home/node/workspace",
+      "bootstrapMaxChars": 12000,
+      "bootstrapTotalMaxChars": 60000,
+      "bootstrapTruncation": {
+        "warningMode": "always",
+        "warningShown": false,
+        "truncatedFiles": 0,
+        "nearLimitFiles": 0,
+        "totalNearLimit": false
+      },
+      "sandbox": {
+        "mode": "off",
+        "sandboxed": false
+      },
+      "systemPrompt": {
+        "chars": 3392,
+        "hash": "a720d36d5a8c985f82a2bc799852d930886c0dc908d5342e45cc10b690c3530b",
+        "projectContextChars": 0,
+        "nonProjectContextChars": 3392
+      },
+      "injectedWorkspaceFiles": [],
+      "skills": {
+        "promptChars": 3778,
+        "hash": "22ab5fdf0ee9e2a26f770eed2000ceeb73bec0750bb96a0d1dfb1d81453900ce",
+        "entries": [
+          {
+            "name": "browser-automation",
+            "blockChars": 324
+          },
+          {
+            "name": "canvas",
+            "blockChars": 228
+          },
+          {
+            "name": "diagram-maker",
+            "blockChars": 231
+          },
+          {
+            "name": "healthcheck",
+            "blockChars": 243
+          },
+          {
+            "name": "meme-maker",
+            "blockChars": 216
+          },
+          {
+            "name": "node-connect",
+            "blockChars": 246
+          },
+          {
+            "name": "node-inspect-debugger",
+            "blockChars": 242
+          },
+          {
+            "name": "notion",
+            "blockChars": 237
+          },
+          {
+            "name": "python-debugpy",
+            "blockChars": 230
+          },
+          {
+            "name": "skill-creator",
+            "blockChars": 224
+          },
+          {
+            "name": "spike",
+            "blockChars": 216
+          },
+          {
+            "name": "taskflow",
+            "blockChars": 246
+          },
+          {
+            "name": "taskflow-inbox-triage",
+            "blockChars": 256
+          },
+          {
+            "name": "weather",
+            "blockChars": 231
+          }
+        ]
+      },
+      "tools": {
+        "listChars": 0,
+        "schemaChars": 529,
+        "entries": [
+          {
+            "name": "read",
+            "summaryChars": 298,
+            "summaryHash": "f8a1d7cf1ecfe02b1b5865c93387e6a5891e5079117b4fe18614b6f912521727",
+            "schemaChars": 304,
+            "schemaHash": "134f19bcabe3e29d63c5cebb38f1d2556759fd08adad6bc90a4b4d3cd1fb8441",
+            "propertiesCount": 3
+          },
+          {
+            "name": "write",
+            "summaryChars": 127,
+            "summaryHash": "cdb1c46027b22d1f1b923b47bfe297821d9fe589a9f9d92994961948060a4d89",
+            "schemaChars": 225,
+            "schemaHash": "e98a2484f667cf7c22d76ca103bf2022bf9113dc63fe38b899e71c328cb1e833",
+            "propertiesCount": 2
+          }
+        ]
+      },
+      "currentTurn": {
+        "promptChars": 1856,
+        "runtimeContextChars": 0
+      }
+    },
+    "contextTokens": 32768,
+    "inputTokens": 3196,
+    "outputTokens": 1260,
+    "totalTokens": 1644,
+    "totalTokensFresh": true,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "estimatedCostUsd": 0
   },
   "agent:main:cron:a1000000-0000-4000-8000-000000000001": {
     "label": "Cron: pipeline-planner",
-    "updatedAt": 1781051880664,
+    "updatedAt": 1781125560044,
     "systemSent": true,
     "skillsSnapshot": {
       "skills": [
@@ -3615,12 +3744,16 @@
       }
     },
     "modelProvider": "vllm",
-    "model": "qwen3:8b"
+    "model": "cogito:70b"
   },
   "agent:main:cron:a1000000-0000-4000-8000-000000000002": {
     "label": "Cron: pipeline-executor",
-    "updatedAt": 1781051761756,
+    "sessionId": "fcba7095-670b-4899-a504-e70bc6c49a0e",
+    "updatedAt": 1781108700045,
+    "sessionStartedAt": 1781108700002,
+    "lastInteractionAt": 1781108700002,
     "systemSent": true,
+    "sessionFile": "/home/node/.openclaw/agents/main/sessions/fcba7095-670b-4899-a504-e70bc6c49a0e.jsonl",
     "skillsSnapshot": {
       "skills": [
         {
@@ -3681,6 +3814,131 @@
       }
     },
     "modelProvider": "vllm",
-    "model": "qwen3:8b"
+    "model": "qwen3:8b",
+    "systemPromptReport": {
+      "source": "run",
+      "generatedAt": 1781108700102,
+      "sessionId": "fcba7095-670b-4899-a504-e70bc6c49a0e",
+      "sessionKey": "agent:main:cron:a1000000-0000-4000-8000-000000000002:run:fcba7095-670b-4899-a504-e70bc6c49a0e",
+      "provider": "vllm",
+      "model": "qwen3:8b",
+      "workspaceDir": "/home/node/workspace",
+      "bootstrapMaxChars": 12000,
+      "bootstrapTotalMaxChars": 60000,
+      "bootstrapTruncation": {
+        "warningMode": "always",
+        "warningShown": false,
+        "truncatedFiles": 0,
+        "nearLimitFiles": 0,
+        "totalNearLimit": false
+      },
+      "sandbox": {
+        "mode": "off",
+        "sandboxed": false
+      },
+      "systemPrompt": {
+        "chars": 3392,
+        "hash": "fbbd362ff5673b07f303431b98b74a0e097012df96bfc298109cb9a925a6814b",
+        "projectContextChars": 0,
+        "nonProjectContextChars": 3392
+      },
+      "injectedWorkspaceFiles": [],
+      "skills": {
+        "promptChars": 3778,
+        "hash": "22ab5fdf0ee9e2a26f770eed2000ceeb73bec0750bb96a0d1dfb1d81453900ce",
+        "entries": [
+          {
+            "name": "browser-automation",
+            "blockChars": 324
+          },
+          {
+            "name": "canvas",
+            "blockChars": 228
+          },
+          {
+            "name": "diagram-maker",
+            "blockChars": 231
+          },
+          {
+            "name": "healthcheck",
+            "blockChars": 243
+          },
+          {
+            "name": "meme-maker",
+            "blockChars": 216
+          },
+          {
+            "name": "node-connect",
+            "blockChars": 246
+          },
+          {
+            "name": "node-inspect-debugger",
+            "blockChars": 242
+          },
+          {
+            "name": "notion",
+            "blockChars": 237
+          },
+          {
+            "name": "python-debugpy",
+            "blockChars": 230
+          },
+          {
+            "name": "skill-creator",
+            "blockChars": 224
+          },
+          {
+            "name": "spike",
+            "blockChars": 216
+          },
+          {
+            "name": "taskflow",
+            "blockChars": 246
+          },
+          {
+            "name": "taskflow-inbox-triage",
+            "blockChars": 256
+          },
+          {
+            "name": "weather",
+            "blockChars": 231
+          }
+        ]
+      },
+      "tools": {
+        "listChars": 0,
+        "schemaChars": 529,
+        "entries": [
+          {
+            "name": "read",
+            "summaryChars": 298,
+            "summaryHash": "f8a1d7cf1ecfe02b1b5865c93387e6a5891e5079117b4fe18614b6f912521727",
+            "schemaChars": 304,
+            "schemaHash": "134f19bcabe3e29d63c5cebb38f1d2556759fd08adad6bc90a4b4d3cd1fb8441",
+            "propertiesCount": 3
+          },
+          {
+            "name": "write",
+            "summaryChars": 127,
+            "summaryHash": "cdb1c46027b22d1f1b923b47bfe297821d9fe589a9f9d92994961948060a4d89",
+            "schemaChars": 225,
+            "schemaHash": "e98a2484f667cf7c22d76ca103bf2022bf9113dc63fe38b899e71c328cb1e833",
+            "propertiesCount": 2
+          }
+        ]
+      },
+      "currentTurn": {
+        "promptChars": 1483,
+        "runtimeContextChars": 0
+      }
+    },
+    "contextTokens": 32768,
+    "inputTokens": 3097,
+    "outputTokens": 960,
+    "totalTokens": 1597,
+    "totalTokensFresh": true,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "estimatedCostUsd": 0
   }
 }

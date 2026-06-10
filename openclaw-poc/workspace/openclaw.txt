@@ -1,1 +1,0 @@
-OpenClaw is a personal AI assistant that can be controlled via the OpenClaw browser tool. It can be used to automate tasks, manage emails, and even control other devices.

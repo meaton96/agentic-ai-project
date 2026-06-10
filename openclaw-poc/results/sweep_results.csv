@@ -1,1 +1,16 @@
 model,completed,wall_time_s,score,exists_nonempty,has_4_headers,mentions_3_models,says_recommend,has_role_section,over_400_words,mentions_speed,word_count,timestamp
+qwen3:8b,True,108.0,7,True,True,True,True,True,True,True,229,2026-06-10T12:44:39
+qwen3-coder:30b,True,48.0,7,True,True,True,True,True,True,True,361,2026-06-10T12:45:52
+qwen3:latest,True,78.0,6,True,True,True,True,True,False,True,154,2026-06-10T12:47:35
+gemma4:latest,True,93.0,7,True,True,True,True,True,True,True,493,,2026-06-10T15:13:14
+qwen3.6:35b-a3b-nvfp4,True,213.0,7,True,True,True,True,True,True,True,1291,,2026-06-10T15:17:12
+qwen3-coder-next:latest,False,600.1,0,,,,,,,,0,awaiting planner,2026-06-10T15:27:38
+qwen3.5:latest,True,528.1,7,True,True,True,True,True,True,True,664,,2026-06-10T15:36:51
+devstral:latest,False,600.1,0,,,,,,,,0,awaiting planner,2026-06-10T15:47:16
+gemma4:26b,True,63.0,7,True,True,True,True,True,True,True,571,,2026-06-10T15:48:44
+qwen3.5:27b,False,600.1,0,,,,,,,,0,awaiting planner,2026-06-10T15:59:09
+gpt-oss:120b,True,258.1,7,True,True,True,True,True,True,True,538,,2026-06-10T16:03:52
+qwen3.5:35b-a3b-coding-nvfp4,True,123.0,7,True,True,True,True,True,True,True,770,,2026-06-10T16:06:20
+qwen3:1.7b,True,303.1,1,True,False,False,False,False,False,False,1,,2026-06-10T16:11:48
+llama3.1:70b,False,600.1,0,,,,,,,,0,awaiting planner,2026-06-10T16:22:13
+cogito:70b,False,600.1,0,,,,,,,,0,awaiting planner,2026-06-10T16:32:38

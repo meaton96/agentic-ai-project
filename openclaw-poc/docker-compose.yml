@@ -11,7 +11,7 @@ services:
       - openclaw-secrets:/home/node/.config/openclaw
     environment:
       OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN}"
-      VLLM_API_KEY: "${RIT_API_KEY:-vllm-local}"
+      RIT_API_KEY: "${RIT_API_KEY}"
       OPENCLAW_SKIP_ONBOARDING: "1"
       OPENCLAW_DISABLE_BONJOUR: "1"
       OPENCLAW_WORKSPACE_DIR: "/home/node/workspace"

@@ -2,30 +2,80 @@
   "version": 1,
   "jobs": [
     {
-      "id": "bef4cbed-29f2-4cfc-86e5-b5665b4794e0",
-      "name": "literature-reviewer",
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "pipeline-planner",
       "enabled": true,
-      "createdAtMs": 1780526596740,
+      "createdAtMs": 1781000000000,
       "schedule": {
         "kind": "cron",
-        "expr": "*/5 * * * *"
+        "expr": "*/3 * * * *"
       },
       "sessionTarget": "isolated",
       "wakeMode": "now",
       "payload": {
         "kind": "agentTurn",
-        "message": "You are a thorough research paper analyst. Follow these steps exactly using absolute paths.\n\nSTEP 1: Run exec with command: ls /home/node/workspace/01_incoming_papers/\nIf output is empty, stop immediately.\n\nSTEP 2: Take the first filename. Run exec with command: cat /home/node/workspace/01_incoming_papers/FILENAME\nRead the FULL content carefully.\n\nSTEP 3: Run read on /home/node/workspace/ground_truth/Agentic_Sandbox_Ground_Truth.md\n\nSTEP 4: Write a DETAILED markdown report to /home/node/workspace/02_draft_reports/FILENAME_DRAFT.md\nThe report MUST contain all of these sections with substantial content (minimum 2-3 paragraphs each):\n\n# Literature Review: [Paper Title]\n\n## 1. Paper Summary\nFull summary of the paper's motivation, methodology, and contributions. At least 3 paragraphs.\n\n## 2. Ground Truth Criterion 1: [name]\nHow does this paper relate? Direct quotes and analysis.\n\n## 3. Ground Truth Criterion 2: [name]\nHow does this paper relate? Direct quotes and analysis.\n\n## 4. Ground Truth Criterion 3: [name]\nHow does this paper relate? Direct quotes and analysis.\n\n## 5. Ground Truth Criterion 4: [name]\nHow does this paper relate? Direct quotes and analysis.\n\n## 6. Ground Truth Criterion 5: [name]\nHow does this paper relate? Direct quotes and analysis.\n\n## 7. Relevance to AIOS Project\nSpecific connections to the Agentic Sandbox project. What can be borrowed or built upon?\n\n## 8. Gaps and Limitations\nWhat does this paper not address that the AIOS project needs to solve?\n\n## 9. Verdict\nOverall assessment: High/Medium/Low relevance. Recommended next steps.\n\nSTEP 5: Run exec with command: mv /home/node/workspace/01_incoming_papers/FILENAME /home/node/workspace/04_archived_papers/FILENAME\n\nDo not summarize or shorten any section. Do not search the web. Use only exec, read, and write.",
-        "timeoutSeconds": 600,
+        "message": "You are a planning agent in a 3-stage analysis pipeline.\n\nSTEP 1: Read the file /home/node/workspace/00_task_input/task_brief.md\nIf the file does not exist, or if its content is exactly 'PROCESSED', stop immediately and do nothing else.\n\nSTEP 2: Read the FULL content carefully, including the embedded CSV benchmark data.\n\nSTEP 3: Analyze the CSV data. Identify which models succeeded (status=ok) and which failed. Note speed (time_s), tool call counts, and any anomalies (zero-length answers, wrong word counts, excessive iterations).\n\nSTEP 4: Write an execution plan to /home/node/workspace/01_planner_out/plan.md\nThe plan MUST contain exactly these sections:\n\n# Execution Plan\n\n## Data Overview\nA short paragraph stating how many models passed, how many failed, and the failure categories you observed.\n\n## Models To Profile\nA list of EXACTLY 5 model names selected from the passing models. Choose the most informative mix: include the fastest, the slowest passing model, and any model with anomalies worth investigating.\n\n## Questions Per Profile\nList EXACTLY 3 questions the executor must answer for every profiled model:\n1. What speed tier is this model (fast under 25s, medium 25-65s, slow over 65s)?\n2. Did the model use tools correctly (4 tool calls expected) and complete cleanly?\n3. Are there any anomalies in this model's row (empty answer, wrong values, extra iterations)?\n\n## Output Format Instructions\nTell the executor to write one section per model with a level-2 markdown header containing the model name, and a one-line answer per question.\n\nSTEP 5: Overwrite /home/node/workspace/00_task_input/task_brief.md with exactly the single word: PROCESSED\n\nUse only the read and write tools. Do not skip any section of the plan.",
+        "timeoutSeconds": 170,
         "lightContext": true,
         "toolsAllow": [
-          "exec",
           "read",
           "write"
         ]
       },
       "delivery": {
-        "mode": "announce",
-        "channel": "last"
+        "mode": "silent"
+      },
+      "state": {}
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "pipeline-executor",
+      "enabled": true,
+      "createdAtMs": 1781000000001,
+      "schedule": {
+        "kind": "cron",
+        "expr": "1,4,7,10,13,16,19,22,25,28,31,34,37,40,43,46,49,52,55,58 * * * *"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "You are an execution agent in a 3-stage analysis pipeline.\n\nSTEP 1: Read the file /home/node/workspace/01_planner_out/plan.md\nIf the file does not exist, or if its content is exactly 'PROCESSED', stop immediately and do nothing else.\n\nSTEP 2: Read the FULL plan. Note the 5 models to profile, the 3 questions per profile, and the output format instructions.\n\nSTEP 3: Write detailed profiles to /home/node/workspace/02_executor_out/profiles.md\nFollow the plan's output format instructions EXACTLY. For each of the 5 models the plan names, write:\n\n## [model name]\n- Speed tier: [answer with the actual time_s value]\n- Tool usage: [answer - did it make the expected tool calls and finish cleanly]\n- Anomalies: [answer - state 'none observed' if clean, otherwise describe the anomaly]\n\nBase every answer ONLY on information the plan provides. If the plan lacks data needed for an answer, write 'insufficient data in plan' rather than inventing values.\n\nSTEP 4: Overwrite /home/node/workspace/01_planner_out/plan.md with exactly the single word: PROCESSED\n\nUse only the read and write tools. Profile all 5 models, never fewer.",
+        "timeoutSeconds": 170,
+        "lightContext": true,
+        "toolsAllow": [
+          "read",
+          "write"
+        ]
+      },
+      "delivery": {
+        "mode": "silent"
+      },
+      "state": {}
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "pipeline-synthesizer",
+      "enabled": true,
+      "createdAtMs": 1781000000002,
+      "schedule": {
+        "kind": "cron",
+        "expr": "2,5,8,11,14,17,20,23,26,29,32,35,38,41,44,47,50,53,56,59 * * * *"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "You are a synthesis agent in a 3-stage analysis pipeline.\n\nSTEP 1: Read the file /home/node/workspace/02_executor_out/profiles.md\nIf the file does not exist, or if its content is exactly 'PROCESSED', stop immediately and do nothing else.\n\nSTEP 2: Read ALL profiles fully.\n\nSTEP 3: Write a final recommendation report to /home/node/workspace/03_final_reports/PIPELINE_FINAL.md\nThe report MUST contain all of these sections, each with substantial content:\n\n# Model Recommendation Report\n\n## Summary\nOne paragraph summarizing the benchmark: how many models were profiled and the overall quality landscape.\n\n## Speed Analysis\nCompare the profiled models by speed. Name the fastest and slowest models with their times in seconds.\n\n## Reliability Analysis\nDiscuss tool usage correctness and any anomalies found across the profiles.\n\n## Recommendations\nRecommend which models are best suited for each pipeline role. State which model you recommend for fast disposable work, which for high-quality analysis, and which models to avoid. Use the word 'recommend' explicitly.\n\n## Use Case Assignments\nAssign at least 3 specific models to the roles of planner, executor, and synthesizer in an agent pipeline, with one sentence of justification each.\n\nThe report must be at least 450 words and mention at least 3 model names.\n\nSTEP 4: Overwrite /home/node/workspace/02_executor_out/profiles.md with exactly the single word: PROCESSED\n\nUse only the read and write tools. Do not shorten or skip any section.",
+        "timeoutSeconds": 170,
+        "lightContext": true,
+        "toolsAllow": [
+          "read",
+          "write"
+        ]
+      },
+      "delivery": {
+        "mode": "silent"
       },
       "state": {}
     }

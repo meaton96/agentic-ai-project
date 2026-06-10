@@ -14,7 +14,7 @@
     "defaults": {
       "workspace": "/home/node/workspace",
       "model": {
-        "primary": "rit/qwen3:8b"
+        "primary": "vllm/cogito:70b"
       }
     }
   },
@@ -22,7 +22,11 @@
     "providers": {
       "vllm": {
         "baseUrl": "https://api.genai.gccis.rit.edu/v1",
-        "apiKey": "ollama",
+        "apiKey": {
+          "source": "env",
+          "provider": "default",
+          "id": "RIT_API_KEY"
+        },
         "api": "openai-completions",
         "models": [
           {

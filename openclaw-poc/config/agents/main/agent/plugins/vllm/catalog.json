@@ -2,8 +2,8 @@
   "generatedBy": "openclaw-plugin-model-catalog-v1",
   "providers": {
     "vllm": {
-      "baseUrl": "http://host.docker.internal:8000/v1",
-      "apiKey": "VLLM_API_KEY",
+      "baseUrl": "https://api.genai.gccis.rit.edu/v1",
+      "apiKey": "RIT_API_KEY",
       "api": "openai-completions",
       "models": [
         {
@@ -20,7 +20,8 @@
             "cacheWrite": 0
           },
           "contextWindow": 32768,
-          "maxTokens": 8192
+          "maxTokens": 8192,
+          "api": "openai-completions"
         },
         {
           "id": "gemma4:latest",
@@ -36,7 +37,8 @@
             "cacheWrite": 0
           },
           "contextWindow": 32768,
-          "maxTokens": 8192
+          "maxTokens": 8192,
+          "api": "openai-completions"
         },
         {
           "id": "qwen3.6:35b-a3b-nvfp4",
@@ -52,7 +54,8 @@
             "cacheWrite": 0
           },
           "contextWindow": 32768,
-          "maxTokens": 8192
+          "maxTokens": 8192,
+          "api": "openai-completions"
         },
         {
           "id": "cogito:70b",
@@ -68,7 +71,8 @@
             "cacheWrite": 0
           },
           "contextWindow": 32768,
-          "maxTokens": 8192
+          "maxTokens": 8192,
+          "api": "openai-completions"
         },
         {
           "id": "qwen3.5:35b-a3b-coding-nvfp4",
@@ -84,7 +88,8 @@
             "cacheWrite": 0
           },
           "contextWindow": 32768,
-          "maxTokens": 8192
+          "maxTokens": 8192,
+          "api": "openai-completions"
         },
         {
           "id": "qwen3.5:latest",
@@ -100,7 +105,8 @@
             "cacheWrite": 0
           },
           "contextWindow": 32768,
-          "maxTokens": 8192
+          "maxTokens": 8192,
+          "api": "openai-completions"
         },
         {
           "id": "llama3.1:70b",
@@ -116,7 +122,8 @@
             "cacheWrite": 0
           },
           "contextWindow": 32768,
-          "maxTokens": 8192
+          "maxTokens": 8192,
+          "api": "openai-completions"
         },
         {
           "id": "qwen3-coder:30b",
@@ -132,7 +139,8 @@
             "cacheWrite": 0
           },
           "contextWindow": 32768,
-          "maxTokens": 8192
+          "maxTokens": 8192,
+          "api": "openai-completions"
         },
         {
           "id": "devstral:latest",
@@ -148,7 +156,8 @@
             "cacheWrite": 0
           },
           "contextWindow": 32768,
-          "maxTokens": 8192
+          "maxTokens": 8192,
+          "api": "openai-completions"
         },
         {
           "id": "gpt-oss:120b",
@@ -164,7 +173,8 @@
             "cacheWrite": 0
           },
           "contextWindow": 32768,
-          "maxTokens": 8192
+          "maxTokens": 8192,
+          "api": "openai-completions"
         },
         {
           "id": "qwen3:latest",
@@ -180,7 +190,8 @@
             "cacheWrite": 0
           },
           "contextWindow": 32768,
-          "maxTokens": 8192
+          "maxTokens": 8192,
+          "api": "openai-completions"
         },
         {
           "id": "qwen3:1.7b",
@@ -196,7 +207,8 @@
             "cacheWrite": 0
           },
           "contextWindow": 32768,
-          "maxTokens": 8192
+          "maxTokens": 8192,
+          "api": "openai-completions"
         },
         {
           "id": "qwen3:8b",
@@ -212,7 +224,8 @@
             "cacheWrite": 0
           },
           "contextWindow": 32768,
-          "maxTokens": 8192
+          "maxTokens": 8192,
+          "api": "openai-completions"
         },
         {
           "id": "qwen3-coder-next:latest",
@@ -228,7 +241,8 @@
             "cacheWrite": 0
           },
           "contextWindow": 32768,
-          "maxTokens": 8192
+          "maxTokens": 8192,
+          "api": "openai-completions"
         },
         {
           "id": "qwen3.5:27b",
@@ -244,7 +258,8 @@
             "cacheWrite": 0
           },
           "contextWindow": 32768,
-          "maxTokens": 8192
+          "maxTokens": 8192,
+          "api": "openai-completions"
         }
       ]
     }

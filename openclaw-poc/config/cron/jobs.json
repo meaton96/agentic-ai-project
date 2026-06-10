@@ -3,85 +3,27 @@
   "jobs": [
     {
       "id": "a1000000-0000-4000-8000-000000000001",
-      "name": "pipeline-planner",
+      "name": "pipeline-full",
       "enabled": true,
       "createdAtMs": 1781000000000,
       "schedule": {
         "kind": "cron",
-        "expr": "*/3 * * * *"
+        "expr": "* * * * *"
       },
       "sessionTarget": "isolated",
       "wakeMode": "now",
       "payload": {
         "kind": "agentTurn",
-        "message": "You are a planning agent in a 3-stage analysis pipeline. Follow these steps exactly using absolute paths.\n\nSTEP 1: Run exec with command: ls /home/node/workspace/00_task_input/\nIf the output is empty, stop immediately and do nothing else.\n\nSTEP 2: Run read on /home/node/workspace/00_task_input/task_brief.md\nRead the FULL content carefully, including the embedded CSV benchmark data.\n\nSTEP 3: Analyze the CSV data. Identify which models succeeded (status=ok) and which failed. Note speed (time_s), tool call counts, and any anomalies (zero-length answers, wrong word counts, excessive iterations).\n\nSTEP 4: Write an execution plan to /home/node/workspace/01_planner_out/plan.md\nThe plan MUST contain exactly these sections:\n\n# Execution Plan\n\n## Data Overview\nA short paragraph stating how many models passed, how many failed, and the failure categories you observed.\n\n## Models To Profile\nA list of EXACTLY 5 model names selected from the passing models. Choose the most informative mix: include the fastest, the slowest passing model, and any model with anomalies worth investigating.\n\n## Questions Per Profile\nList EXACTLY 3 questions the executor must answer for every profiled model:\n1. What speed tier is this model (fast under 25s, medium 25-65s, slow over 65s)?\n2. Did the model use tools correctly (4 tool calls expected) and complete cleanly?\n3. Are there any anomalies in this model's row (empty answer, wrong values, extra iterations)?\n\n## Output Format Instructions\nTell the executor to write one section per model with a level-2 markdown header containing the model name, and a one-line answer per question.\n\nSTEP 5: Run exec with command: rm /home/node/workspace/00_task_input/task_brief.md\n\nDo not search the web. Use only exec, read, and write. Do not skip any section of the plan.",
-        "timeoutSeconds": 170,
+        "message": "You are a pipeline agent running a 3-stage analysis. Work through all stages in a single session.\n\nSTAGE 0 — GATE CHECK\nRead /home/node/workspace/00_task_input/task_brief.md\nIf the file does not exist or its content is exactly 'PROCESSED', stop immediately and do nothing else.\n\nSTAGE 1 — PLAN\nAnalyze the CSV benchmark data in the task brief. Identify:\n- Which models passed (status=ok) and which failed, and why\n- Speed tiers: fast (<25s), medium (25-65s), slow (>65s)\n- Any anomalies: empty answers, wrong values, excessive iterations\n\nSelect exactly 5 models to profile in depth. Choose the most informative mix: the fastest, the slowest passing model, and models with interesting anomalies.\n\nSTAGE 2 — PROFILE\nFor each of the 5 selected models, write a profile with:\n- Speed tier (include the actual time_s value)\n- Tool usage: did it make 4 tool calls and finish cleanly?\n- Anomalies: describe any issues, or state 'none observed'\n\nSTAGE 3 — SYNTHESIZE\nWrite the final report to /home/node/workspace/03_final_reports/PIPELINE_FINAL.md\n\nThe report MUST contain all of these sections with substantial content:\n\n# Model Recommendation Report\n\n## Summary\nHow many models passed vs failed, and the overall quality landscape.\n\n## Speed Analysis\nCompare all 5 profiled models by speed. Name fastest and slowest with their actual times in seconds.\n\n## Reliability Analysis\nTool usage correctness and anomalies across the profiles.\n\n## Recommendations\nWhich models are best for fast disposable work, which for high-quality analysis, which to avoid. Use the word 'recommend' explicitly.\n\n## Use Case Assignments\nAssign at least 3 specific models to the roles of planner, executor, and synthesizer in an agent pipeline. One sentence of justification each.\n\nThe report must be at least 450 words and mention at least 3 model names.\n\nSTAGE 4 — MARK DONE\nOverwrite /home/node/workspace/00_task_input/task_brief.md with exactly the single word: PROCESSED\n\nUse only the read and write tools. Complete all stages before stopping.",
+        "timeoutSeconds": 300,
         "lightContext": true,
         "toolsAllow": [
-          "exec",
           "read",
           "write"
         ]
       },
       "delivery": {
-        "mode": "announce",
-        "channel": "last"
-      },
-      "state": {}
-    },
-    {
-      "id": "a1000000-0000-4000-8000-000000000002",
-      "name": "pipeline-executor",
-      "enabled": true,
-      "createdAtMs": 1781000000001,
-      "schedule": {
-        "kind": "cron",
-        "expr": "1,4,7,10,13,16,19,22,25,28,31,34,37,40,43,46,49,52,55,58 * * * *"
-      },
-      "sessionTarget": "isolated",
-      "wakeMode": "now",
-      "payload": {
-        "kind": "agentTurn",
-        "message": "You are an execution agent in a 3-stage analysis pipeline. Follow these steps exactly using absolute paths.\n\nSTEP 1: Run exec with command: ls /home/node/workspace/01_planner_out/\nIf the output is empty, stop immediately and do nothing else.\n\nSTEP 2: Run read on /home/node/workspace/01_planner_out/plan.md\nRead the FULL plan. Note the 5 models to profile, the 3 questions per profile, and the output format instructions.\n\nSTEP 3: Write detailed profiles to /home/node/workspace/02_executor_out/profiles.md\nFollow the plan's output format instructions EXACTLY. For each of the 5 models the plan names, write:\n\n## [model name]\n- Speed tier: [answer with the actual time_s value]\n- Tool usage: [answer - did it make the expected tool calls and finish cleanly]\n- Anomalies: [answer - state 'none observed' if clean, otherwise describe the anomaly]\n\nBase every answer ONLY on information the plan provides. If the plan lacks data needed for an answer, write 'insufficient data in plan' rather than inventing values.\n\nSTEP 4: Run exec with command: rm /home/node/workspace/01_planner_out/plan.md\n\nDo not search the web. Use only exec, read, and write. Profile all 5 models, never fewer.",
-        "timeoutSeconds": 170,
-        "lightContext": true,
-        "toolsAllow": [
-          "exec",
-          "read",
-          "write"
-        ]
-      },
-      "delivery": {
-        "mode": "announce",
-        "channel": "last"
-      },
-      "state": {}
-    },
-    {
-      "id": "a1000000-0000-4000-8000-000000000003",
-      "name": "pipeline-synthesizer",
-      "enabled": true,
-      "createdAtMs": 1781000000002,
-      "schedule": {
-        "kind": "cron",
-        "expr": "2,5,8,11,14,17,20,23,26,29,32,35,38,41,44,47,50,53,56,59 * * * *"
-      },
-      "sessionTarget": "isolated",
-      "wakeMode": "now",
-      "payload": {
-        "kind": "agentTurn",
-        "message": "You are a synthesis agent in a 3-stage analysis pipeline. Follow these steps exactly using absolute paths.\n\nSTEP 1: Run exec with command: ls /home/node/workspace/02_executor_out/\nIf the output is empty, stop immediately and do nothing else.\n\nSTEP 2: Run read on /home/node/workspace/02_executor_out/profiles.md\nRead ALL profiles fully.\n\nSTEP 3: Write a final recommendation report to /home/node/workspace/03_final_reports/PIPELINE_FINAL.md\nThe report MUST contain all of these sections, each with substantial content:\n\n# Model Recommendation Report\n\n## Summary\nOne paragraph summarizing the benchmark: how many models were profiled and the overall quality landscape.\n\n## Speed Analysis\nCompare the profiled models by speed. Name the fastest and slowest models with their times in seconds.\n\n## Reliability Analysis\nDiscuss tool usage correctness and any anomalies found across the profiles.\n\n## Recommendations\nRecommend which models are best suited for each pipeline role. State which model you recommend for fast disposable work, which for high-quality analysis, and which models to avoid. Use the word 'recommend' explicitly.\n\n## Use Case Assignments\nAssign at least 3 specific models to the roles of planner, executor, and synthesizer in an agent pipeline, with one sentence of justification each.\n\nThe report must be at least 450 words and mention at least 3 model names.\n\nSTEP 4: Run exec with command: rm /home/node/workspace/02_executor_out/profiles.md\n\nDo not search the web. Use only exec, read, and write. Do not shorten or skip any section.",
-        "timeoutSeconds": 170,
-        "lightContext": true,
-        "toolsAllow": [
-          "exec",
-          "read",
-          "write"
-        ]
-      },
-      "delivery": {
-        "mode": "announce",
-        "channel": "last"
+        "mode": "none"
       },
       "state": {}
     }
