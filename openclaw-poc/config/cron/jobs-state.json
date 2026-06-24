@@ -2,19 +2,18 @@
   "version": 1,
   "jobs": {
     "a1000000-0000-4000-8000-000000000001": {
-      "updatedAtMs": 1782320717158,
+      "updatedAtMs": 1782323859661,
       "scheduleIdentity": "{\"version\":1,\"enabled\":true,\"schedule\":{\"kind\":\"cron\",\"expr\":\"* * * * *\"}}",
       "state": {
-        "nextRunAtMs": 1782320760000,
-        "lastRunAtMs": 1782320640001,
+        "nextRunAtMs": 1782323880000,
+        "lastRunAtMs": 1782323760002,
         "lastRunStatus": "ok",
         "lastStatus": "ok",
-        "lastDurationMs": 77157,
+        "lastDurationMs": 99659,
         "lastDeliveryStatus": "not-requested",
         "lastFailureNotificationDeliveryStatus": "not-requested",
         "consecutiveErrors": 0,
-        "consecutiveSkipped": 0,
-        "runningAtMs": 1782320760001
+        "consecutiveSkipped": 0
       }
     }
   }

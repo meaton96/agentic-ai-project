@@ -3682,8 +3682,12 @@
   },
   "agent:main:cron:a1000000-0000-4000-8000-000000000001": {
     "label": "Cron: pipeline-planner",
-    "updatedAt": 1782320760040,
+    "sessionId": "5987858f-d789-4012-b7bd-c63e165c4094",
+    "updatedAt": 1782323760041,
+    "sessionStartedAt": 1782323760003,
+    "lastInteractionAt": 1782323760003,
     "systemSent": true,
+    "sessionFile": "/home/node/.openclaw/agents/main/sessions/5987858f-d789-4012-b7bd-c63e165c4094.jsonl",
     "skillsSnapshot": {
       "skills": [
         {
@@ -3744,7 +3748,132 @@
       }
     },
     "modelProvider": "vllm",
-    "model": "cogito:70b"
+    "model": "cogito:70b",
+    "systemPromptReport": {
+      "source": "run",
+      "generatedAt": 1782323760171,
+      "sessionId": "5987858f-d789-4012-b7bd-c63e165c4094",
+      "sessionKey": "agent:main:cron:a1000000-0000-4000-8000-000000000001:run:5987858f-d789-4012-b7bd-c63e165c4094",
+      "provider": "vllm",
+      "model": "cogito:70b",
+      "workspaceDir": "/home/node/workspace",
+      "bootstrapMaxChars": 12000,
+      "bootstrapTotalMaxChars": 60000,
+      "bootstrapTruncation": {
+        "warningMode": "always",
+        "warningShown": false,
+        "truncatedFiles": 0,
+        "nearLimitFiles": 0,
+        "totalNearLimit": false
+      },
+      "sandbox": {
+        "mode": "off",
+        "sandboxed": false
+      },
+      "systemPrompt": {
+        "chars": 3398,
+        "hash": "5dd2d8ff14a549740c28ccd25e017654faf093a92940e79d17fcf7af603cb7bc",
+        "projectContextChars": 0,
+        "nonProjectContextChars": 3398
+      },
+      "injectedWorkspaceFiles": [],
+      "skills": {
+        "promptChars": 3778,
+        "hash": "22ab5fdf0ee9e2a26f770eed2000ceeb73bec0750bb96a0d1dfb1d81453900ce",
+        "entries": [
+          {
+            "name": "browser-automation",
+            "blockChars": 324
+          },
+          {
+            "name": "canvas",
+            "blockChars": 228
+          },
+          {
+            "name": "diagram-maker",
+            "blockChars": 231
+          },
+          {
+            "name": "healthcheck",
+            "blockChars": 243
+          },
+          {
+            "name": "meme-maker",
+            "blockChars": 216
+          },
+          {
+            "name": "node-connect",
+            "blockChars": 246
+          },
+          {
+            "name": "node-inspect-debugger",
+            "blockChars": 242
+          },
+          {
+            "name": "notion",
+            "blockChars": 237
+          },
+          {
+            "name": "python-debugpy",
+            "blockChars": 230
+          },
+          {
+            "name": "skill-creator",
+            "blockChars": 224
+          },
+          {
+            "name": "spike",
+            "blockChars": 216
+          },
+          {
+            "name": "taskflow",
+            "blockChars": 246
+          },
+          {
+            "name": "taskflow-inbox-triage",
+            "blockChars": 256
+          },
+          {
+            "name": "weather",
+            "blockChars": 231
+          }
+        ]
+      },
+      "tools": {
+        "listChars": 0,
+        "schemaChars": 529,
+        "entries": [
+          {
+            "name": "read",
+            "summaryChars": 298,
+            "summaryHash": "f8a1d7cf1ecfe02b1b5865c93387e6a5891e5079117b4fe18614b6f912521727",
+            "schemaChars": 304,
+            "schemaHash": "134f19bcabe3e29d63c5cebb38f1d2556759fd08adad6bc90a4b4d3cd1fb8441",
+            "propertiesCount": 3
+          },
+          {
+            "name": "write",
+            "summaryChars": 127,
+            "summaryHash": "cdb1c46027b22d1f1b923b47bfe297821d9fe589a9f9d92994961948060a4d89",
+            "schemaChars": 225,
+            "schemaHash": "e98a2484f667cf7c22d76ca103bf2022bf9113dc63fe38b899e71c328cb1e833",
+            "propertiesCount": 2
+          }
+        ]
+      },
+      "currentTurn": {
+        "promptChars": 2169,
+        "runtimeContextChars": 0
+      }
+    },
+    "contextTokens": 32768,
+    "inputTokens": 1534,
+    "outputTokens": 823,
+    "totalTokens": 1534,
+    "totalTokensFresh": true,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "estimatedCostUsd": 0
   },
   "agent:main:cron:a1000000-0000-4000-8000-000000000002": {
     "label": "Cron: pipeline-executor",
