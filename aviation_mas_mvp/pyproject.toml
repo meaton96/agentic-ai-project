@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aviation_mas_mvp"
+version = "0.1.0"
+description = "Single-orchestrator predictive-maintenance MAS MVP (NGAFID-MC, bridge-1 baseline)"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "joblib",
+]
+
+[project.optional-dependencies]
+parquet = ["pyarrow"]
+notebook = ["jupyter", "matplotlib"]
+
+[tool.setuptools]
+packages = ["aviation_mas_mvp"]

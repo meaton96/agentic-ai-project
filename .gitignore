@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+openclaw-poc/config/agents/main/agent/auth-profiles.json
+openclaw-poc/config/logs
+openclaw-poc/config/agents/main/sessions
+openclaw-poc/config/agents/main/agent
+
+aviation_mas_mvp/data
+aviation_mas_mvp/work
+

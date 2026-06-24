@@ -22,6 +22,7 @@ import urllib.error
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+from ast_parser import parse_file
 
 # ── Configuration (all overridable via env vars) ──────────────────────────────
 WORKSPACE       = Path(os.environ.get('OPENCLAW_WORKSPACE', '/root/.openclaw/workspace'))
@@ -80,17 +81,14 @@ def call_vllm(messages: list, max_tokens: int = MAX_TOKENS) -> str:
 
 # ── AST Parsing ───────────────────────────────────────────────────────────────
 def run_ast_parser(filepath: Path) -> Optional[dict]:
-    """Run ast_parser.py and return parsed JSON, or None on failure."""
-    parser_path = TOOLS_DIR / 'ast_parser.py'
-    if not parser_path.exists():
-        return None
+    """Import and run ast_parser directly."""
     try:
-        result = subprocess.run(
-            ['python3', str(parser_path), str(filepath)],
-            capture_output=True, text=True, timeout=30
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return json.loads(result.stdout)
+        # parse_file returns the dict directly
+        result = parse_file(str(filepath))
+        if 'error' not in result:
+            return result
+        else:
+            print(f"  ⚠  AST parse error for {filepath.name}: {result['error']}", file=sys.stderr)
     except Exception as e:
         print(f"  ⚠  AST parse failed for {filepath.name}: {e}", file=sys.stderr)
     return None
@@ -475,23 +473,32 @@ def run(mode: str, specific_files: Optional[list] = None, architecture_only: boo
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 def main():
-    p = argparse.ArgumentParser(description='OpenClaw Documentation Generator')
+    p = argparse.ArgumentParser(description='Documentation Generator')
+    
+    # Execution Modes
     g = p.add_mutually_exclusive_group(required=True)
-    g.add_argument('--full',              action='store_true', help='Document all files')
-    g.add_argument('--incremental',       action='store_true', help='Document changed files only')
-    g.add_argument('--files',  nargs='+', metavar='FILE',      help='Document specific files (relative to codebase root)')
-    g.add_argument('--architecture-only', action='store_true', help='Rebuild architecture doc from existing file docs')
+    g.add_argument('--full', action='store_true', help='Document all files')
+    g.add_argument('--incremental', action='store_true', help='Document changed files only')
+    
+    # Path & API Arguments
+    p.add_argument('--input', type=str, required=True, help='Path to the target codebase directory')
+    p.add_argument('--output', type=str, required=True, help='Path to output the markdown docs')
+    p.add_argument('--api-url', type=str, default='http://localhost:8000/v1', help='vLLM base URL')
+    p.add_argument('--api-key', type=str, default='dummy-key', help='API Key')
+    
     args = p.parse_args()
+
+    # Overwrite global variables with args
+    global CODEBASE, DOCS_DIR, VLLM_BASE_URL, VLLM_API_KEY
+    CODEBASE = Path(args.input).resolve()
+    DOCS_DIR = Path(args.output).resolve()
+    VLLM_BASE_URL = args.api_url
+    VLLM_API_KEY = args.api_key
 
     if args.full:
         run('full')
     elif args.incremental:
         run('incremental')
-    elif args.files:
-        run('files', specific_files=args.files)
-    elif args.architecture_only:
-        run('', architecture_only=True)
-
 
 if __name__ == '__main__':
     main()
