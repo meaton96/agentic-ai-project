@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "jobs": [
+    {
+      "id": "dd5fee18-e657-4109-8704-d022863afd6b",
+      "name": "hello-test",
+      "enabled": true,
+      "deleteAfterRun": true,
+      "createdAtMs": 1782400958288,
+      "schedule": {
+        "kind": "at",
+        "at": "2026-06-25T15:23:38.063Z"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Write the text 'hello world' to a file called hello.txt in your workspace"
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "last"
+      },
+      "state": {}
+    }
+  ]
+}

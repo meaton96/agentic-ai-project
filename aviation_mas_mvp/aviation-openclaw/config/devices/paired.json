@@ -1,0 +1,87 @@
+{
+  "b38eb8b2e3ff0963209598cb03f1a65a18dc8a6e1a7e127cb4957a49c34d2328": {
+    "deviceId": "b38eb8b2e3ff0963209598cb03f1a65a18dc8a6e1a7e127cb4957a49c34d2328",
+    "publicKey": "Njx5i-tNznDVHt4jrDnMvTauL3-SBIIqrWJpXTwqm9E",
+    "platform": "linux",
+    "clientId": "cli",
+    "clientMode": "cli",
+    "role": "operator",
+    "roles": [
+      "operator"
+    ],
+    "scopes": [
+      "operator.write",
+      "operator.admin",
+      "operator.pairing"
+    ],
+    "approvedScopes": [
+      "operator.write",
+      "operator.admin",
+      "operator.pairing"
+    ],
+    "tokens": {
+      "operator": {
+        "token": "qYsXq83NFH6aw1MDi7KnyiRJqw1TYQKDbfXa-ifVoB0",
+        "role": "operator",
+        "scopes": [
+          "operator.admin",
+          "operator.pairing",
+          "operator.read",
+          "operator.write"
+        ],
+        "createdAtMs": 1782400105064,
+        "rotatedAtMs": 1782400950851
+      }
+    },
+    "createdAtMs": 1782400105064,
+    "approvedAtMs": 1782400950851
+  },
+  "9a890c536eb40884675dc2438baa2ed4fe84e138472ef279fcf346b3694a743e": {
+    "deviceId": "9a890c536eb40884675dc2438baa2ed4fe84e138472ef279fcf346b3694a743e",
+    "publicKey": "EJ_icrZIOFdjVYOvNbIE0qxUhCN7pj2lK7pWMMPC9XU",
+    "platform": "Linux x86_64",
+    "clientId": "openclaw-control-ui",
+    "clientMode": "webchat",
+    "role": "operator",
+    "roles": [
+      "operator"
+    ],
+    "scopes": [
+      "operator.admin",
+      "operator.read",
+      "operator.write",
+      "operator.approvals",
+      "operator.pairing"
+    ],
+    "approvedScopes": [
+      "operator.admin",
+      "operator.read",
+      "operator.write",
+      "operator.approvals",
+      "operator.pairing"
+    ],
+    "remoteIp": "172.19.0.1",
+    "tokens": {
+      "operator": {
+        "token": "z8xDDXTAfDbCslyiwGaA7VTiCc1NQkP9fGAkI5KJig8",
+        "role": "operator",
+        "scopes": [
+          "operator.admin",
+          "operator.approvals",
+          "operator.pairing",
+          "operator.read",
+          "operator.write"
+        ],
+        "issuer": {
+          "kind": "shared-gateway-auth",
+          "generation": "9GPjI-6ZkHyF_oGnjmsUMMdfk7LBIGuWLh0YI-nsbT0"
+        },
+        "createdAtMs": 1782400528594,
+        "rotatedAtMs": 1782400528599,
+        "lastUsedAtMs": 1782411728605
+      }
+    },
+    "createdAtMs": 1782400528594,
+    "approvedAtMs": 1782400528594
+  }
+}

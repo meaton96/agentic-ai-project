@@ -1,0 +1,10 @@
+{"flight": "flight_78.csv", "priority": "HIGH", "p_maintenance": 0.9743, "recommended_action": "Schedule inspection within 2 days", "evidence": "Elevated maintenance probability from baseline classifier."}
+{"flight": "flight_1686.csv", "priority": "HIGH", "p_maintenance": 0.9714, "recommended_action": "Schedule inspection within 2 days", "evidence": "Elevated maintenance probability from baseline classifier."}
+{"flight": "flight_1240.csv", "priority": "HIGH", "p_maintenance": 0.9707, "recommended_action": "Schedule inspection within 2 days", "evidence": "Elevated maintenance probability from baseline classifier."}
+{"flight": "flight_2113.csv", "priority": "HIGH", "p_maintenance": 0.9598, "recommended_action": "Schedule inspection within 2 days", "evidence": "Elevated maintenance probability from baseline classifier."}
+{"flight": "flight_147.csv", "priority": "HIGH", "p_maintenance": 0.9374, "recommended_action": "Schedule inspection within 2 days", "evidence": "Elevated maintenance probability from baseline classifier."}
+{"flight": "flight_947.csv", "priority": "HIGH", "p_maintenance": 0.9372, "recommended_action": "Schedule inspection within 2 days", "evidence": "Elevated maintenance probability from baseline classifier."}
+{"flight": "flight_1696.csv", "priority": "HIGH", "p_maintenance": 0.937, "recommended_action": "Schedule inspection within 2 days", "evidence": "Elevated maintenance probability from baseline classifier."}
+{"flight": "flight_1379.csv", "priority": "HIGH", "p_maintenance": 0.9326, "recommended_action": "Schedule inspection within 2 days", "evidence": "Elevated maintenance probability from baseline classifier."}
+{"flight": "flight_781.csv", "priority": "HIGH", "p_maintenance": 0.9275, "recommended_action": "Schedule inspection within 2 days", "evidence": "Elevated maintenance probability from baseline classifier."}
+{"flight": "flight_134.csv", "priority": "HIGH", "p_maintenance": 0.9161, "recommended_action": "Schedule inspection within 2 days", "evidence": "Elevated maintenance probability from baseline classifier."}

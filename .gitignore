@@ -225,3 +225,17 @@ openclaw-poc/config/agents/main/agent
 aviation_mas_mvp/data
 aviation_mas_mvp/work
 
+aviation_mas_mvp/specs
+
+
+# openclaw
+aviation_mas_mvp/aviation-openclaw/config/openclaw.json
+aviation_mas_mvp/aviation-openclaw/config/.env
+aviation_mas_mvp/aviation-openclaw/config/agents/
+aviation_mas_mvp/aviation-openclaw/config/secrets/
+aviation_mas_mvp/aviation-openclaw/config/npm/
+aviation_mas_mvp/aviation-openclaw/workspace/sessions/
+aviation_mas_mvp/aviation-openclaw/workspace/memory/
+aviation_mas_mvp/aviation-openclaw/workspace/media/
+aviation_mas_mvp/aviation-openclaw/workspace/*.db
+aviation_mas_mvp/aviation-openclaw/workspace/*.sqlite*
