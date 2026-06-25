@@ -25,3 +25,7 @@ tqdm==4.67.3
 transformers @ git+https://github.com/huggingface/transformers.git@c9de1097eed992fe205f876415e7a7cfaa06be50
 typer==0.25.1
 typing_extensions==4.15.0
+pandas
+requests
+joblib
+scikit-learn
