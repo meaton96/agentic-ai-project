@@ -1,10 +1,22 @@
 """
 tools.py
 ========
-Deterministic tools for processing flight data.
+The deterministic tools the single orchestrator agent calls, one per future
+agent in the full MAS. Each returns a JSON-serialisable dict (the agent reads
+the result and decides the next step). NONE of these tools contain LLM calls:
+the LLM orchestrates; the tools compute. That split is the whole point.
 
-Provides core functions and a CLI interface for data inspection, feature 
-extraction, classification, maintenance queue recommendation, and approval gating.
+Tool -> future agent mapping
+  inspect_data        -> Perception Agent      (read-only sensor data)
+  featurize_flights   -> Perception/Preproc    (feature extraction)
+  classify_flights    -> Analysis Agent        (failure likelihood + urgency)
+  recommend_maintenance -> Optimization Agent  (write-only maintenance queue)
+
+CLI usage (so an OpenClaw agent can invoke via a single exec/shell call):
+  python -m scripts.tools inspect       --flight-dir DIR --metadata META.csv
+  python -m scripts.tools featurize      --flight-dir DIR --metadata META.csv --out feats.parquet
+  python -m scripts.tools classify       --feats feats.parquet --model model.joblib --out preds.json
+  python -m scripts.tools recommend      --preds preds.json --queue maintenance_queue.jsonl
 """
 
 from __future__ import annotations
@@ -24,11 +36,11 @@ except ImportError:  # allow running as a plain script (smoke test, CLI from ins
 # ---------- Perception ----------
 def inspect_data(flight_dir: str, metadata_path: str, file_col="filename",
                  label_col="label", group_col="plane_id", n_preview=3) -> dict:
-    md = pd.read_csv(metadata_path) 
-    flight_dir = Path(flight_dir)  #type: ignore
+    md = pd.read_csv(metadata_path)
+    flight_dir = Path(flight_dir)
     sample_channels, sample_steps = None, None
     for fn in md[file_col].head(n_preview):
-        fp = flight_dir / str(fn)  #type: ignore
+        fp = flight_dir / str(fn)
         if fp.exists():
             df = pd.read_csv(fp)
             sample_channels = detect_channels(df)
@@ -48,25 +60,13 @@ def inspect_data(flight_dir: str, metadata_path: str, file_col="filename",
 
 
 # ---------- Perception / Preprocessing ----------
-def featurize_flights(flight_dir, metadata_path, out_path, file_col="filename",
-                      label_col="label", group_col="plane_id", max_flights=None, spec=None):
-    import os
-    spec = spec if spec is not None else os.getenv("DISCOVERY_SPEC") 
-    if spec is not None:
-        import json as _json
-        try:
-            from .featurize_spec import build_feature_table_from_dir
-        except ImportError:
-            from featurize_spec import build_feature_table_from_dir
-        spec_obj = _json.loads(Path(spec).read_text()) if isinstance(spec, str) else spec
-        table = build_feature_table_from_dir(flight_dir, metadata_path, spec_obj,
-                                             file_col=file_col, label_col=label_col,
-                                             group_col=group_col)
-    else:
-        md = pd.read_csv(metadata_path)
-        table = build_feature_table(flight_dir, md, file_col=file_col,
-                                    label_col=label_col, group_col=group_col,
-                                    max_flights=max_flights)
+def featurize_flights(flight_dir: str, metadata_path: str, out_path: str,
+                      file_col="filename", label_col="label",
+                      group_col="plane_id", max_flights=None) -> dict:
+    md = pd.read_csv(metadata_path)
+    table = build_feature_table(flight_dir, md, file_col=file_col,
+                                label_col=label_col, group_col=group_col,
+                                max_flights=max_flights)
     out = Path(out_path)
     table.to_parquet(out) if out.suffix == ".parquet" else table.to_csv(out, index=False)
     return {"tool": "featurize_flights", "rows": int(len(table)),
@@ -188,7 +188,6 @@ def _main():
     s = sub.add_parser("featurize")
     s.add_argument("--flight-dir", required=True); s.add_argument("--metadata", required=True)
     s.add_argument("--out", required=True); s.add_argument("--max-flights", type=int, default=None)
-    s.add_argument("--spec", default=None)
 
     s = sub.add_parser("classify")
     s.add_argument("--feats", required=True); s.add_argument("--model", required=True)
@@ -202,21 +201,20 @@ def _main():
     s.add_argument("--queue", required=True); s.add_argument("--approved", required=True)
     s.add_argument("--token", required=True,
                   help=f"must match ${APPROVAL_TOKEN_ENV} in your shell")
-    
 
     a = ap.parse_args()
     if a.cmd == "inspect":
         r = inspect_data(a.flight_dir, a.metadata)
     elif a.cmd == "featurize":
-        r = featurize_flights(a.flight_dir, a.metadata, a.out, max_flights=a.max_flights, spec=a.spec)
+        r = featurize_flights(a.flight_dir, a.metadata, a.out, max_flights=a.max_flights)
     elif a.cmd == "classify":
         r = classify_flights(a.feats, a.model, a.out)
     elif a.cmd == "recommend":
         r = recommend_maintenance(a.preds, a.queue, top_k=a.top_k)
     elif a.cmd == "approve":
         r = approve_recommendations(a.queue, a.approved, a.token)
-    print(json.dumps(r, indent=2))  #type: ignore
- 
+    print(json.dumps(r, indent=2))
+
 
 if __name__ == "__main__":
     _main()

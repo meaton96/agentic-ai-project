@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "jobs": {
+    "dd5fee18-e657-4109-8704-d022863afd6b": {
+      "updatedAtMs": 1782401141138,
+      "scheduleIdentity": "{\"version\":1,\"enabled\":false,\"schedule\":{\"kind\":\"at\",\"at\":\"2026-06-25T15:23:38.063Z\"}}",
+      "state": {
+        "lastRunAtMs": 1782401018066,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "lastDurationMs": 123072,
+        "lastError": "Channel is required (no configured channels detected). Run openclaw channels add to configure one, or pass --channel <channel> after enabling a channel. Use openclaw channels list --all to see available channel ids. Set delivery.channel explicitly or use a main session with a previous channel.",
+        "lastDiagnostics": {
+          "summary": "Channel is required (no configured channels detected). Run openclaw channels add to configure one, or pass --channel <channel> after enabling a channel. Use openclaw channels list --all to see available channel ids. Set delivery.channel explicitly or use a main session with a previous channel.",
+          "entries": [
+            {
+              "ts": 1782401141115,
+              "source": "delivery",
+              "severity": "error",
+              "message": "Channel is required (no configured channels detected). Run openclaw channels add to configure one, or pass --channel <channel> after enabling a channel. Use openclaw channels list --all to see available channel ids. Set delivery.channel explicitly or use a main session with a previous channel."
+            }
+          ]
+        },
+        "lastDiagnosticSummary": "Channel is required (no configured channels detected). Run openclaw channels add to configure one, or pass --channel <channel> after enabling a channel. Use openclaw channels list --all to see available channel ids. Set delivery.channel explicitly or use a main session with a previous channel.",
+        "lastDeliveryStatus": "unknown",
+        "lastFailureNotificationDeliveryStatus": "unknown",
+        "consecutiveErrors": 1,
+        "consecutiveSkipped": 0
+      }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+# Copy to `.env` and fill in. `.env` is gitignored.
+#   cp .env.example .env
+# Generate a token:  openssl rand -hex 32
+# (smoke_test.sh will create .env with a fresh token if one is missing.)
+
+# Shared secret for the Control UI / gateway auth. Paste this into the UI at
+# http://127.0.0.1:18789  (Settings -> token). NOT needed for /healthz.
+OPENCLAW_GATEWAY_TOKEN=secret-token
+
+# Override the base image tag if you want to pin a release instead of :latest.
+# OPENCLAW_IMAGE=ghcr.io/openclaw/openclaw:2026.2.26
+
+# ----------------------------------------------------------------------------
+# NEXT STEP (model wiring) — not used by the smoke test, left here as a marker.
+# Local vLLM (qwen3-coder:30b) runs on the HOST, so from inside the container
+# the host is reachable as host.docker.internal, NOT 127.0.0.1.
+# ----------------------------------------------------------------------------
+# API_URL=http://host.docker.internal:8000/v1
+# API_MODEL_NAME=qwen3-coder:30b
+# RIT_API_KEY=unused-for-local-vllm-but-some-clients-require-a-nonempty-value

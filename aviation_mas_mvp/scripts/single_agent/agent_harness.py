@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from . import tools as T
+from scripts import tools as T
 
 # ---------------------------------------------------------------------------
 # Tool schemas (OpenAI tools function-calling format).

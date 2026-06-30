@@ -1,0 +1,94 @@
+# Aviation predictive-maintenance MVP — OpenClaw smoke-test stack
+#
+# Two services, mirroring OpenClaw's documented Docker layout:
+#   openclaw-gateway : the long-running gateway (publishes :18789)
+#   openclaw-cli     : one-off CLI commands, shares the gateway's network
+#                      namespace so `gateway probe` reaches it over loopback
+#
+# Run the gateway:        docker compose up -d openclaw-gateway
+# Run a CLI command:      docker compose run -T --rm openclaw-cli gateway probe
+# Health (no auth):       curl -fsS http://127.0.0.1:18789/healthz
+
+services:
+  openclaw-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Pin a version once the smoke test passes (e.g. 2026.2.26).
+        OPENCLAW_IMAGE: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    image: aviation-openclaw:local
+    container_name: openclaw-gateway
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # `lan` = host browser + host CLI can reach the published port.
+      OPENCLAW_GATEWAY_BIND: lan
+      # Docker bridge networking drops mDNS multicast; disable to avoid a
+      # restart loop. (Setup script defaults this to 1 for Docker too.)
+      OPENCLAW_DISABLE_BONJOUR: "1"
+      # Skip the interactive provider-key wizard for the smoke test. We add a
+      # model provider in the next step; /healthz does not need one.
+      OPENCLAW_SKIP_ONBOARDING: "1"
+      # The OpenClaw "vllm" plugin auto-reads VLLM_API_KEY from the environment
+      # (no auth-profiles.json needed). We point it at the RIT API by aliasing
+      # the key — confirmed working pattern from the earlier RIT fleet sweep.
+      # The .env file already supplies RIT_API_KEY, API_URL, API_MODEL_NAME via
+      # env_file above; this line just renames RIT_API_KEY for the plugin.
+      VLLM_API_KEY: "${RIT_API_KEY}"
+    # CRITICAL: the bare entry point launches Crestodian (the interactive TUI),
+    # which needs a TTY and crash-loops headless. The gateway SERVER is a
+    # subcommand: `gateway`. We invoke it via `node dist/index.js` (PATH-safe;
+    # same thing `openclaw gateway` resolves to) with --allow-unconfigured so it
+    # boots without a full config for the smoke test. --verbose aids debugging.
+    command: [ "node", "dist/index.js", "gateway", "--port", "18789", "--allow-unconfigured", "--verbose" ]
+    ports:
+      - "18789:18789"
+    volumes:
+      # Config dir (openclaw.json, agents/, .env, secrets) — survives rebuilds.
+      - ./config:/home/node/.openclaw
+      # Agent workspace (sessions, memory, media, skills).
+      - ./workspace:/home/node/.openclaw/workspace
+      # The deterministic tools the agent will exec. Mounted INTO the workspace
+      # so `python -m aviation_mas_mvp.tools <cmd>` resolves from the agent cwd.
+      - ./aviation_mas_mvp:/home/node/.openclaw/workspace/aviation_mas_mvp:ro
+      # Real flight data + trained model. Lives at the PROJECT ROOT (one level
+      # up from this compose file, alongside scripts/ and notebooks/), so the
+      # path is ../data, not ./data. Read-only: tools only ever read from
+      # here; all outputs (feats.csv, preds.json, the queue) go to workspace.
+      - ../data:/home/node/.openclaw/workspace/data:ro
+    extra_hosts:
+      # So the gateway can reach a vLLM/Ollama server running on the HOST at
+      # host.docker.internal:<port> (next step). Harmless for the smoke test.
+      - "host.docker.internal:host-gateway"
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: [ "CMD", "curl", "-fsS", "http://127.0.0.1:18789/healthz" ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  openclaw-cli:
+    image: aviation-openclaw:local
+    # No own network: share the gateway's so CLI talks to it over 127.0.0.1.
+    network_mode: "service:openclaw-gateway"
+    depends_on:
+      - openclaw-gateway
+    env_file:
+      - .env
+    volumes:
+      - ./config:/home/node/.openclaw
+      - ./workspace:/home/node/.openclaw/workspace
+      - ./aviation_mas_mvp:/home/node/.openclaw/workspace/aviation_mas_mvp:ro
+      - ../data:/home/node/.openclaw/workspace/data:ro
+    security_opt:
+      - no-new-privileges:true
+    working_dir: /app
+    # Same PATH-safe entry as the gateway; appended args become subcommands,
+    # e.g. `docker compose run --rm openclaw-cli gateway probe`.
+    entrypoint: [ "node", "dist/index.js" ]
+    # Default to a harmless status call if invoked with no args.
+    command: [ "gateway", "status" ]
