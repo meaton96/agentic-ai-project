@@ -1,21 +1,13 @@
 """
 train_real_baseline.py
 =======================
-One-shot script: stream-featurize a big NGAFID-MC per-cluster CSV (C28/C37,
-the 1.5-4 GB files) and train the tail-disjoint baseline model. Replaces the
-peek -> featurize -> train command sequence with a single call.
+A unified script to stream-featurize large NGAFID-MC cluster CSVs 
+and train a classification model.
 
-Place this file at the same level as your `scripts/` package directory (i.e.
-as a sibling, not inside it) and run it directly -- no pip install needed; the
-bootstrap below finds `scripts/` by walking up from this file's location.
-
-Usage:
-    python train_real_baseline.py --csv C28.csv --out-model c28_model.joblib
-
-Optional:
-    python train_real_baseline.py --csv C28.csv --out-model c28_model.joblib \
-        --out-feats c28_feats.csv --out-metrics c28_metrics.json \
-        --chunksize 500000 --max-flights 500   # --max-flights for a fast debug run
+This automates data preprocessing and training into a single execution, 
+supporting standard cross-validation, strict holdout-fold training for 
+leakage-free agent evaluation, and custom spec-driven featurization 
+discovered during the search phase.
 """
 from __future__ import annotations
 import sys
@@ -36,6 +28,7 @@ else:
 
 from scripts.realdata import build_feature_table_streaming, peek_ngafid, fit_excluding_fold
 from scripts.train_baseline import train
+
 
 
 def main():
@@ -59,6 +52,9 @@ def main():
                         "flights were never seen during fitting. Without this, the default "
                         "fit uses every row, and any demo batch pulled from the same file is "
                         "largely the model's own training data (see fit_excluding_fold docs).")
+    ap.add_argument("--spec", default=None,
+                help="discovered feature spec (best_spec.json). If set, featurization "
+                     "uses the spec instead of the hardcoded 12 stats.")
     args = ap.parse_args()
 
     if not args.skip_peek:
@@ -73,10 +69,17 @@ def main():
                              "Re-run with --skip-peek once you've confirmed it's safe.")
         if pk["unexpected_sensors"]:
             print(f"WARNING: unexpected sensor columns found: {pk['unexpected_sensors']}")
-
-    print(f"\n[1/2] streaming featurize: {args.csv}  (chunksize={args.chunksize})")
-    table = build_feature_table_streaming(args.csv, chunksize=args.chunksize,
-                                          max_flights=args.max_flights)
+    if args.spec:
+        import json as _json
+        from scripts.featurize_spec import build_training_table
+        spec = _json.loads(Path(args.spec).read_text())
+        print(f"\n[1/2] spec-driven featurize ({spec.get('spec_id','?')}): {args.csv}")
+        table = build_training_table(args.csv, spec, max_flights=args.max_flights,
+                                    chunksize=args.chunksize)
+    else:
+        print(f"\n[1/2] streaming featurize: {args.csv}  (chunksize={args.chunksize})")
+        table = build_feature_table_streaming(args.csv, chunksize=args.chunksize,
+                                            max_flights=args.max_flights)
     if args.out_feats:
         table.to_csv(args.out_feats, index=False)
         print(f"      feature table saved -> {args.out_feats}")
