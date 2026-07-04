@@ -29,3 +29,5 @@ pandas
 requests
 joblib
 scikit-learn
+matplotlib
+seaborn
