@@ -47,7 +47,7 @@ def run_pipeline(flight_dir: str | Path, metadata: str | Path, model: str | Path
     preds = workdir / "preds.json"
     queue = workdir / "maintenance_queue.jsonl"
 
-    base = [python, "-m", f"{__package__}.tools"]
+    base = [python, "-m", "scripts.tools"]
     
     # Define the exact sequence of tool executions required for a successful run
     steps = [
