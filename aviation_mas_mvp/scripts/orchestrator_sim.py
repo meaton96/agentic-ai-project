@@ -33,7 +33,7 @@ def _run(cmd: list[str], cwd: str | Path | None = None) -> dict:
 
 
 def run_pipeline(flight_dir: str | Path, metadata: str | Path, model: str | Path,
-                 workdir: str | Path, top_k: int = 10,
+                 workdir: str | Path, top_k: int = 10, spec: str | Path | None = None,
                  python: str = sys.executable) -> dict:
     """
     Executes the full pipeline via deterministic CLI calls and returns 
@@ -48,13 +48,17 @@ def run_pipeline(flight_dir: str | Path, metadata: str | Path, model: str | Path
     queue = workdir / "maintenance_queue.jsonl"
 
     base = [python, "-m", "scripts.tools"]
+
+    feat_cmd = base + ["featurize", "--flight-dir", str(flight_dir),
+                       "--metadata", str(metadata), "--out", str(feats)]
+    if spec is not None:
+        feat_cmd += ["--spec", str(spec)]
     
     # Define the exact sequence of tool executions required for a successful run
     steps = [
         Step("inspect",   base + ["inspect", "--flight-dir", str(flight_dir),
                                   "--metadata", str(metadata)]),
-        Step("featurize", base + ["featurize", "--flight-dir", str(flight_dir),
-                                  "--metadata", str(metadata), "--out", str(feats)]),
+        Step("featurize", feat_cmd),
         Step("classify",  base + ["classify", "--feats", str(feats),
                                   "--model", str(model), "--out", str(preds)]),
         Step("recommend", base + ["recommend", "--preds", str(preds),

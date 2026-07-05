@@ -1,13 +1,24 @@
 """
 golden_harness.py
 =================
-Regression testing harness for pipeline outputs.
+Phase-0 gate: freeze the pipeline's DETERMINISTIC outputs and fail loudly if any
+later refactor changes them. Pipeline-agnostic -- it snapshots whatever
+run_pipeline returns (dicts, DataFrames, arrays, floats, nested).
 
-Provides utilities to snapshot complex, deterministic data structures (including
-pandas DataFrames, NumPy arrays, and nested dictionaries) into JSON 'golden' 
-files. Future runs can be compared against these snapshots to detect regressions 
-within a specified float tolerance. Non-deterministic fields (e.g., LLM text) 
-can be excluded from the snapshot and comparison.
+ML + LLM determinism strategy:
+  - Deterministic outputs (feature tables, predictions, tool/evidence results,
+    plan structure) are canonicalized and frozen.
+  - Non-deterministic LLM free-text is quarantined via `exclude_keys` (dropped
+    anywhere in the tree before comparison). Run the pipeline with a mocked/None
+    chat_fn for the golden so even upstream control flow is deterministic.
+  - Floats compared with absolute+relative tolerance; NaN normalized to None.
+
+Usage:
+    from golden_harness import save_golden, compare_to_golden
+    out = run_pipeline(dataset, chat_fn=None)            # deterministic run
+    save_golden(out, "golden/pipeline.json", exclude_keys={"explanation"})   # freeze once
+    diffs = compare_to_golden(out, "golden/pipeline.json", exclude_keys={"explanation"})
+    assert not diffs, diffs                               # gate
 """
 from __future__ import annotations
 import json
@@ -19,22 +30,7 @@ ROUND = 8   # store floats at this precision; compare with tol below
 
 
 def canonicalize(obj, exclude_keys: set[str] | None = None):
-    """
-    Recursively converts complex data structures into a JSON-serializable, 
-    order-stable format.
-    
-    Normalizes pandas DataFrames, pandas Series, and NumPy arrays into standard 
-    lists/dicts. Handles numeric edge cases (inf/NaN) and sorts dictionary keys 
-    to ensure deterministic serialization.
-    
-    Args:
-        obj: The Python object to canonicalize.
-        exclude_keys (set[str] | None, optional): Keys to explicitly drop during 
-            traversal (e.g., non-deterministic LLM output keys). Defaults to None.
-            
-    Returns:
-        A JSON-safe, primitive representation of the input object.
-    """
+    """Recursively convert to a JSON-safe, order-stable form."""
     ex = exclude_keys or set()
     if isinstance(obj, pd.DataFrame):
         return {"__df__": {
@@ -61,32 +57,11 @@ def canonicalize(obj, exclude_keys: set[str] | None = None):
 
 
 def save_golden(obj, path: str, exclude_keys: set[str] | None = None) -> None:
-    """
-    Canonicalizes and saves a pipeline output to a JSON file as a golden snapshot.
-    
-    Args:
-        obj: The output object to save.
-        path (str): Filepath where the golden JSON will be written.
-        exclude_keys (set[str] | None, optional): Keys to omit from the snapshot. Defaults to None.
-    """
     with open(path, "w") as f:
         json.dump(canonicalize(obj, exclude_keys), f, indent=2, sort_keys=True)
 
 
 def _diff(cur, gold, tol, path, out):
-    """
-    Recursive helper function to identify differences between two canonicalized objects.
-    
-    Args:
-        cur: The current object being evaluated.
-        gold: The golden object being compared against.
-        tol (float): Combined absolute and relative tolerance for float comparisons.
-        path (str): The current JSON path traversal string (used for error reporting).
-        out (list[str]): Mutable list accumulating diff messages.
-        
-    Returns:
-        list[str]: The accumulated list of difference strings.
-    """
     if isinstance(gold, dict) and isinstance(cur, dict):
         for k in sorted(set(gold) | set(cur)):
             if k not in cur:
@@ -112,21 +87,15 @@ def _diff(cur, gold, tol, path, out):
     return out
 
 
+def compare_objects(cur, gold, exclude_keys: set[str] | None = None,
+                    tol: float = 1e-6) -> list[str]:
+    """Diff two live objects (canonicalizing both). Empty list = match."""
+    return _diff(canonicalize(cur, exclude_keys), canonicalize(gold, exclude_keys), tol, "", [])
+
+
 def compare_to_golden(obj, path: str, exclude_keys: set[str] | None = None,
                       tol: float = 1e-6) -> list[str]:
-    """
-    Compares a new pipeline output against a saved golden JSON snapshot.
-    
-    Args:
-        obj: The new output object to evaluate.
-        path (str): Filepath to the existing golden JSON snapshot.
-        exclude_keys (set[str] | None, optional): Keys to ignore during comparison. Defaults to None.
-        tol (float, optional): Float tolerance for numeric comparisons. Defaults to 1e-6.
-        
-    Returns:
-        list[str]: A list of human-readable differences. An empty list indicates
-            a successful match (no regressions found).
-    """
+    """Return a list of human-readable diffs; empty list = pass (golden reproduced)."""
     cur = canonicalize(obj, exclude_keys)
     with open(path) as f:
         gold = json.load(f)
