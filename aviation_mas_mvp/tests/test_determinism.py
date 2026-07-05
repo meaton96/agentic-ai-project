@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from golden_lib import run_and_snapshot, EXCLUDE_KEYS
-from golden_harness import compare_objects
+from golden_testing.golden_harness import compare_objects
 
 
 def test_determinism(paths, run_pipeline):

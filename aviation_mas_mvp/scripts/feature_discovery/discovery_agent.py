@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 try:
-    from . import feature_transforms as ft
+    from .. import feature_transforms as ft
     from . import featurize_spec as fs
     from .evaluate_features import evaluate_features
 except ImportError:
@@ -31,7 +31,7 @@ except ImportError:
 
 def describe_channels(flight_iter: fs.FlightIter, downsample: int = 200) -> dict:
     try:
-        from .feature_transforms import _sanitize_series
+        from ..feature_transforms import _sanitize_series
     except ImportError:
         from feature_transforms import _sanitize_series
     rec = next(iter(flight_iter()))

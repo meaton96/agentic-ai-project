@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import copy
 import pytest
-from task_manifest import (TaskManifest, load_manifest, validate_manifest,
+from manifest.task_manifest import (TaskManifest, load_manifest, validate_manifest,
                            validate_against_columns)
 
 MANIFEST_DIR = Path(__file__).resolve().parents[1] / "manifests"

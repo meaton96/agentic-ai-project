@@ -55,9 +55,9 @@ def featurize_flights(flight_dir, metadata_path, out_path, file_col="filename",
     if spec is not None:
         import json as _json
         try:
-            from .featurize_spec import build_feature_table_from_dir
+            from .feature_discovery.featurize_spec import build_feature_table_from_dir
         except ImportError:
-            from featurize_spec import build_feature_table_from_dir
+            from feature_discovery.featurize_spec import build_feature_table_from_dir
         spec_obj = _json.loads(Path(spec).read_text()) if isinstance(spec, str) else spec
         table = build_feature_table_from_dir(flight_dir, metadata_path, spec_obj,
                                              file_col=file_col, label_col=label_col,

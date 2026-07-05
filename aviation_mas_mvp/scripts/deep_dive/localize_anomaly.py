@@ -53,7 +53,7 @@ def localize_anomaly(df: pd.DataFrame, segments=None, groups=None, thresholds=No
     thresholds = thresholds or DEFAULT_THRESHOLDS
     if segments is None:
         try:
-            from .flight_phases import segment_flight
+            from ..flight_phases import segment_flight
         except ImportError:
             from flight_phases import segment_flight
         segments = segment_flight(df, sample_hz=sample_hz)["segments"]

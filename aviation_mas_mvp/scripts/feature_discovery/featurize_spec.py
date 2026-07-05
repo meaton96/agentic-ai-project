@@ -19,10 +19,8 @@ from typing import Callable, Iterable, Iterator
 import numpy as np
 import pandas as pd
 
-try:
-    from . import feature_transforms as ft
-except ImportError:
-    import feature_transforms as ft
+
+from . import feature_transforms as ft
 
 
 @dataclass
@@ -123,7 +121,7 @@ def realdata_flight_iter(csv_path, chunksize: int = 500_000,
     scripts.realdata streaming loader. One pass; chunk-invariant."""
     def _iter() -> Iterator[FlightRecord]:
         try:
-            from .realdata import _iter_flights, resolve_label, NGAFID_NON_SENSOR
+            from ..realdata import _iter_flights, resolve_label, NGAFID_NON_SENSOR
         except ImportError:
             from scripts.realdata import _iter_flights, resolve_label, NGAFID_NON_SENSOR
         sensors = [c for c in pd.read_csv(csv_path, nrows=0).columns

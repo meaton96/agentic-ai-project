@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from golden_lib import run_and_snapshot, check_invariants, EXCLUDE_KEYS
-from golden_harness import save_golden, compare_to_golden
+from golden_testing.golden_harness import save_golden, compare_to_golden
 from conftest import UPDATE_GOLDEN
 
 

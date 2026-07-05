@@ -24,9 +24,9 @@ else:
     raise SystemExit("Could not find a `scripts/` directory above this file.")
 # ---------------------------------------------------------------------------
 
-from scripts.featurize_spec import (collect_balanced_sample, realdata_flight_iter,
+from featurize_spec import (collect_balanced_sample, realdata_flight_iter,
                                     materialize, build_training_table)
-from scripts.discovery_agent import (run_discovery, scripted_proposer, make_llm_proposer,
+from discovery_agent import (run_discovery, scripted_proposer, make_llm_proposer,
                                      StopConfig)
 
 

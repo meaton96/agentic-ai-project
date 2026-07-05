@@ -10,10 +10,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from task_manifest import load_manifest, validate_manifest
-from run_from_manifest import run_from_manifest
+from manifest.task_manifest import load_manifest, validate_manifest
+from manifest.run_from_manifest import run_from_manifest
 from golden_lib import clean_workdir, check_invariants, EXCLUDE_KEYS
-from golden_harness import compare_to_golden
+from golden_testing.golden_harness import compare_to_golden
 import json
 
 REPO = Path(__file__).resolve().parents[1]

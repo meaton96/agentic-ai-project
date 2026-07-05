@@ -62,7 +62,7 @@ def _fallback_holdout_cv(table: pd.DataFrame, holdout_fold) -> dict:
 # Attempt to wire up the primary cross-validation routine from realdata
 try:
     try:
-        from .realdata import fit_excluding_fold as _real_cv
+        from ..realdata import fit_excluding_fold as _real_cv
     except ImportError:
         from scripts.realdata import fit_excluding_fold as _real_cv
 
