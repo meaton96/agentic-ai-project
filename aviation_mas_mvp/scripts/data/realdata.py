@@ -15,7 +15,7 @@ from typing import Iterator
 import numpy as np
 import pandas as pd
 
-from .featurize import channel_features
+from ..featurize import channel_features
 from .synthdata import NGAFID_SENSORS  # canonical 22-sensor list
 
 NGAFID_NON_SENSOR = {"id", "plane_id", "split", "date_diff", "before_after"}

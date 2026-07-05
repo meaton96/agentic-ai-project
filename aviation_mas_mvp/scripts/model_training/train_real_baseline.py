@@ -27,7 +27,7 @@ else:
 # -----------------------------------------------------------------------------
 
 from scripts.realdata import build_feature_table_streaming, peek_ngafid, fit_excluding_fold
-from scripts.train_baseline import train
+from scripts.model_training.train_baseline import train
 
 
 
@@ -71,7 +71,7 @@ def main():
             print(f"WARNING: unexpected sensor columns found: {pk['unexpected_sensors']}")
     if args.spec:
         import json as _json
-        from scripts.featurize_spec import build_training_table
+        from aviation_mas_mvp.scripts.feature_discovery.featurize_spec import build_training_table
         spec = _json.loads(Path(args.spec).read_text())
         print(f"\n[1/2] spec-driven featurize ({spec.get('spec_id','?')}): {args.csv}")
         table = build_training_table(args.csv, spec, max_flights=args.max_flights,

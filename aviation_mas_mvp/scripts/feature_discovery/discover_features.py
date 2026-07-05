@@ -133,7 +133,7 @@ def _finalize(csv, spec, test_fold, select_fold, out_model, out_metrics, demo_di
     baseline on that same test fold. The lift here is unbiased; the search-time
     select-fold number is not."""
     import json as _json
-    from scripts.realdata import (fit_excluding_fold, export_flights_to_dir,
+    from scripts.data.realdata import (fit_excluding_fold, export_flights_to_dir,
                                   NGAFID_NON_SENSOR)
     import pandas as pd
 

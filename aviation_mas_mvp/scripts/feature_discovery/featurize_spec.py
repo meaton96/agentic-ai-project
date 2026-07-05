@@ -120,10 +120,7 @@ def realdata_flight_iter(csv_path, chunksize: int = 500_000,
     """Stream flights from the big per-cluster CSV via the validated
     scripts.realdata streaming loader. One pass; chunk-invariant."""
     def _iter() -> Iterator[FlightRecord]:
-        try:
-            from ..realdata import _iter_flights, resolve_label, NGAFID_NON_SENSOR
-        except ImportError:
-            from scripts.realdata import _iter_flights, resolve_label, NGAFID_NON_SENSOR
+        from scripts.data.realdata import _iter_flights, resolve_label, NGAFID_NON_SENSOR
         sensors = [c for c in pd.read_csv(csv_path, nrows=0).columns
                    if c not in NGAFID_NON_SENSOR]
         n = 0

@@ -13,7 +13,7 @@ sys.path.insert(0, str(REPO / "scripts"))
 
 
 
-UPDATE_GOLDEN = os.getenv("UPDATE_GOLDEN") == "0"
+UPDATE_GOLDEN = 0
 
  
  
