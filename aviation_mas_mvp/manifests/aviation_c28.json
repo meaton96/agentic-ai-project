@@ -1,0 +1,30 @@
+{
+  "name": "aviation_c28",
+  "task_type": "binary_classification",
+  "target": "label",
+  "metric": "roc_auc",
+  "adapter": "aviation_flight_dir",
+  "data_path": "data/c28_demo",
+  "flight_dir": "data/c28_demo/flights",
+  "metadata_path": "data/c28_demo/metadata.csv",
+  "file_column": "filename",
+  "group_column": "plane_id",
+  "folds": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4"
+  ],
+  "positive_label": 1,
+  "split_type": "group_kfold",
+  "feature_spec_path": "data/best_spec.json",
+  "model_type": "HistGradientBoostingClassifier",
+  "model_path": "data/c28_model.joblib",
+  "artifact_root": "data",
+  "top_k": 10,
+  "thresholds": {
+    "high": 0.66,
+    "med": 0.33
+  }
+}
