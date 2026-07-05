@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 
 try:
-    from .flight_phases import segment_flight
+    from ..flight_phases import segment_flight
     from .attribute import attribute_prediction
     from .localize_anomaly import localize_anomaly
 except ImportError:
