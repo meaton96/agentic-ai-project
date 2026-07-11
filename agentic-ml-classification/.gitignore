@@ -1,0 +1,17 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+runs/*
+!runs/.gitkeep
+reports/*
+!reports/.gitkeep
+artifacts/reports/*
+!artifacts/reports/.gitkeep
+artifacts/models/*
+!artifacts/models/.gitkeep
+datasets/raw/*
+!datasets/raw/.gitkeep
+datasets/processed/*
+!datasets/processed/.gitkeep

@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CandidateSpec",
+  "type": "object",
+  "required": ["candidate_id", "template_id", "config"],
+  "properties": {
+    "candidate_id": {"type": "string"},
+    "template_id": {"type": "string"},
+    "config": {"type": "object"},
+    "explanation": {"type": "string"}
+  },
+  "description": "Metadata for an agent-proposed candidate. The candidate's actual build_pipeline(config) code is validated separately by src/agentic_ml/harness/sandbox.py before ever being executed."
+}

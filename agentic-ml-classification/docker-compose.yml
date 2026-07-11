@@ -1,76 +1,30 @@
+# Model gateway only. The agent runtime (src/agentic_ml) runs as plain
+# Python on the host / in your own process — it is NOT a container here,
+# since it has no daemon, no session state, and nothing to keep alive.
+# See README.md for why OpenClaw was dropped from this stack.
 services:
-  openclaw-gateway:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        OPENCLAW_BASE_IMAGE: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
-    image: agentic-ml-openclaw:local
-    container_name: openclaw-gateway
+  model-gateway:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: model-gateway
     restart: unless-stopped
+    env_file:
+      - .env
+    command:
+      - "--config"
+      - "/app/config.yaml"
+      - "--port"
+      - "4000"
     ports:
-      - "127.0.0.1:18789:18789"
+      - "127.0.0.1:${MODEL_GATEWAY_PORT:-4000}:4000"
     volumes:
-      - ${OPENCLAW_CONFIG_DIR:-./config}:/home/node/.openclaw:rw
-      - ${OPENCLAW_WORKSPACE_DIR:-./workspace}:/home/node/.openclaw/workspace:rw
-      - openclaw-secrets:/home/node/.config/openclaw
-    environment:
-      OPENCLAW_STATE_DIR: /home/node/.openclaw
-      OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
-      OPENCLAW_CONFIG_DIR: /home/node/.openclaw
-      OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
-      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
-      RIT_API_KEY: ${RIT_API_KEY:?RIT_API_KEY must be set in .env}
-      OPENCLAW_SKIP_ONBOARDING: "1"
-      OPENCLAW_DISABLE_BONJOUR: "1"
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - NET_RAW
-      - NET_ADMIN
+      - ./configs/litellm.yaml:/app/config.yaml:ro
+    extra_hosts:
+      # only relevant if LOCAL_MODEL_BASE_URL points at a server running
+      # on this host machine (e.g. a local vLLM/Ollama instance)
+      - "host.docker.internal:host-gateway"
     healthcheck:
-      test:
-        - "CMD"
-        - "node"
-        - "-e"
-        - "fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-      interval: 5s
-      timeout: 3s
-      retries: 10
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/health/liveliness"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
       start_period: 15s
-
-  # Sidecar for onboarding/admin commands, e.g.:
-  #   docker compose run --rm openclaw-cli dashboard --no-open
-  #   docker compose run --rm openclaw-cli models list --provider vllm
-  # Shares the gateway's network namespace (127.0.0.1 reaches the gateway).
-  openclaw-cli:
-    # Reuses the image built by openclaw-gateway (same tag) — no separate
-    # build section needed. `docker compose build` only builds services
-    # that declare `build:`, so this just references that result.
-    image: agentic-ml-openclaw:local
-    container_name: openclaw-cli
-    network_mode: "service:openclaw-gateway"
-    depends_on:
-      - openclaw-gateway
-    volumes:
-      - ${OPENCLAW_CONFIG_DIR:-./config}:/home/node/.openclaw:rw
-      - ${OPENCLAW_WORKSPACE_DIR:-./workspace}:/home/node/.openclaw/workspace:rw
-      - openclaw-secrets:/home/node/.config/openclaw
-    environment:
-      OPENCLAW_STATE_DIR: /home/node/.openclaw
-      OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
-      OPENCLAW_CONFIG_DIR: /home/node/.openclaw
-      OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
-      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
-      RIT_API_KEY: ${RIT_API_KEY:?RIT_API_KEY must be set in .env}
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - NET_RAW
-      - NET_ADMIN
-    profiles:
-      - cli
-    entrypoint: [ "node", "dist/index.js" ]
-
-volumes:
-  openclaw-secrets:

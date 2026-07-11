@@ -1,0 +1,71 @@
+# LiteLLM gateway config. Sits between agentic_ml's ModelClient and the
+# actual providers (RIT, optional local vLLM/Ollama). Gives you fallback
+# chains, per-model logging, and rate limiting independent of whatever
+# runtime calls it — this stays useful even if the runtime layer changes.
+model_list:
+  # --- RIT models actually validated to complete agentic tool-calling
+  #     turns reliably in our own benchmarking (see model comparison) ---
+  - model_name: rit-qwen3-coder-30b
+    litellm_params:
+      model: openai/qwen3-coder:30b
+      api_base: os.environ/RIT_BASE_URL
+      api_key: os.environ/RIT_API_KEY
+
+  - model_name: rit-gemma4-26b
+    litellm_params:
+      model: openai/gemma4:26b
+      api_base: os.environ/RIT_BASE_URL
+      api_key: os.environ/RIT_API_KEY
+
+  - model_name: rit-gemma4-latest
+    litellm_params:
+      model: openai/gemma4:latest
+      api_base: os.environ/RIT_BASE_URL
+      api_key: os.environ/RIT_API_KEY
+
+  - model_name: rit-qwen3-8b
+    litellm_params:
+      model: openai/qwen3:8b
+      api_base: os.environ/RIT_BASE_URL
+      api_key: os.environ/RIT_API_KEY
+
+  - model_name: rit-gpt-oss-120b
+    litellm_params:
+      model: openai/gpt-oss:120b
+      api_base: os.environ/RIT_BASE_URL
+      api_key: os.environ/RIT_API_KEY
+
+  # --- Known-bad for agentic workloads per our own benchmark: too slow
+  #     under RIT's shared load to finish a tool-calling turn before
+  #     RIT's own APISIX/openresty gateway times the request out (504).
+  #     Left commented out deliberately rather than omitted, so nobody
+  #     re-adds them without re-reading why. ---
+  # - model_name: rit-cogito-70b
+  #   litellm_params:
+  #     model: openai/cogito:70b
+  #     api_base: os.environ/RIT_BASE_URL
+  #     api_key: os.environ/RIT_API_KEY
+  # - model_name: rit-llama3-1-70b
+  #   litellm_params:
+  #     model: openai/llama3.1:70b
+  #     api_base: os.environ/RIT_BASE_URL
+  #     api_key: os.environ/RIT_API_KEY
+
+  # --- Optional local model server (vLLM/Ollama/SGLang), OpenAI-compatible ---
+  - model_name: local-qwen3-coder-30b
+    litellm_params:
+      model: openai/qwen3-coder:30b
+      api_base: os.environ/LOCAL_MODEL_BASE_URL
+      api_key: os.environ/LOCAL_MODEL_API_KEY
+
+router_settings:
+  # if the primary RIT model times out or errors, fall back rather than
+  # surfacing a bare error to the agent runtime
+  fallbacks:
+    - rit-qwen3-coder-30b: ["rit-gemma4-26b"]
+    - rit-gemma4-latest: ["rit-gemma4-26b"]
+  timeout: 90          # seconds, per request
+  num_retries: 1
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

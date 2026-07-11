@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DatasetSpec",
+  "type": "object",
+  "required": ["path", "target_column", "task"],
+  "properties": {
+    "path": {"type": "string"},
+    "target_column": {"type": "string"},
+    "task": {
+      "type": "string",
+      "enum": ["binary_classification", "multiclass_classification", "regression"]
+    },
+    "id_columns": {"type": "array", "items": {"type": "string"}},
+    "group_column": {"type": ["string", "null"]},
+    "time_column": {"type": ["string", "null"]},
+    "positive_label": {"type": ["string", "null"]}
+  }
+}
