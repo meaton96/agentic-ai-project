@@ -75,10 +75,42 @@ and tested:**
   (`tests/leaky_fixtures/obvious_feature_leak.csv`) that must always
   be caught by the leakage checks
 
-**Not yet built (Phases 2+):** Profiler/FeatureEngineering/Modeling/
-Verification/Analyst agents, priors/evidence reuse, orchestrator loop,
-parallelization. Per the original build plan: do not start these until
-Phase 1 (done) is solid, which it now is.
+**Phase 2 (Profiler agent) — fully built and tested:**
+- `harness/profiler.py` — deterministic column typing, missingness,
+  cardinality, likely id/group/datetime detection, target imbalance,
+  a rule-based recommended split strategy, and leakage risk flags. No
+  LLM call can change these facts.
+- `tools/profiler_tool.py` — binds a harness-loaded (not file-path)
+  dataframe into a single `get_dataset_profile` tool the agent can call
+- `scripts/run_profiler_agent.py` — the agent calls the tool once, then
+  narrates/recommends in JSON; the deterministic report is always saved
+  regardless of whether the LLM's narrative parses cleanly
+
+**Phase 3 (Recipe templates + Modeling agent) — fully built and tested:**
+- `src/agentic_ml/templates/` — six verified, static recipe templates
+  (`logistic_numeric`, `sklearn_mixed_pipeline`, `lightgbm_mixed`,
+  `xgboost_mixed`, `imbalanced_binary_boosted`,
+  `high_cardinality_target_encoding`), each exposing the same
+  `build_pipeline(config)` contract `harness/sandbox.py` expects.
+  `templates/registry.py` is the single source of truth for
+  template_id → source file + required/optional config keys.
+- `tools/template_tool.py` — a `list_templates` tool exposing the
+  registry's metadata (not the source code) to the agent
+- `scripts/run_modeling_agent.py` — the agent calls `get_dataset_profile`
+  and `list_templates`, then proposes exactly one `{candidate_id,
+  template_id, config, explanation}`. The harness never trusts this
+  proposal blindly: it re-validates every proposed column against the
+  profiler's facts (rejecting unknown/target/id/group/time columns),
+  static-checks + sandbox-builds the template source with the agent's
+  config, fits/scores on the harness-owned split, runs
+  `label_permutation_test` as a leakage gate, and only appends to the
+  leaderboard if that gate passes. The agent picks a recipe; it never
+  gets to grade its own homework.
+
+**Not yet built (Phase 4+):** Verification agent (the label-permutation
+gate above is currently the only automated check on agent candidates —
+no AST-level review agent, no candidate-vs-candidate audit yet),
+Orchestrator/Analyst loop, priors/evidence reuse, parallelization.
 
 ## Quickstart
 
@@ -104,7 +136,21 @@ python scripts/run_baseline_ladder.py \
     --time-column event_date \
     --strategy group_time
 
-# 5. Run the test suite
+# 5. Run the profiler agent (Phase 2 — one deterministic tool call + LLM narrative)
+python scripts/run_profiler_agent.py \
+    --data datasets/raw/your_dataset.csv \
+    --target your_target_column
+
+# 6. Run the modeling agent (Phase 3 — agent picks a template + fills config,
+#    harness validates/builds/scores/leakage-gates it before the leaderboard)
+python scripts/run_modeling_agent.py \
+    --data datasets/raw/your_dataset.csv \
+    --target your_target_column \
+    --group-column customer_id \
+    --time-column event_date \
+    --strategy group_time
+
+# 7. Run the test suite
 pytest tests/ -v
 ```
 
@@ -128,12 +174,18 @@ agentic-ml/
     model_client.py         # OpenAI-compatible client, stateless
     agent_runtime.py        # tool-calling loop, no session/compaction state
     harness/                 # the trust boundary — see Phase 1 above
-    tools/                    # (empty scaffold — Phase 2+ tool implementations go here)
+    tools/                    # profiler_tool.py, template_tool.py — thin
+                               # bindings that expose harness facts/registry
+                               # data to agents as tool calls
+    templates/                # Phase 3 recipe templates + registry.py
+      sources/                 # verified build_pipeline(config) .py files
 
   scripts/
     check_rit_connection.py
     check_gateway_connection.py
     run_baseline_ladder.py
+    run_profiler_agent.py
+    run_modeling_agent.py
 
   datasets/raw/              # put input CSV/Parquet here
   runs/                       # per-run trace.jsonl, split_manifest.json, etc.

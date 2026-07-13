@@ -256,5 +256,6 @@ agentic-ml-classification/config/identity/
 agentic-ml-classification/config/logs/
 agentic-ml-classification/config/tasks/*.sqlite*
 agentic-ml-classification/config/devices
+agentic-ml-classification/spec
 
-agentic-ml-classification.bak
+openclaw-ml-pipe
