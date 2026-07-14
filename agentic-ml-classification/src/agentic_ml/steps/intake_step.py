@@ -28,24 +28,24 @@ timestamps that must be excluded from modeling features.
 You have exactly one tool: get_raw_schema. Call it once — you cannot see \
 column names, dtypes, or values otherwise and must not invent them.
 
-This pipeline currently only supports binary classification: the target \
-column must have exactly two distinct non-null values.
+This pipeline supports classification, binary or multiclass: the target \
+column must have between 2 and 20 distinct non-null values.
 
 After calling the tool, respond with ONLY valid JSON (no prose, no markdown \
 fences) matching this schema:
 {
   "target_column": "<column name>",
-  "task": "binary_classification",
+  "task": "binary_classification or multiclass_classification",
   "id_columns": ["<column name>", "..."],
   "group_column": "<column name or null>",
   "time_column": "<column name or null>",
-  "positive_label": "<value or null — the class that means the positive/event outcome>",
+  "positive_label": "<value or null — for binary targets, the class that means the positive/event outcome; null for multiclass>",
   "reasoning": "<1-3 sentences: why this column is the target, and why any group/time/id columns were chosen>"
 }
 
 Hard rules:
 - target_column must be a real column name from get_raw_schema's output, \
-with exactly 2 unique values reported (or very close — you cannot compute \
+with somewhere between 2 and 20 unique values reported (you cannot compute \
 this exactly yourself, but avoid picking an obviously continuous or \
 high-cardinality column).
 - id_columns should include any column whose name/values look like an \

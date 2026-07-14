@@ -33,12 +33,11 @@ from typing import Callable, Optional
 
 import pandas as pd
 from sklearn.base import clone
-from sklearn.metrics import roc_auc_score
 
 from agentic_ml.agent_runtime import ToolCallingAgent
 from agentic_ml.harness.leakage import check_suspicious_feature_correlation, label_permutation_test
 from agentic_ml.harness.sandbox import run_candidate_build
-from agentic_ml.harness.metrics import compute_metrics
+from agentic_ml.harness.metrics import compute_metrics, roc_auc_any
 from agentic_ml.model_client import ModelClient
 from agentic_ml.templates.registry import get_template, validate_config
 from agentic_ml.tools.profiler_tool import make_profiler_tool
@@ -241,18 +240,17 @@ def run_modeling_step(
     pipeline.fit(X.iloc[train_idx], y.iloc[train_idx])
     y_pred = pipeline.predict(X.iloc[val_idx])
     proba = pipeline.predict_proba(X.iloc[val_idx])
-    y_proba = proba[:, 1] if proba.shape[1] == 2 else proba.max(axis=1)
 
     results = compute_metrics(
-        y.iloc[val_idx].values, y_pred, y_proba, metric_names, n_bootstrap=200, seed=seed,
+        y.iloc[val_idx].values, y_pred, proba, metric_names, n_bootstrap=200, seed=seed,
     )
     metrics_dict = {m: results[m].to_dict() for m in metric_names}
 
     def fit_and_score(X_tr, y_tr, X_va, y_va) -> float:
         candidate_pipeline = clone(pipeline)
         candidate_pipeline.fit(X_tr, y_tr)
-        p = candidate_pipeline.predict_proba(X_va)[:, 1]
-        return roc_auc_score(y_va, p)
+        p = candidate_pipeline.predict_proba(X_va)
+        return roc_auc_any(y_va, p)
 
     permutation_check = label_permutation_test(
         fit_and_score, X.iloc[train_idx], y.iloc[train_idx], X.iloc[val_idx], y.iloc[val_idx],

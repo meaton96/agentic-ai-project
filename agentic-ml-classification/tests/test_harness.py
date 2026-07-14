@@ -131,6 +131,58 @@ def test_metrics_ci_bounds_contain_point_estimate():
     assert r.ci_low <= r.value <= r.ci_high
 
 
+def _synthetic_multiclass(n=300, n_classes=3, seed=0):
+    rng = np.random.RandomState(seed)
+    y_true = rng.randint(0, n_classes, size=n)
+    # proba peaked on the true class plus noise, then row-normalized —
+    # a stand-in for a reasonably well-calibrated multiclass classifier.
+    logits = rng.normal(0, 0.5, size=(n, n_classes))
+    logits[np.arange(n), y_true] += 2.0
+    exp = np.exp(logits - logits.max(axis=1, keepdims=True))
+    y_proba = exp / exp.sum(axis=1, keepdims=True)
+    y_pred = y_proba.argmax(axis=1)
+    return y_true, y_pred, y_proba
+
+
+def test_compute_metrics_handles_multiclass_target():
+    y_true, y_pred, y_proba = _synthetic_multiclass()
+    results = compute_metrics(
+        y_true, y_pred, y_proba,
+        ["roc_auc", "pr_auc", "f1", "precision", "recall", "accuracy", "brier"],
+        n_bootstrap=50, seed=1,
+    )
+    for name, r in results.items():
+        assert 0.0 <= r.value <= 1.0, f"{name} out of [0, 1]: {r.value}"
+        assert r.ci_low <= r.value <= r.ci_high
+
+
+def test_compute_metrics_multiclass_beats_chance():
+    y_true, y_pred, y_proba = _synthetic_multiclass()
+    results = compute_metrics(y_true, y_pred, y_proba, ["roc_auc", "accuracy"], n_bootstrap=50, seed=1)
+    assert results["roc_auc"].value > 0.7
+    assert results["accuracy"].value > 0.5
+
+
+def test_roc_auc_any_matches_binary_roc_auc_score():
+    from sklearn.metrics import roc_auc_score
+    from agentic_ml.harness.metrics import roc_auc_any
+
+    rng = np.random.RandomState(2)
+    n = 200
+    y_true = rng.randint(0, 2, size=n)
+    y_proba_pos = np.clip(y_true + rng.normal(0, 0.3, size=n), 0, 1)
+    y_proba = np.column_stack([1 - y_proba_pos, y_proba_pos])
+    assert roc_auc_any(y_true, y_proba) == pytest.approx(roc_auc_score(y_true, y_proba_pos))
+
+
+def test_roc_auc_any_handles_multiclass():
+    from agentic_ml.harness.metrics import roc_auc_any
+
+    y_true, _, y_proba = _synthetic_multiclass()
+    value = roc_auc_any(y_true, y_proba)
+    assert 0.7 < value <= 1.0
+
+
 def test_profiler_does_not_flag_continuous_float_as_id():
     """Regression test: a continuous float column (e.g. Fare) with near-100%
     unique values must NOT be flagged as an ID column just because of high

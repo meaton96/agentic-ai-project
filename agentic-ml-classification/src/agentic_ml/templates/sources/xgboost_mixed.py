@@ -46,7 +46,9 @@ def build_pipeline(config: dict):
         max_depth=config.get("max_depth", 6),
         learning_rate=config.get("learning_rate", 0.1),
         random_state=seed,
-        eval_metric="logloss",
+        # No eval_metric override: XGBoost picks logloss for binary and
+        # mlogloss for multiclass based on the number of classes it sees
+        # in y at fit time. Hardcoding "logloss" here broke multiclass fits.
         verbosity=0,
     )
 

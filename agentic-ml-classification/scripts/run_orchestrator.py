@@ -435,9 +435,8 @@ def main():
     final_pipeline.fit(loaded.X.iloc[train_and_val_idx], loaded.y.iloc[train_and_val_idx])
     y_pred = final_pipeline.predict(loaded.X.iloc[manifest.test_idx])
     proba = final_pipeline.predict_proba(loaded.X.iloc[manifest.test_idx])
-    y_proba = proba[:, 1] if proba.shape[1] == 2 else proba.max(axis=1)
     test_results = compute_metrics(
-        loaded.y.iloc[manifest.test_idx].values, y_pred, y_proba, metric_names,
+        loaded.y.iloc[manifest.test_idx].values, y_pred, proba, metric_names,
         n_bootstrap=200, seed=args.seed,
     )
     test_metrics = {m: test_results[m].to_dict() for m in metric_names}

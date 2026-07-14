@@ -96,10 +96,10 @@ def build_baseline_pipelines(
     if _HAS_XGBOOST:
         pipelines["xgboost"] = Pipeline([
             ("pre", pre),
-            ("clf", XGBClassifier(
-                random_state=seed, eval_metric="logloss", use_label_encoder=False,
-                verbosity=0,
-            )),
+            # No eval_metric override: XGBoost picks logloss for binary and
+            # mlogloss for multiclass based on the number of classes it sees
+            # in y at fit time. use_label_encoder was removed upstream.
+            ("clf", XGBClassifier(random_state=seed, verbosity=0)),
         ])
     return pipelines
 
@@ -108,10 +108,11 @@ def fit_and_predict(
     pipeline: Pipeline, X_train: pd.DataFrame, y_train: pd.Series,
     X_eval: pd.DataFrame,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Returns (y_pred, y_proba_positive_class)."""
+    """Returns (y_pred, y_proba) — y_proba is the full predict_proba()
+    matrix (n_samples, n_classes), binary or multiclass; harness/metrics.py
+    decides which metric formulas to use from how many classes are
+    actually present, so this function doesn't need to know or guess."""
     pipeline.fit(X_train, y_train)
     y_pred = pipeline.predict(X_eval)
-    proba = pipeline.predict_proba(X_eval)
-    # assume binary classification, positive class is the second column
-    y_proba = proba[:, 1] if proba.shape[1] == 2 else proba.max(axis=1)
+    y_proba = pipeline.predict_proba(X_eval)
     return y_pred, y_proba

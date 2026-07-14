@@ -32,6 +32,20 @@ def mixed_df():
     return df
 
 
+@pytest.fixture
+def multiclass_df():
+    rng = np.random.RandomState(0)
+    n = 300
+    df = pd.DataFrame({
+        "x1": rng.normal(size=n),
+        "x2": rng.normal(size=n),
+        "cat_low": rng.choice(["a", "b", "c"], size=n),
+        "cat_high": rng.choice([f"v{i}" for i in range(50)], size=n),
+        "target": rng.randint(0, 3, size=n),
+    })
+    return df
+
+
 BASE_CONFIG = {
     "numeric_cols": ["x1", "x2"],
     "categorical_cols": ["cat_low", "cat_high"],
@@ -50,6 +64,7 @@ def _build_and_fit(template_id, config, df):
     proba = pipeline.predict_proba(X)
     assert len(preds) == len(df)
     assert proba.shape[0] == len(df)
+    assert proba.shape[1] == y.nunique()
     return pipeline
 
 
@@ -109,6 +124,37 @@ def test_imbalanced_binary_boosted_builds_and_fits(mixed_df):
 def test_high_cardinality_target_encoding_builds_and_fits(mixed_df):
     config = dict(BASE_CONFIG, classifier="hist_gradient_boosting")
     _build_and_fit("high_cardinality_target_encoding", config, mixed_df)
+
+
+def test_logistic_numeric_builds_and_fits_multiclass(multiclass_df):
+    _build_and_fit("logistic_numeric", {"numeric_cols": ["x1", "x2"], "seed": 42}, multiclass_df)
+
+
+def test_sklearn_mixed_pipeline_multiclass(multiclass_df):
+    config = dict(BASE_CONFIG, classifier="random_forest", n_estimators=20)
+    _build_and_fit("sklearn_mixed_pipeline", config, multiclass_df)
+
+
+def test_lightgbm_mixed_builds_and_fits_multiclass(multiclass_df):
+    pytest.importorskip("lightgbm")
+    config = dict(BASE_CONFIG, n_estimators=20)
+    _build_and_fit("lightgbm_mixed", config, multiclass_df)
+
+
+def test_xgboost_mixed_builds_and_fits_multiclass(multiclass_df):
+    pytest.importorskip("xgboost")
+    config = dict(BASE_CONFIG, n_estimators=20)
+    _build_and_fit("xgboost_mixed", config, multiclass_df)
+
+
+def test_imbalanced_binary_boosted_builds_and_fits_multiclass(multiclass_df):
+    config = dict(BASE_CONFIG, max_iter=20)
+    _build_and_fit("imbalanced_binary_boosted", config, multiclass_df)
+
+
+def test_high_cardinality_target_encoding_builds_and_fits_multiclass(multiclass_df):
+    config = dict(BASE_CONFIG, classifier="hist_gradient_boosting")
+    _build_and_fit("high_cardinality_target_encoding", config, multiclass_df)
 
 
 def test_high_cardinality_target_encoding_not_leaky(mixed_df):

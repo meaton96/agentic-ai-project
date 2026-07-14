@@ -18,6 +18,11 @@ import pandas as pd
 
 from .profiler import DATETIME_NAME_HINTS, GROUP_NAME_HINTS, ID_NAME_HINTS, _looks_like_datetime, _name_hints
 
+# Upper bound on distinct target values accepted as classification labels.
+# Above this, a column is far more likely a continuous/ID field mistakenly
+# pointed at as the target than a genuine set of class labels.
+MAX_CLASSES = 20
+
 
 @dataclass
 class RawColumnSummary:
@@ -58,11 +63,11 @@ def raw_schema_summary(df: pd.DataFrame) -> dict:
 
 
 def validate_dataset_spec_proposal(df: pd.DataFrame, proposal: dict) -> list[str]:
-    """Structural + binary-classification-eligibility validation of an
-    intake agent's proposed DatasetSpec fields. Does not trust the
-    agent's 'task' claim — always requires exactly 2 non-null unique
-    target values, since this pipeline only supports binary
-    classification (see priors/general — MVP scope)."""
+    """Structural + classification-eligibility validation of an intake
+    agent's proposed DatasetSpec fields. Does not trust the agent's
+    'task' claim — always requires the target to have between 2 and
+    MAX_CLASSES non-null unique values (binary or multiclass; see
+    priors/general — MVP scope)."""
     if not isinstance(proposal, dict):
         return ["top-level response is not a JSON object"]
 
@@ -73,10 +78,10 @@ def validate_dataset_spec_proposal(df: pd.DataFrame, proposal: dict) -> list[str
         return errors  # nothing else is checkable without a valid target
 
     n_unique_target = int(df[target].dropna().nunique())
-    if n_unique_target != 2:
+    if n_unique_target < 2 or n_unique_target > MAX_CLASSES:
         errors.append(
             f"target_column '{target}' has {n_unique_target} unique non-null values; "
-            "this pipeline only supports binary classification (exactly 2)"
+            f"this pipeline requires between 2 and {MAX_CLASSES} distinct class labels"
         )
 
     for field_name in ("group_column", "time_column"):

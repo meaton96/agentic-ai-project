@@ -71,9 +71,15 @@ def test_validate_proposal_rejects_unknown_target(sample_df):
     assert any("not found" in e for e in errors)
 
 
-def test_validate_proposal_rejects_non_binary_target(sample_df):
+def test_validate_proposal_rejects_high_cardinality_target(sample_df):
     errors = validate_dataset_spec_proposal(sample_df, {"target_column": "age"})
-    assert any("binary classification" in e for e in errors)
+    assert any("distinct class labels" in e for e in errors)
+
+
+def test_validate_proposal_accepts_multiclass_target(sample_df):
+    df = sample_df.assign(species=np.tile(["a", "b", "c"], len(sample_df) // 3 + 1)[:len(sample_df)])
+    errors = validate_dataset_spec_proposal(df, {"target_column": "species"})
+    assert errors == []
 
 
 def test_validate_proposal_rejects_group_column_equal_to_target(sample_df):

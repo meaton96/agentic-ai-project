@@ -1,9 +1,10 @@
 # agentic-ml
 
 Agentic ML classification pipeline. Constrained MVP scope: CSV/Parquet
-input, binary classification, tabular data, sklearn/LightGBM/XGBoost,
-single-machine CPU, deterministic harness-owned evaluation. Agents
-never get direct access to test labels or final scoring logic.
+input, binary or multiclass classification (2-20 distinct class labels),
+tabular data, sklearn/LightGBM/XGBoost, single-machine CPU,
+deterministic harness-owned evaluation. Agents never get direct access
+to test labels or final scoring logic.
 
 For the *what and why* behind each agent and design decision (written
 for presenting the project, not for modifying it), see
@@ -79,7 +80,12 @@ and tested:**
   RandomForest, HistGradientBoosting, LightGBM, XGBoost with shared
   preprocessing (median/mode imputation, scaling, one-hot encoding)
 - `harness/metrics.py` — roc_auc, pr_auc, f1, precision, recall,
-  accuracy, brier, each with bootstrap confidence intervals
+  accuracy, brier, each with bootstrap confidence intervals. Binary and
+  multiclass share one code path: every caller passes the full
+  `predict_proba()` matrix (never a pre-sliced positive-class column),
+  and `compute_metrics()` picks binary formulas or macro-averaged
+  one-vs-rest multiclass formulas based on how many classes are
+  actually in `y_true` — see "Multiclass support" below.
 - `harness/sandbox.py` — AST static checks (forbidden imports/calls)
   + subprocess isolation with wall-clock timeout and POSIX
   CPU/memory rlimits for untrusted candidate code; candidates only
@@ -170,9 +176,9 @@ Phase 5 (see the note at the end of the Phase 5 entry for why):**
   anything target-dependent, since intake's whole job is to propose
   the target); `validate_dataset_spec_proposal()` re-validates the
   agent's proposed target/id/group/time columns against those facts
-  and enforces the binary-classification-only MVP constraint (target
-  must have exactly 2 non-null unique values) regardless of what the
-  agent claims.
+  and enforces the classification-eligibility MVP constraint (target
+  must have between 2 and `MAX_CLASSES` (20) non-null unique values —
+  binary or multiclass) regardless of what the agent claims.
 - `tools/intake_tool.py` — `get_raw_schema` tool, same pattern as the
   other two tools.
 - `steps/{intake_step,profiler_step,modeling_step}.py` — the agent-loop
@@ -276,10 +282,58 @@ it's listed here at the end of the build order):**
   (non-no-op) proposal's derived column actually reaches the modeling
   agent's candidate config, not just that the step runs.
 
+**Multiclass support (extensibility addition, prompted by a real crash
+on the Iris dataset — the first non-Titanic dataset actually tried):**
+- Original MVP scope hard-required exactly 2 unique target values
+  everywhere. Running the orchestrator against Iris (3 species) crashed
+  immediately at intake validation. Generalized to binary-or-multiclass
+  (2 to `MAX_CLASSES=20` distinct labels — above that, a column is far
+  more likely a continuous/ID field than genuine class labels):
+  - `harness/metrics.py` — every metric function now has a
+    macro-averaged one-vs-rest multiclass variant alongside its binary
+    form, dispatched on `len(np.unique(y_true))`. Every caller
+    (`modeling_step.py`, `run_orchestrator.py`'s final test-set eval,
+    the notebook) was updated to pass the *full* `predict_proba()`
+    matrix through instead of the old `proba[:, 1] if proba.shape[1]
+    == 2 else proba.max(axis=1)` fallback, which silently produced a
+    meaningless number for 3+ classes instead of erroring.
+  - `harness/intake.py` — `validate_dataset_spec_proposal()` now checks
+    `2 <= n_unique_target <= MAX_CLASSES` instead of `== 2`;
+    `steps/intake_step.py`'s prompt updated to match.
+  - `templates/sources/xgboost_mixed.py` and `harness/baseline_ladder.py`
+    both hardcoded `eval_metric="logloss"`, which is invalid for a
+    multiclass fit and would crash XGBoost. Removed entirely (not
+    replaced with a conditional) — XGBoost infers the correct objective
+    itself from the number of classes it sees in `y` at fit time.
+  - Notebook's ROC-curve cell is binary-only by construction
+    (`sklearn.metrics.roc_curve` doesn't support multiclass); it now
+    checks the test set's class count and shows an informational note
+    instead of a curve for 3+ classes, while the confusion-matrix panel
+    next to it is unchanged (already generic over class count).
+  - A second, unrelated real bug surfaced only once Iris cleared
+    intake: `harness/profiler.py`'s `_name_hints()` did a raw substring
+    check, so `"id" in "sepalwidthcm"` matched (the "id" inside
+    "**Wid**th") and flagged `SepalWidthCm`/`PetalWidthCm` as
+    likely-ID/group columns — excluding two of Iris's four real
+    features from every candidate and failing the run. Fixed by
+    tokenizing the column name (snake_case/camelCase-aware) and
+    matching whole tokens instead of substrings; also incidentally
+    fixes the same class of false positive for e.g. `GROUP_NAME_HINTS`
+    `"session"` matching a column literally named `obsession_score`.
+  - `tests/test_harness.py`, `tests/test_intake.py`,
+    `tests/test_templates.py` — multiclass unit tests (metric
+    correctness against synthetic 3-class data, intake range-check
+    acceptance/rejection, every template builds and fits on a 3-class
+    target). Verified end to end with a real dry run of
+    `run_orchestrator.py` against `datasets/raw/iris.csv` (stubbed
+    `ModelClient`, real intake → feature-engineering → profiler →
+    modeling → verification → test-eval loop) — the exact scenario
+    originally reported as a crash now completes successfully.
+
 **Not yet built:** priors/evidence reuse (Phase 6), parallelization
 (Phase 7). Both are intentionally on hold until the pipeline has been
-proven against a second real dataset beyond Titanic — reuse-across-runs
-evidence isn't worth building on a sample size of one dataset.
+proven against more than a couple of real datasets — reuse-across-runs
+evidence isn't worth building on a sample size of one or two.
 
 ## Quickstart
 

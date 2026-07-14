@@ -15,15 +15,17 @@ detecting data leakage.
 
 The input is a CSV or Parquet file and, optionally, a one-sentence
 natural-language goal ("predict whether a customer will churn"). The
-output is a trained binary classifier, an honest held-out test-set
-score, and a plain-language summary — produced with no human in the
-loop deciding column names, hyperparameters, or which model to trust.
+output is a trained classifier (binary or multiclass), an honest
+held-out test-set score, and a plain-language summary — produced with
+no human in the loop deciding column names, hyperparameters, or which
+model to trust.
 
 The scope is deliberately narrow: single-machine, CPU, tabular data,
-binary classification only. The point of the project isn't "build the
-biggest AutoML system" — it's "build the smallest system where an LLM
-agent can safely make modeling decisions without being able to fool
-itself (or us) about whether those decisions were any good."
+classification only (binary or multiclass, up to 20 distinct class
+labels). The point of the project isn't "build the biggest AutoML
+system" — it's "build the smallest system where an LLM agent can
+safely make modeling decisions without being able to fool itself (or
+us) about whether those decisions were any good."
 
 ## 2. The central design principle: agents propose, the harness decides
 
@@ -172,10 +174,31 @@ manually specify the target column before the pipeline can start. With
 it, the system can run from just a dataset and a sentence — or from
 just a dataset, guessing the most plausible target from the schema
 alone. The harness re-validates the proposal regardless: the target
-must have exactly two non-null values (this MVP is binary
-classification only, and the harness enforces that itself — it does
-not trust the agent's self-reported `task` field), and any group/time/id
-column must actually exist in the data.
+must have between 2 and `MAX_CLASSES` (20) non-null unique values —
+binary or multiclass — and the harness enforces that itself; it does
+not trust the agent's self-reported `task` field. Above `MAX_CLASSES`
+a column is judged more likely a continuous/ID field mistaken for a
+target than genuine class labels, and is rejected.
+
+**A real crash, and what it generalized into:** the original MVP
+required *exactly* 2 unique target values. The first non-Titanic
+dataset actually tried — Iris, with 3 species — crashed immediately at
+this check. Generalizing meant more than loosening one comparison:
+`harness/metrics.py`'s roc_auc/pr_auc/f1/precision/recall/brier all
+needed macro-averaged one-vs-rest variants, every caller had to stop
+slicing `predict_proba()` down to a single positive-class column
+(`proba[:, 1] if proba.shape[1] == 2 else proba.max(axis=1)` was
+silently producing a meaningless number for 3+ classes, not erroring —
+worse than a crash), and `xgboost_mixed`'s hardcoded
+`eval_metric="logloss"` had to go entirely so XGBoost could infer the
+right objective from the class count itself. Fixing this surfaced a
+second, unrelated bug: `harness/profiler.py`'s name-hint matcher used
+raw substring containment, so `"id" in "sepalwidthcm"` matched (the
+"id" inside "Wid**th**") and excluded two of Iris's four real features
+as false-positive ID columns — fixed by tokenizing column names
+instead of substring-matching them. Both fixes were verified with a
+real end-to-end dry run of `run_orchestrator.py` against
+`datasets/raw/iris.csv`, not just unit tests — see §10.
 
 ### 5.2 Feature Engineering Agent
 
@@ -539,6 +562,22 @@ through to a modeling candidate's config and confirms it's actually
 there, not just that the feature step returned successfully in
 isolation.
 
+The multiclass generalization (§5.1) was verified the same way: unit
+tests assert every metric stays in `[0, 1]` and beats chance on
+synthetic 3-class data, every recipe template builds and fits against
+a 3-class target (not just binary), and intake's range check accepts a
+genuine 3-class column while still rejecting a high-cardinality one.
+But the test that actually mattered was a real dry run of
+`run_orchestrator.py` against `datasets/raw/iris.csv` with a stubbed
+client — the exact reported crash scenario, reproduced and confirmed
+fixed end to end (intake → feature engineering → profiler → modeling →
+verification → locked test-set eval), which is also what caught the
+unrelated profiler name-hint substring bug described in §5.1: unit
+tests alone would not have exercised that column-exclusion path,
+because none of the existing synthetic fixtures happened to have a
+feature column whose name contained "id" as a false-positive
+substring.
+
 ## 11. Current status
 
 | Phase | Status |
@@ -563,10 +602,11 @@ modeling step until Phase 4's work added the second one.
 Two more additions sit outside this numbering entirely: the transcript
 logging described in §10, and the Feature Engineering agent (§5.2),
 which runs between intake and the profiler in actual pipeline order.
-Phases 6 and 7 are both deliberately on hold until the pipeline has
-been proven against a second real dataset beyond Titanic — there's
-limited value in building cross-run evidence reuse (Phase 6) from a
-sample size of one dataset.
+Also outside the numbering: the multiclass generalization (§5.1),
+prompted by a real crash the first time a second dataset (Iris) was
+actually tried. Phases 6 and 7 are still deliberately on hold — proven
+against two real datasets now instead of one, but still not enough of
+a sample to justify building cross-run evidence reuse (Phase 6).
 
 ## 12. Key takeaways
 
@@ -580,11 +620,12 @@ sample size of one dataset.
   agent — is itself bound by the same trust boundary: it can only make
   an outcome more conservative, never less, and a malformed response
   from it defaults to caution rather than silent approval.
-- The system is honest about its own limits: binary classification
-  only, no test-set peeking, and leakage gates that will reject a
-  candidate rather than let a suspicious result through — even at the
-  cost of throwing away a legitimate one occasionally (a known,
-  documented tradeoff of the label-permutation gate's parameters).
+- The system is honest about its own limits: classification only
+  (binary or multiclass, up to 20 classes), no test-set peeking, and
+  leakage gates that will reject a candidate rather than let a
+  suspicious result through — even at the cost of throwing away a
+  legitimate one occasionally (a known, documented tradeoff of the
+  label-permutation gate's parameters).
 - Reproducibility isn't an afterthought: dataset hashing, seeded
   splits, and stubbed-client integration tests mean the entire loop —
   agentic parts included — is testable without a live model, and at
