@@ -6,9 +6,24 @@ sandbox/scoring logic. The harness never trusts the agent's proposal
 blindly: every proposed column is re-validated against the profiler's
 facts, the template source is static-checked + sandbox-built with the
 agent's config, the resulting pipeline is fit/scored on the caller-
-supplied train/val split, and a label-permutation leakage gate must
-pass before ok=True — that gate, not just "no errors", is what callers
-should treat as "safe to use".
+supplied train/val split, and TWO independent leakage gates must both
+pass before ok=True — that, not just "no errors", is what callers
+should treat as "safe to use":
+
+  1. label_permutation_test — catches pipeline-level leakage (e.g. a
+     preprocessing step fit on data outside its proper fold).
+  2. check_suspicious_feature_correlation, re-run scoped to exactly the
+     columns THIS candidate selected — catches raw feature-level
+     leakage (a near-copy of the target) among the agent's actual
+     choices, which is a stronger check than the profiler's dataset-
+     wide pass since the profiler doesn't know which columns any given
+     candidate will pick. See priors/general/leakage_rules.md Rule 4:
+     these two checks are complementary, not redundant, and both must
+     run on every candidate.
+
+A candidate that passes both gates still isn't automatically promoted
+— see steps/verification_step.py for the second-opinion LLM audit that
+runs on gate-passing candidates before promotion.
 """
 from __future__ import annotations
 
@@ -21,7 +36,7 @@ from sklearn.base import clone
 from sklearn.metrics import roc_auc_score
 
 from agentic_ml.agent_runtime import ToolCallingAgent
-from agentic_ml.harness.leakage import label_permutation_test
+from agentic_ml.harness.leakage import check_suspicious_feature_correlation, label_permutation_test
 from agentic_ml.harness.sandbox import run_candidate_build
 from agentic_ml.harness.metrics import compute_metrics
 from agentic_ml.model_client import ModelClient
@@ -125,6 +140,7 @@ class ModelingStepResult:
     pipeline: Optional[object]  # unfitted-then-fit-on-train pipeline, only present if ok
     metrics: Optional[dict]
     label_permutation_check: Optional[dict]
+    feature_correlation_check: Optional[dict]
     errors: list[str] = field(default_factory=list)
     stopped_reason: str = ""
     turns_used: int = 0
@@ -174,7 +190,8 @@ def run_modeling_step(
             ok=False,
             candidate_id=extra.get("candidate_id"), template_id=extra.get("template_id"),
             config=extra.get("config"), explanation=extra.get("explanation"),
-            pipeline=None, metrics=None, label_permutation_check=None, errors=errors,
+            pipeline=None, metrics=None, label_permutation_check=None,
+            feature_correlation_check=None, errors=errors,
             stopped_reason=result.stopped_reason, turns_used=result.turns_used,
         )
 
@@ -240,11 +257,24 @@ def run_modeling_step(
         metric_name="roc_auc", seed=seed,
     )
 
+    selected_cols = [c for c in config.get("numeric_cols", []) + config.get("categorical_cols", []) if c in X.columns]
+    correlation_check = check_suspicious_feature_correlation(
+        X[selected_cols].iloc[train_idx], y.iloc[train_idx],
+    )
+
+    passed_both_gates = permutation_check.passed and correlation_check.passed
+    gate_errors = []
+    if not permutation_check.passed:
+        gate_errors.append("failed label_permutation_test leakage gate")
+    if not correlation_check.passed:
+        gate_errors.append("failed feature-correlation leakage gate")
+
     return ModelingStepResult(
-        ok=permutation_check.passed,
+        ok=passed_both_gates,
         candidate_id=candidate_id, template_id=template_id, config=config, explanation=explanation,
         pipeline=pipeline, metrics=metrics_dict,
         label_permutation_check=permutation_check.to_dict(),
-        errors=[] if permutation_check.passed else ["failed label_permutation_test leakage gate"],
+        feature_correlation_check=correlation_check.to_dict(),
+        errors=gate_errors,
         stopped_reason=result.stopped_reason, turns_used=result.turns_used,
     )

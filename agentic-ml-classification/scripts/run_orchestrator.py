@@ -4,17 +4,16 @@ Phase 5: the Orchestrator. This is the first entry point that runs the
 full "prompt (or just a dataset) -> agent pipeline -> finished
 classification" loop: intake (skippable via --target) -> profiler
 (drives the split strategy) -> up to --max-candidates modeling-agent
-proposals -> select the best candidate that passes the leakage gate ->
-refit it on train+val -> one locked test-set evaluation -> a short
+proposals, each independently gated by two deterministic leakage
+checks -> select-and-verify (best-first, VerificationAgent reviews
+each and can only veto, never approve/unblock one that failed a gate;
+rejected candidates fall back to the next-best) -> refit the accepted
+candidate on train+val -> one locked test-set evaluation -> a short
 LLM-narrated plain-text summary.
 
 scripts/run_profiler_agent.py and scripts/run_modeling_agent.py remain
 useful for driving a single phase in isolation; this script drives the
 same underlying step functions (agentic_ml.steps.*) end to end.
-
-Scope note: there is no dedicated Phase 4 verification/audit agent yet
-— the sandbox's static checks and the label-permutation leakage gate
-are the only automated gates on agent-proposed candidates so far.
 
 Usage:
     set -a; source .env; set +a
@@ -48,10 +47,12 @@ from agentic_ml.harness.leaderboard import append_leaderboard_entry
 from agentic_ml.harness.leakage import run_all_split_leakage_checks
 from agentic_ml.harness.metrics import compute_metrics
 from agentic_ml.harness.splits import make_split
+from agentic_ml.harness.verification import build_review_bundle
 from agentic_ml.model_client import ModelClient
 from agentic_ml.steps.intake_step import run_intake_step
 from agentic_ml.steps.modeling_step import run_modeling_step
 from agentic_ml.steps.profiler_step import run_profiler_step
+from agentic_ml.steps.verification_step import run_verification_step
 from agentic_ml.templates.registry import get_template
 
 
@@ -73,6 +74,9 @@ def main():
     parser.add_argument("--metrics", default="roc_auc,pr_auc,f1,accuracy")
     parser.add_argument("--max-candidates", type=int, default=2)
     parser.add_argument("--model", default=None)
+    parser.add_argument("--verification-model", default=None, help="model id or gateway "
+                         "model_name for the VerificationAgent; defaults to a reasoning-"
+                         "oriented model distinct from the modeling agent's default")
     parser.add_argument("--use-gateway", action="store_true")
     parser.add_argument("--run-id", default=None)
     args = parser.parse_args()
@@ -201,7 +205,9 @@ def main():
         write_report()
         sys.exit(1)
 
-    # --- 4. Modeling: try up to max_candidates, pick the best that passes the leakage gate ---
+    # --- 4. Modeling: try up to max_candidates, each independently gated by
+    # the harness's two deterministic leakage checks (label-permutation +
+    # feature-correlation, scoped to the candidate's own selected columns) ---
     metric_names = args.metrics.split(",")
     primary_metric = metric_names[0]
     candidates_report = []
@@ -224,8 +230,11 @@ def main():
         candidate_summary = {
             "candidate_id": step_result.candidate_id, "template_id": step_result.template_id,
             "config": step_result.config, "explanation": step_result.explanation,
-            "metrics": step_result.metrics, "label_permutation_check": step_result.label_permutation_check,
+            "metrics": step_result.metrics,
+            "label_permutation_check": step_result.label_permutation_check,
+            "feature_correlation_check": step_result.feature_correlation_check,
             "errors": step_result.errors, "passed_gate": step_result.ok,
+            "verification": None,  # filled in during step 4.5, if this candidate gets reviewed
         }
         candidates_report.append(candidate_summary)
 
@@ -243,35 +252,89 @@ def main():
             (candidate_dir / "evaluation.json").write_text(json.dumps(candidate_summary, indent=2, default=str))
 
         if not step_result.ok:
-            print(f"  candidate failed/rejected: {step_result.errors}")
+            print(f"  candidate failed harness gates: {step_result.errors}")
             continue
 
         print(f"  {step_result.candidate_id} ({step_result.template_id}): "
-              f"{primary_metric}={step_result.metrics[primary_metric]['value']:.4f}  PASS")
-
-        leaderboard_path = Path("artifacts/reports/leaderboard.jsonl")
-        append_leaderboard_entry(leaderboard_path, {
-            "run_id": run_id, "candidate": step_result.candidate_id, "template_id": step_result.template_id,
-            "source": "orchestrator", "model": default_model, "split": "validation", "strategy": strategy,
-            "data_hash": loaded.data_hash, "seed": args.seed, "metrics": step_result.metrics,
-        })
+              f"{primary_metric}={step_result.metrics[primary_metric]['value']:.4f}  gates PASSED")
         passing_candidates.append(step_result)
 
     report["candidates"] = candidates_report
 
     if not passing_candidates:
-        print("\nABORTING: no candidate passed the label-permutation leakage gate. "
+        print("\nABORTING: no candidate passed the harness's deterministic leakage gates. "
               "Test set was never touched.")
         report["status"] = "no_candidate_passed"
         write_report()
         sys.exit(1)
 
-    best = max(passing_candidates, key=lambda r: r.metrics[primary_metric]["value"])
+    # --- 4.5. Select + verify, best-first. The VerificationAgent reviews each
+    # gate-passing candidate in validation-metric order and can only veto
+    # (flag/reject) — never approve one that already failed a gate, since it
+    # never sees those. A rejection falls back to the next-best candidate. ---
+    _, _, verification_model = resolve_model_endpoint(
+        args.use_gateway, args.verification_model, "gemma4:latest", "rit-gemma4-latest",
+    )
+    ranked = sorted(passing_candidates, key=lambda r: r.metrics[primary_metric]["value"], reverse=True)
+    leaderboard_path = Path("artifacts/reports/leaderboard.jsonl")
+
+    best = None
+    selected_verification = None
+    for candidate in ranked:
+        print(f"\nVerificationAgent reviewing {candidate.candidate_id} "
+              f"(model={verification_model})...")
+        template = get_template(candidate.template_id)
+        bundle = build_review_bundle(
+            candidate_id=candidate.candidate_id, template_id=candidate.template_id,
+            template_description=template.description, template_when_to_use=template.when_to_use,
+            config=candidate.config, explanation=candidate.explanation,
+            metrics=candidate.metrics, label_permutation_check=candidate.label_permutation_check,
+            feature_correlation_check=candidate.feature_correlation_check,
+            profiler_report=profiler_result.deterministic_report,
+        )
+        v_result = run_verification_step(
+            bundle, client, model=verification_model, trace_fn=lambda record: trace(**record),
+        )
+        print(f"  verdict: {v_result.verdict}"
+              + (f"  concerns: {v_result.concerns}" if v_result.concerns else ""))
+
+        for entry in candidates_report:
+            if entry["candidate_id"] == candidate.candidate_id:
+                entry["verification"] = {
+                    "verdict": v_result.verdict, "concerns": v_result.concerns,
+                    "reasoning": v_result.reasoning,
+                }
+
+        append_leaderboard_entry(leaderboard_path, {
+            "run_id": run_id, "candidate": candidate.candidate_id, "template_id": candidate.template_id,
+            "source": "orchestrator", "model": default_model, "split": "validation", "strategy": strategy,
+            "data_hash": loaded.data_hash, "seed": args.seed, "metrics": candidate.metrics,
+            "verification_verdict": v_result.verdict,
+        })
+
+        if v_result.verdict == "rejected":
+            print("  REJECTED by VerificationAgent — trying the next-best candidate.")
+            continue
+
+        best = candidate
+        selected_verification = v_result
+        break
+
+    if best is None:
+        print("\nABORTING: every gate-passing candidate was rejected by the VerificationAgent. "
+              "Test set was never touched.")
+        report["status"] = "no_candidate_passed_verification"
+        write_report()
+        sys.exit(1)
+
     print(f"\nSelected candidate: {best.candidate_id} ({best.template_id}) "
-          f"— {primary_metric}={best.metrics[primary_metric]['value']:.4f} on validation")
+          f"— {primary_metric}={best.metrics[primary_metric]['value']:.4f} on validation "
+          f"(verification: {selected_verification.verdict})")
     report["selected_candidate"] = {
         "candidate_id": best.candidate_id, "template_id": best.template_id,
         "validation_metrics": best.metrics,
+        "verification_verdict": selected_verification.verdict,
+        "verification_concerns": selected_verification.concerns,
     }
 
     # --- 5. Final, one-time test-set evaluation: refit the selected candidate
@@ -310,6 +373,11 @@ def main():
             "n_candidates_passed_leakage_gate": len(passing_candidates),
             "selected_candidate": report["selected_candidate"],
             "final_test_metrics": test_metrics,
+            "note_for_summary": (
+                "If verification_concerns is non-empty, mention it briefly as a "
+                "caveat for human review." if report["selected_candidate"]["verification_concerns"]
+                else None
+            ),
         }, indent=2)},
     ]
     summary_response = client.call(summary_messages, model=default_model, max_tokens=400)

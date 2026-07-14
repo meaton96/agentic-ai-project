@@ -9,10 +9,17 @@ profiler's facts, static-check + sandbox-build the template source,
 fit/score on the harness-owned split, run a label-permutation leakage
 gate, and only then append to the leaderboard.
 
+A candidate that passes the harness's automated gates still goes
+through one more check: the VerificationAgent, a second-opinion LLM
+audit that can flag or reject (but never approve/unblock) a candidate
+— see agentic_ml.steps.verification_step for what it looks for and why
+it can only make the outcome more conservative, never less.
+
 This script is a thin CLI wrapper around
-agentic_ml.steps.modeling_step.run_modeling_step — the same function
-scripts/run_orchestrator.py calls (possibly multiple times, to try
-several candidates) as part of the full loop.
+agentic_ml.steps.modeling_step.run_modeling_step and
+agentic_ml.steps.verification_step.run_verification_step — the same
+functions scripts/run_orchestrator.py calls (possibly multiple times,
+to try several candidates) as part of the full loop.
 
 Usage:
     set -a; source .env; set +a
@@ -34,9 +41,12 @@ from agentic_ml.cli_common import make_run_dir, make_tracer, resolve_model_endpo
 from agentic_ml.harness.dataset import DatasetSpec, load_dataset, write_dataset_spec
 from agentic_ml.harness.leaderboard import append_leaderboard_entry
 from agentic_ml.harness.leakage import run_all_split_leakage_checks
+from agentic_ml.harness.profiler import profile_dataset
 from agentic_ml.harness.splits import make_split
+from agentic_ml.harness.verification import build_review_bundle
 from agentic_ml.model_client import ModelClient
 from agentic_ml.steps.modeling_step import run_modeling_step
+from agentic_ml.steps.verification_step import run_verification_step
 from agentic_ml.templates.registry import get_template
 
 
@@ -56,6 +66,9 @@ def main():
     parser.add_argument("--use-gateway", action="store_true")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--max-turns", type=int, default=6)
+    parser.add_argument("--verification-model", default=None, help="model id or gateway "
+                         "model_name for the VerificationAgent; defaults to a reasoning-"
+                         "oriented model distinct from the modeling agent's default")
     args = parser.parse_args()
 
     run_id, run_dir = make_run_dir(args.run_id)
@@ -135,12 +148,16 @@ def main():
         if step_result.label_permutation_check:
             lp = step_result.label_permutation_check
             print(f"\n  leakage check [{'PASS' if lp['passed'] else 'FAIL'}] {lp['check']}: {lp['detail']}")
+        if step_result.feature_correlation_check:
+            fc = step_result.feature_correlation_check
+            print(f"  leakage check [{'PASS' if fc['passed'] else 'FAIL'}] {fc['check']}: {fc['detail']}")
 
         evaluation = {
             "candidate_id": step_result.candidate_id,
             "template_id": step_result.template_id,
             "metrics": step_result.metrics,
             "label_permutation_check": step_result.label_permutation_check,
+            "feature_correlation_check": step_result.feature_correlation_check,
             "errors": step_result.errors,
         }
         (candidate_dir / "evaluation.json").write_text(json.dumps(evaluation, indent=2))
@@ -150,6 +167,47 @@ def main():
         for e in step_result.errors:
             print(f"  - {e}")
         sys.exit(1)
+
+    # --- VerificationAgent: second-opinion audit on a gate-passing candidate.
+    # It can only flag or reject — never approve/unblock — so this can only
+    # make the outcome more conservative than the deterministic gates already did.
+    _, _, verification_model = resolve_model_endpoint(
+        args.use_gateway, args.verification_model, "gemma4:latest", "rit-gemma4-latest",
+    )
+    print(f"\nRunning VerificationAgent (model={verification_model})...")
+    template = get_template(step_result.template_id)
+    profile_report = profile_dataset(loaded.df, target_column=args.target).to_dict()
+    bundle = build_review_bundle(
+        candidate_id=step_result.candidate_id, template_id=step_result.template_id,
+        template_description=template.description, template_when_to_use=template.when_to_use,
+        config=step_result.config, explanation=step_result.explanation,
+        metrics=step_result.metrics, label_permutation_check=step_result.label_permutation_check,
+        feature_correlation_check=step_result.feature_correlation_check,
+        profiler_report=profile_report,
+    )
+    verification_result = run_verification_step(
+        bundle, client, model=verification_model,
+        trace_fn=lambda record: trace(**record),
+    )
+    print(f"Verdict: {verification_result.verdict}")
+    if verification_result.concerns:
+        print(f"  concerns: {verification_result.concerns}")
+    if verification_result.reasoning:
+        print(f"  reasoning: {verification_result.reasoning}")
+
+    (candidate_dir / "verification.json").write_text(json.dumps({
+        "verdict": verification_result.verdict,
+        "concerns": verification_result.concerns,
+        "reasoning": verification_result.reasoning,
+        "parsed_ok": verification_result.ok,
+    }, indent=2))
+
+    if verification_result.verdict == "rejected":
+        print("\nABORTING: VerificationAgent rejected this candidate. Not promoting to the leaderboard.")
+        sys.exit(1)
+    if verification_result.verdict == "flagged":
+        print("\nNOTE: VerificationAgent flagged this candidate. Promoting it anyway, but the "
+              "concerns above are worth a human look.")
 
     leaderboard_path = Path("artifacts/reports/leaderboard.jsonl")
     entry = {
@@ -163,6 +221,7 @@ def main():
         "data_hash": loaded.data_hash,
         "seed": args.seed,
         "metrics": step_result.metrics,
+        "verification_verdict": verification_result.verdict,
     }
     append_leaderboard_entry(leaderboard_path, entry)
     print(f"\nLeaderboard appended: {leaderboard_path}")

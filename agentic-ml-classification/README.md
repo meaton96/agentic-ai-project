@@ -76,9 +76,11 @@ and tested:**
 - `scripts/run_baseline_ladder.py` — Phase 1 CLI entry point, runs the
   whole pipeline (load → split → leakage checks → baseline ladder →
   metrics → leaderboard) with **zero agent/LLM involvement**
-- `tests/` — 14 passing tests, including a regression fixture
+- `tests/` — 19 passing tests (`test_harness.py` + `test_leaky_fixtures.py`),
+  including a regression fixture
   (`tests/leaky_fixtures/obvious_feature_leak.csv`) that must always
-  be caught by the leakage checks
+  be caught by the leakage checks. 55 pass across the full suite as of
+  Phase 4.
 
 **Phase 2 (Profiler agent) — fully built and tested:**
 - `harness/profiler.py` — deterministic column typing, missingness,
@@ -107,13 +109,49 @@ and tested:**
   proposal blindly: it re-validates every proposed column against the
   profiler's facts (rejecting unknown/target/id/group/time columns),
   static-checks + sandbox-builds the template source with the agent's
-  config, fits/scores on the harness-owned split, runs
-  `label_permutation_test` as a leakage gate, and only appends to the
-  leaderboard if that gate passes. The agent picks a recipe; it never
-  gets to grade its own homework.
+  config, fits/scores on the harness-owned split, and requires TWO
+  independent leakage checks to both pass — `label_permutation_test`
+  and `check_suspicious_feature_correlation` re-scoped to exactly the
+  candidate's selected columns (added in Phase 4, see below; closes a
+  gap where only one of the two checks Rule 4 requires was actually
+  wired in) — before the candidate is even eligible for promotion. The
+  agent picks a recipe; it never gets to grade its own homework.
 
-**Phase 5 (Orchestrator) — fully built and tested, skipping ahead of
-Phase 4 by design (see below):**
+**Phase 4 (Verification agent) — fully built and tested; built after
+Phase 5 (see the note at the end of the Phase 5 entry for why):**
+- `harness/verification.py` — `build_review_bundle()`, pure deterministic
+  assembly of everything the verification agent is allowed to see: the
+  template's metadata, the candidate's config/explanation, validation
+  metrics with CIs, both leakage check results, and relevant profiler
+  facts. No LLM involvement in this module.
+- `tools/verification_tool.py` — a `get_candidate_review_bundle` tool,
+  same pattern as the other three tools.
+- `steps/verification_step.py` — the agent reviews ONE already-gated
+  candidate and returns `{verdict, concerns, reasoning}` where
+  `verdict` is `"approved"`, `"flagged"`, or `"rejected"`. Design
+  constraint enforced by construction, not just instructed: this agent
+  can only make the outcome *more* conservative than "both deterministic
+  gates passed" — it is never shown, and therefore can never approve or
+  unblock, a candidate that failed one. An unparseable/malformed
+  response degrades to `"flagged"` (proceed, but recorded) rather than
+  silently `"approved"` or a hard `"rejected"` over a formatting glitch.
+- `scripts/run_modeling_agent.py` and `scripts/run_orchestrator.py` both
+  call this after a candidate passes the harness's deterministic gates.
+  The orchestrator reviews gate-passing candidates **best-first by
+  validation metric**; a `"rejected"` verdict falls back to the
+  next-best candidate instead of aborting the run, and every reviewed
+  candidate (not just the winner) is logged to the leaderboard with its
+  verdict for a full audit trail.
+- `tests/test_verification.py` — verdict-handling tests (including the
+  unparseable→flagged default) plus a regression test proving the new
+  feature-correlation gate catches a raw-feature-copies-target leak
+  that `label_permutation_test` alone does *not* reliably catch — the
+  empirical proof behind `priors/general/leakage_rules.md` Rule 4's
+  claim that the two checks are complementary, not redundant.
+  `tests/test_orchestrator.py` gained a test proving the reject-and-
+  fallback selection actually changes which candidate gets promoted.
+
+**Phase 5 (Orchestrator) — fully built and tested:**
 - `harness/intake.py` — `raw_schema_summary()` computes column facts
   with NO target column assumed (dtype, missingness, cardinality,
   name-hint flags for id/group/datetime — deliberately excludes
@@ -132,35 +170,44 @@ Phase 4 by design (see below):**
   identical logic instead of duplicating it.
 - `cli_common.py` — small shared plumbing (model endpoint resolution,
   run-dir/trace-log setup) that all three scripts need.
-- `scripts/run_orchestrator.py` — the first entry point that runs the
-  full loop: **intake** (skipped if `--target` is given) → **profiler**
-  (its `recommended_split_strategy` drives the split unless overridden)
-  → up to `--max-candidates` **modeling** proposals, nudged toward
-  trying a different template each time → select the best candidate
-  that passes the label-permutation gate → refit it on train+val → one
-  locked test-set evaluation → a short LLM-narrated plain-text summary
-  (no tools, no decisions — it only narrates already-computed facts).
-  Works from just `--data` (intake guesses a target from the schema
-  alone), from `--data --goal "<natural language>"`, or from an
-  explicit `--target` that bypasses intake entirely.
+- `scripts/run_orchestrator.py` — the entry point that runs the full
+  loop: **intake** (skipped if `--target` is given) → **profiler** (its
+  `recommended_split_strategy` drives the split unless overridden) →
+  up to `--max-candidates` **modeling** proposals, nudged toward trying
+  a different template each time, each gated by two deterministic
+  leakage checks → **select-and-verify**, best-first by validation
+  metric, where the **verification agent** can veto a candidate and
+  trigger fallback to the next-best one → refit the accepted candidate
+  on train+val → one locked test-set evaluation → a short LLM-narrated
+  plain-text summary (no tools, no decisions — it only narrates
+  already-computed facts, including a caveat if the accepted candidate
+  was `"flagged"`). Works from just `--data` (intake guesses a target
+  from the schema alone), from `--data --goal "<natural language>"`, or
+  from an explicit `--target` that bypasses intake entirely.
 - `tests/test_orchestrator.py` — integration tests that drive the
   *entire* loop end to end against a synthetic dataset with a stubbed
   `ModelClient` (dispatch by system-prompt identity + message count, no
-  real network), covering all three entry modes above. This is the
-  automated answer to "does prompt (or just a dataset) + dataset →
-  finished classification actually work."
+  real network), covering intake/no-intake entry modes and the
+  reject-and-fallback selection path. This is the automated answer to
+  "does prompt (or just a dataset) + dataset → finished classification
+  actually work."
 
-Why Phase 5 before Phase 4: the deterministic gates that already exist
-(sandbox static checks + `label_permutation_test`) block leaky/broken
-candidates without needing an LLM to audit them, so closing the full
-loop end to end surfaces more real integration bugs sooner than adding
-a dedicated verification agent would. **Not yet built:** a dedicated
-verification/audit agent (Phase 4), priors/evidence reuse (Phase 6),
+Why Phase 4 was built after Phase 5: the deterministic gates that
+already existed (sandbox static checks + `label_permutation_test`)
+blocked leaky/broken candidates without needing an LLM to audit them,
+so closing the full loop end to end first surfaced more real
+integration bugs sooner than a dedicated verification agent would
+have — including the fact that only one of the two leakage checks Rule
+4 calls for was actually wired into the modeling step, which Phase 4's
+work then fixed. **Not yet built:** priors/evidence reuse (Phase 6),
 parallelization (Phase 7). Also worth knowing: a real dry run against
-the Titanic dataset surfaced `label_permutation_test`'s default
+the Titanic dataset showed `label_permutation_test`'s default
 `n_permutations=5` occasionally rejecting a legitimate (non-leaky)
 candidate by chance on smaller datasets — the gate is working as
-designed, but that default may be worth revisiting.
+designed, but that default may be worth revisiting. The Phase 4
+feature-correlation gate and verification agent are additional,
+independent checks, not a fix for that specific permutation-test
+sensitivity.
 
 ## Quickstart
 
@@ -192,7 +239,8 @@ python scripts/run_profiler_agent.py \
     --target your_target_column
 
 # 6. Run the modeling agent (Phase 3 — agent picks a template + fills config,
-#    harness validates/builds/scores/leakage-gates it before the leaderboard)
+#    harness validates/builds/scores/double-leakage-gates it, then Phase 4's
+#    VerificationAgent reviews it, before the leaderboard append)
 python scripts/run_modeling_agent.py \
     --data datasets/raw/your_dataset.csv \
     --target your_target_column \
@@ -201,9 +249,10 @@ python scripts/run_modeling_agent.py \
     --strategy group_time
 
 # 7. Run the full orchestrator loop (Phase 5 — intake -> profiler ->
-#    N modeling candidates -> selection -> one locked test-set eval ->
-#    narrated summary). Omit --target to let intake infer it from
-#    --goal (or from the schema alone if --goal is also omitted).
+#    N gated modeling candidates -> select-and-verify, best-first, with
+#    fallback on a VerificationAgent rejection -> one locked test-set
+#    eval -> narrated summary). Omit --target to let intake infer it
+#    from --goal (or from the schema alone if --goal is also omitted).
 python scripts/run_orchestrator.py \
     --data datasets/raw/your_dataset.csv \
     --goal "predict your_target_column" \
@@ -238,15 +287,17 @@ agentic-ml/
     agent_runtime.py        # tool-calling loop, no session/compaction state
     cli_common.py            # shared script plumbing (model endpoint, run dirs)
     harness/                 # the trust boundary — see Phase 1 above; also
-                               # intake.py (Phase 5 pre-target schema facts)
-    tools/                    # profiler_tool.py, template_tool.py, intake_tool.py
-                               # — thin bindings exposing harness facts/registry
-                               # data to agents as tool calls
+                               # intake.py (Phase 5 pre-target schema facts) and
+                               # verification.py (Phase 4 review bundle assembly)
+    tools/                    # profiler_tool.py, template_tool.py, intake_tool.py,
+                               # verification_tool.py — thin bindings exposing
+                               # harness facts/registry data to agents as tool calls
     templates/                # Phase 3 recipe templates + registry.py
       sources/                 # verified build_pipeline(config) .py files
-    steps/                    # intake_step.py, profiler_step.py, modeling_step.py
-                               # — agent-loop + validation logic, shared by both
-                               # the standalone scripts and run_orchestrator.py
+    steps/                    # intake_step.py, profiler_step.py, modeling_step.py,
+                               # verification_step.py — agent-loop + validation
+                               # logic, shared by both the standalone scripts and
+                               # run_orchestrator.py
 
   scripts/
     check_rit_connection.py
@@ -280,4 +331,9 @@ agentic-ml/
    execution, subprocess isolation with resource limits during
    execution. Candidates receive a `config` dict and return an
    unfitted pipeline — never a file path, never raw data.
+6. **A second-opinion agent can only veto, never approve.** The
+   verification agent (Phase 4) reviews candidates that already passed
+   every deterministic gate; it can flag or reject one, but it is never
+   shown — and therefore can never unblock — a candidate that already
+   failed a gate.
 

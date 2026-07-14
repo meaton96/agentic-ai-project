@@ -45,6 +45,13 @@ So the system draws a hard line:
 | Propose which columns are features | See the test set before final evaluation |
 | Pick a modeling template + hyperparameters | Compute their own metrics |
 | Summarize results in plain language | Decide which candidate gets promoted |
+| Flag or reject a candidate on a second look | Approve/unblock a candidate that failed a gate |
+
+That last row is the verification agent (§5.4), and it's worth
+stating precisely: it has strictly one-directional power. It can make
+an already-gated candidate's fate *worse* (flagged or rejected), never
+*better*. It is structurally incapable of overriding a deterministic
+failure, because it is never shown a candidate that produced one.
 
 Every agent output is a **proposal** — a JSON object — that the harness
 independently re-validates before acting on it. An agent hallucinating
@@ -62,9 +69,11 @@ flowchart TD
     C --> D[Profiler Agent]
     D -->|proposes split strategy| E[Harness: split + leakage checks]
     E --> F[Modeling Agent]
-    F -->|proposes candidate x N| G[Harness: sandbox build + fit + score + leakage gate]
-    G --> H{Best candidate<br/>that passed the gate}
-    H --> I[Harness: refit on train+val,<br/>evaluate once on locked test set]
+    F -->|proposes candidate x N| G[Harness: sandbox build + fit + score<br/>+ TWO leakage gates]
+    G --> K[Verification Agent<br/>reviews gate-passers, best-first]
+    K -->|rejected| F2[Fall back to next-best candidate]
+    F2 --> K
+    K -->|approved / flagged| I[Harness: refit on train+val,<br/>evaluate once on locked test set]
     I --> J[Narrated summary]
 
     style C fill:#2d3748,color:#fff
@@ -75,7 +84,10 @@ flowchart TD
 
 Every box shaded dark is pure deterministic code — no LLM call. Every
 white box is an LLM agent, and every arrow leaving a white box passes
-through a validation step before it can affect anything.
+through a validation step before it can affect anything. The
+Verification Agent's only two exits are "let it through" (approved or
+flagged) and "reject, try the next one" — there is no path from that
+box back to overriding G.
 
 ## 4. The deterministic harness (the trust boundary)
 
@@ -117,7 +129,7 @@ that actually decides whether a result is real. It owns:
 - **An append-only leaderboard** so every candidate ever evaluated is
   recorded, not just the winner.
 
-## 5. The three agents
+## 5. The four agents
 
 Each agent gets exactly one or two tools, a narrow JSON output
 contract, and — critically — no ability to see or influence anything
@@ -196,8 +208,51 @@ facts (rejecting anything hallucinated, or anything flagged as an ID,
 group, or time column); statically checks and sandbox-builds the
 chosen template with the agent's config; fits it on the training
 fold; scores it on the validation fold with bootstrapped confidence
-intervals; runs the label-permutation leakage test; and only if all of
-that passes does the candidate become eligible for promotion.
+intervals; and requires **two independent leakage checks to both
+pass** — the label-permutation test, and a feature-correlation check
+re-run scoped to exactly the columns *this* candidate selected (§7
+explains why one check alone isn't enough). Only then does the
+candidate become eligible for review by the next agent.
+
+### 5.4 Verification Agent
+
+**Problem it solves:** a second, independent opinion on a candidate
+that has already cleared every deterministic gate — the kind of review
+a human collaborator would give a teammate's already-passing pull
+request before merging it.
+
+**What it sees:** a bundle assembled purely from facts other parts of
+the system already computed: the template's own description of when
+it's appropriate, the candidate's config and stated explanation,
+validation metrics with confidence intervals, both leakage check
+results, and the profiler's imbalance/leakage-risk facts. It computes
+nothing itself.
+
+**What it proposes:** `{verdict, concerns, reasoning}`, where `verdict`
+is `"approved"`, `"flagged"` (proceed, but the concern is recorded for
+a human), or `"rejected"` (blocked). It's told to look for things a
+deterministic check can't easily express: does the candidate's stated
+*reason* for its choices actually match what the config *does*? Does a
+suspiciously perfect score deserve a second look even though it
+technically passed both leakage gates?
+
+**Why this design — the asymmetric trust boundary:** this agent is
+structurally unable to approve or unblock a candidate that failed a
+deterministic gate, because the harness only ever shows it candidates
+that already passed both. Its JSON schema has no "override" option. A
+malformed or unparseable response from the LLM doesn't default to
+`"approved"` either — it degrades to `"flagged"`, the same conservative
+middle ground used everywhere else in this system when something
+doesn't parse cleanly. This is a one-way ratchet: every layer this
+agent sits behind can only make a candidate's fate worse, never better.
+
+**How the orchestrator uses it:** candidates that passed the harness's
+gates are reviewed **best-first, by validation score**. A `"rejected"`
+verdict doesn't fail the whole run — it falls back to the next-best
+gate-passing candidate and reviews that one instead, continuing until
+one is accepted or the pool is exhausted. Every candidate that gets
+reviewed (not just the winner) is logged with its verdict, so the
+leaderboard is also an audit trail of what got vetoed and why.
 
 ## 6. Recipe templates: the middle ground
 
@@ -256,8 +311,27 @@ things" is vague until you see the layers:
    limits, and only an *unfitted* model object crosses back.
 6. **Label-permutation leakage gate** — fit the actual pipeline on
    shuffled labels; if it scores meaningfully above chance, something
-   in the pipeline is leaking, and the candidate is rejected outright
-   — it never reaches the leaderboard.
+   in the pipeline is leaking.
+7. **Feature-correlation leakage gate, candidate-scoped** — re-run a
+   raw correlation-with-target check on exactly the columns *this*
+   candidate selected. Layers 6 and 7 catch genuinely different bugs:
+   permutation testing catches leakage in the modeling *process* (a
+   preprocessing step that saw data it shouldn't have), while the
+   correlation check catches leakage in raw *feature content* (a
+   column that's just a copy of the target under a different name). A
+   candidate can fail one and pass the other — a test in this project
+   proves exactly that: a candidate that selects a near-perfect proxy
+   column for the target passes the permutation test (shuffled labels
+   make the proxy just as useless as everything else) but is correctly
+   caught by the correlation check. Neither gate is redundant; that's
+   why both must run on every candidate.
+8. **Verification agent audit** (§5.4) — only reached by candidates
+   that already passed every gate above. It can flag or reject; it
+   cannot approve or unblock anything that failed layers 1–7.
+
+Only a candidate that clears all eight layers reaches the leaderboard
+as a promotion-eligible result — everything earlier in the list is a
+hard stop, not a suggestion.
 
 Layer 5 surfaced a genuinely interesting bug during development: a
 template that defined its own custom transformer class failed at the
@@ -283,18 +357,30 @@ statements.
 The orchestrator's job, once the split is fixed:
 
 1. Ask the modeling agent for up to *N* candidates (nudging it toward
-   a different template each time), evaluating each independently.
-2. Programmatically — not via LLM judgment — select the candidate with
-   the best validation score *among those that passed the leakage
-   gate*. If none passed, the run stops and the test set is never
-   touched.
-3. Refit the winner on train+validation combined.
+   a different template each time), each independently run through
+   both deterministic leakage gates.
+2. Rank the gate-passing candidates by validation score and send them
+   to the verification agent **one at a time, best-first**. The first
+   one that isn't rejected is accepted; a rejection moves on to the
+   next-best candidate instead of aborting the run. If every
+   gate-passing candidate is rejected, the run stops and the test set
+   is never touched.
+3. Refit the accepted candidate on train+validation combined.
 4. Evaluate it exactly once on the test set that has been locked since
    the very first split — this is the only test-set touch in the
    entire run.
 5. Ask an LLM to narrate the outcome in plain language — a pure text
    summarization task with no tools and no ability to alter the
-   result.
+   result. If the accepted candidate was `"flagged"` rather than
+   cleanly `"approved"`, the summary is asked to mention that as a
+   caveat for human review.
+
+Step 2 is deliberately not "verify every candidate, then pick the
+best" — it's "pick the best, then verify," falling back only if
+needed. That's both cheaper (fewer LLM calls than reviewing candidates
+nobody was going to select anyway) and a better match for what a
+review step is actually for: deciding whether to promote the thing
+you're about to promote.
 
 ## 9. An engineering decision worth mentioning: why there's no OpenClaw
 
@@ -330,12 +416,21 @@ Two distinct kinds of test exist, deliberately:
   between agents, tools, and the harness is correct without needing
   network access, an API key, or non-deterministic LLM output in CI.
 
-46 tests currently pass. The notebook itself was verified the same
-way — its actual cells (not a hand-copied summary of them) were
-extracted and executed against a stubbed client before being
-considered done, which caught a real bug (a relative-path error in the
-final reporting cell) that a visual read-through of the notebook did
-not.
+55 tests currently pass. One is worth calling out specifically because
+it proves a design claim rather than just exercising code: a test
+constructs a dataset with a column that's a near-perfect copy of the
+target, scripts a modeling-agent proposal that selects it, and asserts
+that the *permutation* gate alone would not have caught it (shuffled
+labels make the copied column just as uninformative as anything else)
+while the *correlation* gate does. That's the empirical version of the
+claim in §7 that the two leakage gates are complementary — the test
+would fail if that claim were wrong.
+
+The notebook itself was verified the same way — its actual cells (not
+a hand-copied summary of them) were extracted and executed against a
+stubbed client before being considered done each time it changed,
+which has caught real bugs (e.g. a relative-path error in the final
+reporting cell) that a visual read-through did not.
 
 ## 11. Current status
 
@@ -345,16 +440,18 @@ not.
 | 1 — Deterministic harness | Done |
 | 2 — Profiler agent | Done |
 | 3 — Recipe templates + modeling agent | Done |
-| 4 — Dedicated verification/audit agent | **Not built** |
+| 4 — Verification/audit agent | Done |
 | 5 — Orchestrator (full loop) | Done |
 | 6 — Priors/evidence reuse across runs | Not built |
 | 7 — Parallel candidate search | Not built |
 
-Phase 5 was built before Phase 4 deliberately: the deterministic gates
-in §7 already block leaky or broken candidates without needing an LLM
-to audit them, so closing the loop end-to-end surfaced more real
-integration problems sooner than a dedicated verification agent would
-have.
+Built out of numeric order on purpose: Phase 5 came before Phase 4.
+The deterministic gates in §7 already blocked leaky or broken
+candidates without needing an LLM to audit them, so closing the loop
+end-to-end first surfaced more real integration problems sooner than a
+dedicated verification agent would have — including the fact that only
+one of the two leakage gates §7 describes was actually wired into the
+modeling step until Phase 4's work added the second one.
 
 ## 12. Key takeaways
 
@@ -364,11 +461,17 @@ have.
 - Every agent has the smallest possible decision surface for its job,
   and every proposal is independently re-validated by code that has
   nothing to do with the LLM that produced it.
+- Even the agent whose entire job is *skepticism* — the verification
+  agent — is itself bound by the same trust boundary: it can only make
+  an outcome more conservative, never less, and a malformed response
+  from it defaults to caution rather than silent approval.
 - The system is honest about its own limits: binary classification
-  only, no test-set peeking, and a leakage gate that will reject a
+  only, no test-set peeking, and leakage gates that will reject a
   candidate rather than let a suspicious result through — even at the
   cost of throwing away a legitimate one occasionally (a known,
-  documented tradeoff of the current permutation-test parameters).
+  documented tradeoff of the label-permutation gate's parameters).
 - Reproducibility isn't an afterthought: dataset hashing, seeded
   splits, and stubbed-client integration tests mean the entire loop —
-  agentic parts included — is testable without a live model.
+  agentic parts included — is testable without a live model, and at
+  least one test in this project exists specifically to prove a design
+  claim empirically rather than just exercise code (§10).

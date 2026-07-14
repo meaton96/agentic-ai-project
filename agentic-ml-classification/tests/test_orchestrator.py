@@ -1,9 +1,10 @@
 """
 Phase 5 integration test: the full orchestrator loop (intake ->
-profiler -> N modeling candidates -> selection -> one locked test-set
-evaluation -> narrated summary) driven end to end with a stubbed
-ModelClient — no real network/LLM call. This is the automated version
-of "does prompt (or just a dataset) + dataset -> finished
+profiler -> N modeling candidates -> select-and-verify (best-first,
+VerificationAgent can veto and fall back to the next candidate) -> one
+locked test-set evaluation -> narrated summary) driven end to end with
+a stubbed ModelClient — no real network/LLM call. This is the automated
+version of "does prompt (or just a dataset) + dataset -> finished
 classification actually work", run against a synthetic in-memory
 dataset instead of a real file so it stays fast and hermetic.
 
@@ -13,7 +14,9 @@ the conversation so far (identifies which turn within that agent's own
 run() this is) — both are stable, real signals already present in
 every call, so no external mutable call-counter is needed and multiple
 independent agent.run() invocations (e.g. two modeling candidates in
-one orchestrator run) are handled correctly without cross-talk.
+one orchestrator run) are handled correctly without cross-talk. The one
+exception is _state["reject_candidate_id"], used only by the fallback
+test below to make the VerificationAgent reject a specific candidate.
 """
 import json
 import os
@@ -78,6 +81,9 @@ def _resp(text=None, tool_calls=None):
     )
 
 
+_state = {"reject_candidate_id": None}
+
+
 def fake_call(self, messages, model=None, tools=None, temperature=0.0, max_tokens=1024):
     system_content = messages[0]["content"]
     n = len(messages)
@@ -100,6 +106,23 @@ def fake_call(self, messages, model=None, tools=None, temperature=0.0, max_token
         candidate = CANDIDATE_B if "Templates already tried" in system_content else CANDIDATE_A
         return _resp(text=candidate)
 
+    if "Verification agent" in system_content:
+        if n == 2:
+            return _resp(tool_calls=[{"id": "v1", "name": "get_candidate_review_bundle", "arguments": "{}"}])
+        reviewed_candidate_id = None
+        for msg in messages:
+            if msg.get("role") == "tool":
+                try:
+                    reviewed_candidate_id = json.loads(msg["content"]).get("candidate_id")
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+        if _state["reject_candidate_id"] and reviewed_candidate_id == _state["reject_candidate_id"]:
+            return _resp(text=json.dumps({
+                "verdict": "rejected", "concerns": ["synthetic rejection for fallback test"],
+                "reasoning": "Testing fallback-to-next-candidate.",
+            }))
+        return _resp(text=json.dumps({"verdict": "approved", "concerns": [], "reasoning": "looks fine"}))
+
     # Analyst-style final summary: a plain text call with no tools.
     return _resp(text="This is a plain-language summary of the modeling run.")
 
@@ -109,6 +132,9 @@ def patch_model_client(monkeypatch):
     monkeypatch.setattr(ModelClient, "call", fake_call)
     monkeypatch.setenv("RIT_BASE_URL", "http://example.invalid/v1")
     monkeypatch.setenv("RIT_API_KEY", "dummy")
+    _state["reject_candidate_id"] = None
+    yield
+    _state["reject_candidate_id"] = None
 
 
 @pytest.fixture
@@ -161,13 +187,23 @@ def test_orchestrator_explicit_target_skips_intake(dataset_csv, tmp_path):
     assert {c["template_id"] for c in report["candidates"]} == {"sklearn_mixed_pipeline", "imbalanced_binary_boosted"}
     assert all(c["passed_gate"] for c in report["candidates"])
     assert report["selected_candidate"]["candidate_id"] in {"candidate_a", "candidate_b"}
+    assert report["selected_candidate"]["verification_verdict"] == "approved"
     assert set(report["final_test_metrics"]) == {"roc_auc", "pr_auc", "f1", "accuracy"}
     assert report["final_summary"]
 
+    # verification reviews best-first and stops at the first non-rejected
+    # candidate, so with a default "approved" verdict only the winning
+    # candidate actually gets reviewed (and thus leaderboard-logged) —
+    # the other gate-passing candidate was evaluated but never needed review.
+    reviewed = [c for c in report["candidates"] if c["verification"] is not None]
+    assert len(reviewed) == 1
+    assert reviewed[0]["candidate_id"] == report["selected_candidate"]["candidate_id"]
+
     leaderboard_path = tmp_path / "artifacts" / "reports" / "leaderboard.jsonl"
     entries = [json.loads(line) for line in leaderboard_path.read_text().splitlines()]
-    assert len(entries) == 2
-    assert all(e["source"] == "orchestrator" for e in entries)
+    assert len(entries) == 1
+    assert entries[0]["source"] == "orchestrator"
+    assert entries[0]["verification_verdict"] == "approved"
 
 
 def test_orchestrator_full_intake_no_target_given(dataset_csv, tmp_path):
@@ -204,3 +240,36 @@ def test_orchestrator_dataset_only_no_goal_no_target(dataset_csv, tmp_path):
     report = json.loads((tmp_path / "runs" / "test_run_dataset_only" / "orchestrator_report.json").read_text())
     assert report["status"] == "success"
     assert report["intake"]["target_column"] == "churned"
+
+
+def test_orchestrator_falls_back_when_top_candidate_is_verification_rejected(dataset_csv, tmp_path):
+    """VerificationAgent can only veto, never approve — proving that veto
+    actually changes the outcome (falls back to the next-best candidate
+    rather than aborting the whole run) is the point of this test."""
+    _state["reject_candidate_id"] = "candidate_a"
+
+    _run_orchestrator_in(tmp_path, [
+        "run_orchestrator.py",
+        "--data", str(dataset_csv),
+        "--target", "churned",
+        "--id-columns", "customer_id",
+        "--max-candidates", "2",
+        "--run-id", "test_run_fallback",
+    ])
+
+    report = json.loads((tmp_path / "runs" / "test_run_fallback" / "orchestrator_report.json").read_text())
+
+    assert report["status"] == "success"
+    assert report["selected_candidate"]["candidate_id"] != "candidate_a"
+    assert report["selected_candidate"]["verification_verdict"] == "approved"
+
+    rejected = [c for c in report["candidates"] if c["verification"] and c["verification"]["verdict"] == "rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["candidate_id"] == "candidate_a"
+
+    leaderboard_path = tmp_path / "artifacts" / "reports" / "leaderboard.jsonl"
+    entries = [json.loads(line) for line in leaderboard_path.read_text().splitlines()]
+    # both candidates were reviewed this time: the top-ranked one (rejected),
+    # then the fallback (accepted) — so both get logged, unlike the default case
+    assert len(entries) == 2
+    assert {e["verification_verdict"] for e in entries} == {"rejected", "approved"}
