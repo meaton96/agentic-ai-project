@@ -45,6 +45,12 @@ INTAKE_PROPOSAL = json.dumps({
     "reasoning": "churned looks like the binary outcome column given the goal.",
 })
 
+FEATURE_ENGINEERING_PROPOSAL = json.dumps({
+    "drop_columns": [],
+    "derived_features": [],
+    "explanation": "No changes needed for this synthetic dataset.",
+})
+
 PROFILER_NARRATIVE = json.dumps({
     "summary": "Synthetic churn dataset with mixed numeric/categorical features.",
     "recommended_split_strategy": "stratified",
@@ -81,7 +87,7 @@ def _resp(text=None, tool_calls=None):
     )
 
 
-_state = {"reject_candidate_id": None}
+_state = {"reject_candidate_id": None, "feature_engineering_proposal": None, "candidate_override": None}
 
 
 def fake_call(self, messages, model=None, tools=None, temperature=0.0, max_tokens=1024):
@@ -93,6 +99,13 @@ def fake_call(self, messages, model=None, tools=None, temperature=0.0, max_token
             return _resp(tool_calls=[{"id": "t1", "name": "get_raw_schema", "arguments": "{}"}])
         return _resp(text=INTAKE_PROPOSAL)
 
+    if "Feature Engineering agent" in system_content:
+        if n == 2:
+            return _resp(tool_calls=[{"id": "f1", "name": "get_dataset_profile", "arguments": "{}"}])
+        if n == 4:
+            return _resp(tool_calls=[{"id": "f2", "name": "list_feature_ops", "arguments": "{}"}])
+        return _resp(text=_state["feature_engineering_proposal"] or FEATURE_ENGINEERING_PROPOSAL)
+
     if "Profiler agent" in system_content:
         if n == 2:
             return _resp(tool_calls=[{"id": "t2", "name": "get_dataset_profile", "arguments": "{}"}])
@@ -103,6 +116,8 @@ def fake_call(self, messages, model=None, tools=None, temperature=0.0, max_token
             return _resp(tool_calls=[{"id": "t3", "name": "get_dataset_profile", "arguments": "{}"}])
         if n == 4:
             return _resp(tool_calls=[{"id": "t4", "name": "list_templates", "arguments": "{}"}])
+        if _state["candidate_override"]:
+            return _resp(text=_state["candidate_override"])
         candidate = CANDIDATE_B if "Templates already tried" in system_content else CANDIDATE_A
         return _resp(text=candidate)
 
@@ -127,14 +142,20 @@ def fake_call(self, messages, model=None, tools=None, temperature=0.0, max_token
     return _resp(text="This is a plain-language summary of the modeling run.")
 
 
+def _reset_state():
+    _state["reject_candidate_id"] = None
+    _state["feature_engineering_proposal"] = None
+    _state["candidate_override"] = None
+
+
 @pytest.fixture(autouse=True)
 def patch_model_client(monkeypatch):
     monkeypatch.setattr(ModelClient, "call", fake_call)
     monkeypatch.setenv("RIT_BASE_URL", "http://example.invalid/v1")
     monkeypatch.setenv("RIT_API_KEY", "dummy")
-    _state["reject_candidate_id"] = None
+    _reset_state()
     yield
-    _state["reject_candidate_id"] = None
+    _reset_state()
 
 
 @pytest.fixture
@@ -273,3 +294,42 @@ def test_orchestrator_falls_back_when_top_candidate_is_verification_rejected(dat
     # then the fallback (accepted) — so both get logged, unlike the default case
     assert len(entries) == 2
     assert {e["verification_verdict"] for e in entries} == {"rejected", "approved"}
+
+
+def test_orchestrator_feature_engineering_augments_columns_for_modeling(dataset_csv, tmp_path):
+    """Proves a real (non-no-op) feature-engineering proposal's derived
+    column actually reaches the modeling agent's view — not just that the
+    step runs and reports something, but that the augmented dataframe is
+    what downstream candidates are actually built and scored against."""
+    _state["feature_engineering_proposal"] = json.dumps({
+        "drop_columns": [],
+        "derived_features": [
+            {"op_id": "ratio", "params": {"col_a": "income", "col_b": "age"}},
+        ],
+        "explanation": "income-per-age might capture a life-stage signal.",
+    })
+    _state["candidate_override"] = json.dumps({
+        "candidate_id": "candidate_engineered",
+        "template_id": "sklearn_mixed_pipeline",
+        "config": {
+            "numeric_cols": ["age", "income", "income_over_age"],
+            "categorical_cols": ["plan_type", "region"],
+            "classifier": "logistic_regression",
+        },
+        "explanation": "Uses the new income_over_age engineered feature.",
+    })
+
+    _run_orchestrator_in(tmp_path, [
+        "run_orchestrator.py",
+        "--data", str(dataset_csv),
+        "--target", "churned",
+        "--id-columns", "customer_id",
+        "--max-candidates", "1",
+        "--run-id", "test_run_fe_integration",
+    ])
+
+    report = json.loads((tmp_path / "runs" / "test_run_fe_integration" / "orchestrator_report.json").read_text())
+    assert report["status"] == "success"
+    assert report["feature_engineering"]["new_columns"] == ["income_over_age"]
+    assert report["candidates"][0]["passed_gate"] is True
+    assert report["candidates"][0]["config"]["numeric_cols"] == ["age", "income", "income_over_age"]

@@ -42,12 +42,13 @@ So the system draws a hard line:
 | Agents are allowed to | Agents are never allowed to |
 |---|---|
 | Propose a target column | Choose the train/val/test split |
+| Propose columns to drop + stateless derived features | Decide imputation values or scaling |
 | Propose which columns are features | See the test set before final evaluation |
 | Pick a modeling template + hyperparameters | Compute their own metrics |
 | Summarize results in plain language | Decide which candidate gets promoted |
 | Flag or reject a candidate on a second look | Approve/unblock a candidate that failed a gate |
 
-That last row is the verification agent (§5.4), and it's worth
+That last row is the verification agent (§5.5), and it's worth
 stating precisely: it has strictly one-directional power. It can make
 an already-gated candidate's fate *worse* (flagged or rejected), never
 *better*. It is structurally incapable of overriding a deterministic
@@ -66,7 +67,9 @@ the output has to be trustworthy.
 flowchart TD
     A[Dataset + optional goal] --> B[Intake Agent]
     B -->|proposes DatasetSpec| C{Harness validates}
-    C --> D[Profiler Agent]
+    C --> FE[Feature Engineering Agent]
+    FE -->|proposes drops + derived features| FEV{Harness validates + applies}
+    FEV --> D[Profiler Agent]
     D -->|proposes split strategy| E[Harness: split + leakage checks]
     E --> F[Modeling Agent]
     F -->|proposes candidate x N| G[Harness: sandbox build + fit + score<br/>+ TWO leakage gates]
@@ -77,6 +80,7 @@ flowchart TD
     I --> J[Narrated summary]
 
     style C fill:#2d3748,color:#fff
+    style FEV fill:#2d3748,color:#fff
     style E fill:#2d3748,color:#fff
     style G fill:#2d3748,color:#fff
     style I fill:#2d3748,color:#fff
@@ -103,7 +107,16 @@ that actually decides whether a result is real. It owns:
   that isn't independent and identically distributed (repeated
   customers, or a timestamp). The harness requires an explicit
   strategy; there's no silent default to random split when a time or
-  group column is declared.
+  group column is declared. One subtlety a real run surfaced: the
+  profiler's strategy *recommendation* comes from its own heuristic
+  column detection, entirely separate from what intake actually
+  declared as the group/time column — running with an explicit
+  `--target` (skipping intake) and no `--time-column` could get a
+  `"time"` recommendation with no declared time column to satisfy it.
+  `resolve_split_columns()` reconciles the two transparently (the
+  detected column is, by construction, the same evidence that produced
+  the recommendation in the first place) rather than crashing or
+  guessing blindly.
 - **Leakage checks**, run automatically and independently of each
   other: exact-duplicate rows across splits, group overlap across
   splits, chronological ordering for time splits, a raw
@@ -129,7 +142,7 @@ that actually decides whether a result is real. It owns:
 - **An append-only leaderboard** so every candidate ever evaluated is
   recorded, not just the winner.
 
-## 5. The four agents
+## 5. The five agents
 
 Each agent gets exactly one or two tools, a narrow JSON output
 contract, and — critically — no ability to see or influence anything
@@ -164,7 +177,64 @@ classification only, and the harness enforces that itself — it does
 not trust the agent's self-reported `task` field), and any group/time/id
 column must actually exist in the data.
 
-### 5.2 Profiler Agent
+### 5.2 Feature Engineering Agent
+
+**Problem it solves:** deciding whether the feature set itself needs
+structural changes before modeling even starts — dropping a column
+that's mostly missing or an obvious identifier, or adding a derived
+column (a ratio, an interaction term, extracted date parts, a missing-
+value flag) that might carry signal the raw columns don't.
+
+**What it sees:** the same `get_dataset_profile` facts the profiler
+agent sees (column dtypes, missingness, cardinality, likely id/group/
+datetime flags), plus a catalog of five vetted operations
+(`list_feature_ops`): `ratio`, `interaction`, `log1p`, `datetime_parts`,
+`missing_indicator`.
+
+**What it proposes:** `{drop_columns, derived_features, explanation}`
+— a list of columns to exclude, and a list of `{op_id, params}` picked
+from that catalog. **It does not write transformation code**, for the
+same reason the modeling agent doesn't write model code (§6).
+
+**Why every operation in the catalog is stateless:** each one computes
+a value from that row's own columns only — never a fitted statistic
+like a mean, a quantile, or a per-group aggregate. That's precisely
+what makes it safe to apply to the *entire* dataset before the train/
+val/test split even exists, the same way the profiler's own
+descriptive facts are computed dataset-wide. Anything that needs a
+fitted statistic — imputation values, scaling, target encoding — stays
+inside the modeling templates' `ColumnTransformer`, fit only on the
+training fold, exactly as before. This agent's decision surface is
+deliberately narrower than "feature engineering" often means in
+practice; it's the subset of feature engineering that's provably safe
+to do before a split boundary exists.
+
+**Worked example of real usage finding a bug in the validator itself,
+not in the agent:** the first version of `validate_feature_proposal`
+gated `ratio`/`interaction`/`log1p` on the profiler's `is_likely_numeric`
+flag. That flag is computed for a different purpose — deciding
+one-hot-encoding vs. scaling boundaries in the baseline modeling
+templates — and it's `False` for any low-cardinality integer column,
+*including genuine counts*. In a real run against the Titanic dataset,
+the agent proposed `SibSp * Parch` (siblings/spouses times parents/
+children aboard) as an interaction term — `family_size = SibSp + Parch
++ 1` is a well-known engineered feature for this exact dataset, and
+this was a reasonable variant of it. The validator rejected it anyway,
+because both columns have single-digit cardinality and the profiler
+flags them `is_likely_categorical=True` / `is_likely_numeric=False`.
+The agent's proposal was right; the validator was wrong. The fix was
+to gate numeric ops on the column's actual dtype (int/float — can
+pandas do arithmetic on it) instead of a heuristic tuned for a
+completely different modeling decision. The general lesson: a
+validation rule should encode "would this literally break or produce
+garbage," not silently borrow a heuristic that happens to exist for
+an unrelated purpose — reusing profiler facts is good, reusing them
+for a question they were never designed to answer isn't. See
+`harness/feature_engineering.py::_is_numeric_dtype` for the fix and
+`tests/test_feature_engineering.py::test_validate_accepts_arithmetic_on_low_cardinality_integer_count`
+for the regression test.
+
+### 5.3 Profiler Agent
 
 **Problem it solves:** producing a human-readable characterization of
 the dataset and a data-driven recommendation for how to split it.
@@ -188,7 +258,7 @@ invalidate every downstream result — is computed by a fully tested,
 rule-based function with zero LLM involvement. The agent's only role is
 narration for a human reader.
 
-### 5.3 Modeling Agent
+### 5.4 Modeling Agent
 
 **Problem it solves:** choosing a modeling approach appropriate to the
 dataset's characteristics and producing a working, evaluable pipeline.
@@ -214,7 +284,7 @@ re-run scoped to exactly the columns *this* candidate selected (§7
 explains why one check alone isn't enough). Only then does the
 candidate become eligible for review by the next agent.
 
-### 5.4 Verification Agent
+### 5.5 Verification Agent
 
 **Problem it solves:** a second, independent opinion on a candidate
 that has already cleared every deterministic gate — the kind of review
@@ -325,13 +395,20 @@ things" is vague until you see the layers:
    make the proxy just as useless as everything else) but is correctly
    caught by the correlation check. Neither gate is redundant; that's
    why both must run on every candidate.
-8. **Verification agent audit** (§5.4) — only reached by candidates
+8. **Verification agent audit** (§5.5) — only reached by candidates
    that already passed every gate above. It can flag or reject; it
    cannot approve or unblock anything that failed layers 1–7.
 
 Only a candidate that clears all eight layers reaches the leaderboard
 as a promotion-eligible result — everything earlier in the list is a
 hard stop, not a suggestion.
+
+The feature engineering agent (§5.2) has its own analogous validation
+pass, one step earlier in the pipeline: every proposed drop/derived
+feature is checked against the profiler's dtype facts (right op for
+the right column type), the target column is forbidden as any op's
+input, and the declared group/time column can't be dropped. Same
+pattern, same trust boundary, applied one layer further upstream.
 
 Layer 5 surfaced a genuinely interesting bug during development: a
 template that defined its own custom transformer class failed at the
@@ -354,8 +431,12 @@ the profiler's narrative, a validation-metrics comparison across
 candidates, an ROC curve — is visible rather than buried in print
 statements.
 
-The orchestrator's job, once the split is fixed:
+The orchestrator's job:
 
+0. Run intake, then the feature engineering agent, then the profiler
+   — in that order, so the profiler's facts (and the split strategy it
+   recommends) reflect whatever columns the feature engineering agent
+   decided to drop or add.
 1. Ask the modeling agent for up to *N* candidates (nudging it toward
    a different template each time), each independently run through
    both deterministic leakage gates.
@@ -416,7 +497,7 @@ Two distinct kinds of test exist, deliberately:
   between agents, tools, and the harness is correct without needing
   network access, an API key, or non-deterministic LLM output in CI.
 
-55 tests currently pass. One is worth calling out specifically because
+87 tests currently pass. One is worth calling out specifically because
 it proves a design claim rather than just exercising code: a test
 constructs a dataset with a column that's a near-perfect copy of the
 target, scripts a modeling-agent proposal that selects it, and asserts
@@ -446,6 +527,18 @@ run (Phase 7, not yet built) — more things happening at once is
 exactly when "what did each one actually do" stops being answerable
 from memory.
 
+The feature engineering agent's tests follow the same "prove it, don't
+just exercise it" standard: beyond correctness of each operation
+(division-by-zero really does become `NaN`, not `inf`; a negative
+value into `log1p` really does become `NaN`, not a crash), there's a
+regression test that reconstructs the `SibSp * Parch` case from §5.2 —
+asserting a low-cardinality integer count is accepted for arithmetic
+ops even though the profiler flags it categorical — and an
+orchestrator-level test that feeds a real derived column all the way
+through to a modeling candidate's config and confirms it's actually
+there, not just that the feature step returned successfully in
+isolation.
+
 ## 11. Current status
 
 | Phase | Status |
@@ -466,6 +559,14 @@ end-to-end first surfaced more real integration problems sooner than a
 dedicated verification agent would have — including the fact that only
 one of the two leakage gates §7 describes was actually wired into the
 modeling step until Phase 4's work added the second one.
+
+Two more additions sit outside this numbering entirely: the transcript
+logging described in §10, and the Feature Engineering agent (§5.2),
+which runs between intake and the profiler in actual pipeline order.
+Phases 6 and 7 are both deliberately on hold until the pipeline has
+been proven against a second real dataset beyond Titanic — there's
+limited value in building cross-run evidence reuse (Phase 6) from a
+sample size of one dataset.
 
 ## 12. Key takeaways
 
@@ -489,3 +590,10 @@ modeling step until Phase 4's work added the second one.
   agentic parts included — is testable without a live model, and at
   least one test in this project exists specifically to prove a design
   claim empirically rather than just exercise code (§10).
+- Extensibility comes from adding a new vetted, narrow-scope agent
+  (feature engineering, §5.2) rather than widening any existing agent's
+  power. The pattern established in Phase 3 — pick from a catalog,
+  fill in parameters, never write code — turned out to generalize
+  cleanly to a completely different kind of decision (what the feature
+  set should look like, not what model to fit), reusing the same
+  profiler facts and the same validate-then-apply discipline.

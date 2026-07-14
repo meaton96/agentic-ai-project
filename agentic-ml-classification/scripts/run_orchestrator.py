@@ -2,14 +2,16 @@
 """
 Phase 5: the Orchestrator. This is the first entry point that runs the
 full "prompt (or just a dataset) -> agent pipeline -> finished
-classification" loop: intake (skippable via --target) -> profiler
-(drives the split strategy) -> up to --max-candidates modeling-agent
-proposals, each independently gated by two deterministic leakage
-checks -> select-and-verify (best-first, VerificationAgent reviews
-each and can only veto, never approve/unblock one that failed a gate;
-rejected candidates fall back to the next-best) -> refit the accepted
-candidate on train+val -> one locked test-set evaluation -> a short
-LLM-narrated plain-text summary.
+classification" loop: intake (skippable via --target) -> feature
+engineering (proposes columns to drop + stateless derived features
+from a vetted catalog, skippable via --skip-feature-engineering) ->
+profiler (drives the split strategy, sees the augmented column set) ->
+up to --max-candidates modeling-agent proposals, each independently
+gated by two deterministic leakage checks -> select-and-verify (best-
+first, VerificationAgent reviews each and can only veto, never approve/
+unblock one that failed a gate; rejected candidates fall back to the
+next-best) -> refit the accepted candidate on train+val -> one locked
+test-set evaluation -> a short LLM-narrated plain-text summary.
 
 scripts/run_profiler_agent.py and scripts/run_modeling_agent.py remain
 useful for driving a single phase in isolation; this script drives the
@@ -42,13 +44,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from sklearn.base import clone
 
 from agentic_ml.cli_common import make_run_dir, make_tracer, make_transcript_writer, resolve_model_endpoint
-from agentic_ml.harness.dataset import DatasetSpec, load_dataset, read_dataframe, write_dataset_spec
+from agentic_ml.harness.dataset import DatasetSpec, LoadedDataset, load_dataset, read_dataframe, write_dataset_spec
 from agentic_ml.harness.leaderboard import append_leaderboard_entry
 from agentic_ml.harness.leakage import run_all_split_leakage_checks
 from agentic_ml.harness.metrics import compute_metrics
-from agentic_ml.harness.splits import make_split
+from agentic_ml.harness.splits import make_split, resolve_split_columns
 from agentic_ml.harness.verification import build_review_bundle
 from agentic_ml.model_client import ModelClient
+from agentic_ml.steps.feature_engineering_step import run_feature_engineering_step
 from agentic_ml.steps.intake_step import run_intake_step
 from agentic_ml.steps.modeling_step import run_modeling_step
 from agentic_ml.steps.profiler_step import run_profiler_step
@@ -79,6 +82,8 @@ def main():
                          "oriented model distinct from the modeling agent's default")
     parser.add_argument("--use-gateway", action="store_true")
     parser.add_argument("--run-id", default=None)
+    parser.add_argument("--skip-feature-engineering", action="store_true",
+                         help="skip the feature-engineering step entirely")
     args = parser.parse_args()
 
     run_id, run_dir = make_run_dir(args.run_id)
@@ -147,14 +152,74 @@ def main():
         id_columns = [c.strip() for c in (args.id_columns or "").split(",") if c.strip()]
         report["intake"] = {"skipped": True, "reason": "--target was given explicitly"}
 
-    # --- 2. Load dataset + profiler (drives split strategy unless overridden) ---
-    spec = DatasetSpec(
+    # --- 2. Load the raw dataset, then Feature Engineering (proposes columns
+    # to drop + stateless derived features from a vetted catalog — see
+    # harness/feature_engineering.py for why these are safe to apply before
+    # the split even exists). Skippable via --skip-feature-engineering. ---
+    raw_spec = DatasetSpec(
         path=args.data, target_column=target_column, group_column=group_column,
         time_column=time_column, id_columns=id_columns,
     )
+    raw_loaded = load_dataset(raw_spec)
+    print(f"\nLoaded dataset: {len(raw_loaded.df)} rows, {len(raw_loaded.df.columns)} columns, "
+          f"data_hash={raw_loaded.data_hash[:16]}...")
+
+    if args.skip_feature_engineering:
+        print("Skipping FeatureEngineeringAgent (--skip-feature-engineering).")
+        report["feature_engineering"] = {"skipped": True}
+        final_id_columns = id_columns
+        engineered_df = raw_loaded.df
+    else:
+        print("Running FeatureEngineeringAgent...")
+        fe_result = run_feature_engineering_step(
+            raw_loaded.df, target_column, client,
+            group_column=group_column, time_column=time_column,
+            model=default_model, trace_fn=lambda record: trace(**record),
+        )
+        fe_transcript_path = write_transcript("feature_engineering", fe_result.messages)
+        (run_dir / "feature_engineering_report.json").write_text(json.dumps({
+            "ok": fe_result.ok, "drop_columns": fe_result.drop_columns,
+            "new_columns": fe_result.new_columns, "applied_ops": fe_result.applied_ops,
+            "explanation": fe_result.explanation, "errors": fe_result.errors,
+            "transcript": str(fe_transcript_path),
+        }, indent=2, default=str))
+
+        if not fe_result.ok:
+            print("FAILED: FeatureEngineeringAgent's proposal did not validate:")
+            for e in fe_result.errors:
+                print(f"  - {e}")
+            report["status"] = "failed_feature_engineering"
+            report["errors"] = fe_result.errors
+            write_report()
+            sys.exit(1)
+
+        print(f"  drop_columns: {fe_result.drop_columns}")
+        print(f"  new_columns: {fe_result.new_columns}")
+        print(f"  reasoning: {fe_result.explanation}")
+        report["feature_engineering"] = {
+            "drop_columns": fe_result.drop_columns, "new_columns": fe_result.new_columns,
+            "applied_ops": fe_result.applied_ops, "explanation": fe_result.explanation,
+            "transcript": str(fe_transcript_path),
+        }
+        final_id_columns = sorted(set(id_columns) | set(fe_result.drop_columns))
+        engineered_df = fe_result.df
+
+    # --- 3. Build the final DatasetSpec/LoadedDataset over the (possibly
+    # augmented) dataframe, then run the Profiler agent (drives split
+    # strategy unless overridden) — its facts reflect the final column set. ---
+    spec = DatasetSpec(
+        path=args.data, target_column=target_column, group_column=group_column,
+        time_column=time_column, id_columns=final_id_columns,
+    )
     write_dataset_spec(spec, run_dir / "dataset_spec.json")
-    loaded = load_dataset(spec)
-    print(f"\nLoaded dataset: {len(loaded.df)} rows, data_hash={loaded.data_hash[:16]}...")
+    # data_hash still traces back to the original raw file — the feature
+    # engineering step's applied_ops (logged above) are what make the
+    # augmented columns reproducible from that same raw data, so a second
+    # hash isn't needed.
+    loaded = LoadedDataset(df=engineered_df, spec=spec, data_hash=raw_loaded.data_hash)
+    if len(loaded.df.columns) != len(raw_loaded.df.columns):
+        print(f"Dataset after feature engineering: {len(loaded.df.columns)} columns "
+              f"(was {len(raw_loaded.df.columns)})")
 
     print("Running ProfilerAgent...")
     profiler_result = run_profiler_step(
@@ -178,12 +243,26 @@ def main():
     strategy = args.strategy or profiler_result.deterministic_report["recommended_split_strategy"]
     print(f"Split strategy: {strategy} "
           f"({'explicit override' if args.strategy else 'profiler recommendation'})")
+
+    # The profiler's recommendation is derived from its own heuristic column
+    # detection, independent of what intake actually declared as
+    # group_column/time_column — reconcile them before make_split() would
+    # otherwise raise a bare ValueError deep in the call stack.
+    group_column, time_column, split_column_notes = resolve_split_columns(
+        strategy, group_column, time_column, profiler_result.deterministic_report,
+    )
+    for note in split_column_notes:
+        print(f"NOTE: {note}")
+
     report["profiler"] = {
         "recommended_split_strategy": profiler_result.deterministic_report["recommended_split_strategy"],
         "is_imbalanced": profiler_result.deterministic_report["is_imbalanced"],
         "leakage_risk_flags": profiler_result.deterministic_report["leakage_risk_flags"],
         "narrative": profiler_result.llm_narrative,
         "strategy_used": strategy,
+        "group_column_used": group_column,
+        "time_column_used": time_column,
+        "split_column_notes": split_column_notes,
         "transcript": str(profiler_transcript_path),
     }
 

@@ -54,7 +54,19 @@ and tested:**
   deterministic content hashing
 - `harness/splits.py` — `random`, `stratified`, `group`, `time`,
   `group_time` split strategies, fully seeded/deterministic, plus CV
-  fold generation
+  fold generation. Also `resolve_split_columns()` (added after a real
+  crash): the profiler's `recommended_split_strategy` is derived purely
+  from its own heuristic column detection, independent of what intake
+  actually declared as `group_column`/`time_column` — if a run skips
+  intake (explicit `--target`) and doesn't pass `--time-column`, the
+  profiler can still recommend `"time"` because it *detected* a
+  datetime-like column, and `make_split()` would raise a bare
+  `ValueError` deep in the call stack. Whenever the recommendation is
+  `"time"`/`"group"`/`"group_time"`, the corresponding detected-column
+  list is guaranteed non-empty (that's exactly what produced the
+  recommendation), so `resolve_split_columns()` auto-adopts that same
+  column transparently (prints a note, doesn't fail silently) rather
+  than either crashing or guessing from nothing.
 - `harness/leakage.py` — five independent checks: duplicate rows
   across splits, group overlap, time ordering (strategy-aware — does
   NOT wrongly flag `group_time`'s expected cross-group calendar
@@ -199,8 +211,7 @@ so closing the full loop end to end first surfaced more real
 integration bugs sooner than a dedicated verification agent would
 have — including the fact that only one of the two leakage checks Rule
 4 calls for was actually wired into the modeling step, which Phase 4's
-work then fixed. **Not yet built:** priors/evidence reuse (Phase 6),
-parallelization (Phase 7). Also worth knowing: a real dry run against
+work then fixed. Also worth knowing: a real dry run against
 the Titanic dataset showed `label_permutation_test`'s default
 `n_permutations=5` occasionally rejecting a legitimate (non-leaky)
 candidate by chance on smaller datasets — the gate is working as
@@ -221,6 +232,54 @@ clobber). Every script and the notebook write these; the notebook's
 final section demonstrates opening one and reading it. This is
 independent of Phases 6/7 but exists now because more candidates
 running (Phase 7) means more to inspect after the fact.
+
+**Feature Engineering agent (extensibility addition, runs between
+intake and the profiler in the actual pipeline sequence, even though
+it's listed here at the end of the build order):**
+- `harness/feature_engineering.py` — a vetted, deterministic operation
+  catalog (`ratio`, `interaction`, `log1p`, `datetime_parts`,
+  `missing_indicator`) plus `validate_feature_proposal()`. Every op is
+  stateless and row-wise (depends only on that row's own values, never
+  a fitted statistic) — that's what makes it safe to compute on the
+  full dataset before the split even exists, the same way the
+  profiler's own descriptive facts are. This agent does NOT decide
+  imputation values or scaling — those stay inside the modeling
+  templates' `ColumnTransformer`, fit only on the training fold,
+  unchanged.
+- `tools/feature_tool.py` — a `list_feature_ops` tool, same pattern as
+  the other four tools.
+- `steps/feature_engineering_step.py` — the agent proposes
+  `{drop_columns, derived_features, explanation}` using the same
+  `get_dataset_profile` facts the profiler sees, plus `list_feature_ops`.
+  The harness validates every column reference against the profiler's
+  dtype flags (e.g. `datetime_parts` requires `is_likely_datetime`),
+  forbids the target column as any op's input, and forbids dropping
+  the declared group/time column (though it IS a valid `datetime_parts`
+  input — extracting parts from the time column is the expected use).
+  Only then are the ops deterministically applied to produce an
+  augmented dataframe.
+- `scripts/run_feature_engineering_agent.py` — standalone driver
+  (mirrors `run_profiler_agent.py`'s pattern), writes a CSV preview of
+  the engineered dataframe for quick inspection.
+- `scripts/run_orchestrator.py` and the notebook: runs right after
+  intake, before the profiler agent, so the profiler's facts and
+  everything downstream reflect the augmented column set. The
+  resulting `drop_columns` are folded into `id_columns` (the same
+  exclusion mechanism intake already uses) rather than mutating the
+  dataframe directly — the augmented dataframe still contains dropped
+  columns for reference; they're just excluded from `X`. Skippable via
+  `--skip-feature-engineering`.
+- `tests/test_feature_engineering.py` — correctness of every op
+  (division-by-zero → NaN, negative → NaN for log1p, exact datetime
+  part values, missing-indicator flags) and every validation rejection
+  case. `tests/test_orchestrator.py` gained a test proving a real
+  (non-no-op) proposal's derived column actually reaches the modeling
+  agent's candidate config, not just that the step runs.
+
+**Not yet built:** priors/evidence reuse (Phase 6), parallelization
+(Phase 7). Both are intentionally on hold until the pipeline has been
+proven against a second real dataset beyond Titanic — reuse-across-runs
+evidence isn't worth building on a sample size of one dataset.
 
 ## Quickstart
 
@@ -248,6 +307,12 @@ python scripts/run_baseline_ladder.py \
 
 # 5. Run the profiler agent (Phase 2 — one deterministic tool call + LLM narrative)
 python scripts/run_profiler_agent.py \
+    --data datasets/raw/your_dataset.csv \
+    --target your_target_column
+
+# 5.5. Run the feature engineering agent standalone (proposes columns to
+#      drop + derived features from a vetted catalog; writes a CSV preview)
+python scripts/run_feature_engineering_agent.py \
     --data datasets/raw/your_dataset.csv \
     --target your_target_column
 
@@ -300,23 +365,27 @@ agentic-ml/
     agent_runtime.py        # tool-calling loop, no session/compaction state
     cli_common.py            # shared script plumbing (model endpoint, run dirs)
     harness/                 # the trust boundary — see Phase 1 above; also
-                               # intake.py (Phase 5 pre-target schema facts) and
-                               # verification.py (Phase 4 review bundle assembly)
+                               # intake.py (Phase 5 pre-target schema facts),
+                               # verification.py (Phase 4 review bundle
+                               # assembly), and feature_engineering.py (vetted
+                               # stateless derived-feature/drop-column ops)
     tools/                    # profiler_tool.py, template_tool.py, intake_tool.py,
-                               # verification_tool.py — thin bindings exposing
-                               # harness facts/registry data to agents as tool calls
+                               # verification_tool.py, feature_tool.py — thin
+                               # bindings exposing harness facts/registry data
+                               # to agents as tool calls
     templates/                # Phase 3 recipe templates + registry.py
       sources/                 # verified build_pipeline(config) .py files
     steps/                    # intake_step.py, profiler_step.py, modeling_step.py,
-                               # verification_step.py — agent-loop + validation
-                               # logic, shared by both the standalone scripts and
-                               # run_orchestrator.py
+                               # verification_step.py, feature_engineering_step.py
+                               # — agent-loop + validation logic, shared by both
+                               # the standalone scripts and run_orchestrator.py
 
   scripts/
     check_rit_connection.py
     check_gateway_connection.py
     run_baseline_ladder.py
     run_profiler_agent.py     # thin CLI wrapper around steps/profiler_step.py
+    run_feature_engineering_agent.py  # thin CLI wrapper around steps/feature_engineering_step.py
     run_modeling_agent.py     # thin CLI wrapper around steps/modeling_step.py
     run_orchestrator.py       # Phase 5 — the full loop, see above
 

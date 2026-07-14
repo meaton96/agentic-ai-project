@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from agentic_ml.harness.dataset import DatasetSpec, load_dataset
-from agentic_ml.harness.splits import make_split
+from agentic_ml.harness.splits import make_split, resolve_split_columns
 from agentic_ml.harness.leakage import (
     check_duplicate_rows_across_splits,
     check_group_overlap,
@@ -185,3 +185,65 @@ def test_profiler_flags_direct_feature_leak():
     df = pd.DataFrame({"noise": rng.normal(size=200), "leak": y, "target": y})
     report = profile_dataset(df, target_column="target")
     assert len(report.leakage_risk_flags) > 0
+
+
+# --- resolve_split_columns: regression coverage for the bug where the
+# profiler's recommended_split_strategy (derived purely from its own
+# heuristic detection) outran what intake actually declared as
+# group_column/time_column, and make_split() raised a bare ValueError
+# deep in the call stack instead of the harness reconciling the two. ---
+
+def _group_time_profile_report():
+    rng = np.random.RandomState(0)
+    rows = []
+    for cust_id in range(50):
+        for e in range(rng.randint(1, 5)):
+            rows.append({"customer_id": cust_id, "signup_day": e * 3, "x": rng.normal()})
+    df = pd.DataFrame(rows)
+    df["target"] = rng.randint(0, 2, size=len(df))
+    return profile_dataset(df, target_column="target").to_dict()
+
+
+def test_resolve_split_columns_autoadopts_detected_time_column_when_undeclared():
+    report = _group_time_profile_report()
+    assert report["recommended_split_strategy"] == "group_time"
+
+    group_column, time_column, notes = resolve_split_columns(
+        "group_time", group_column=None, time_column=None, profiler_report=report,
+    )
+    assert group_column == "customer_id"
+    assert time_column == "signup_day"
+    assert len(notes) == 2
+
+
+def test_resolve_split_columns_leaves_already_declared_columns_untouched():
+    report = _group_time_profile_report()
+    group_column, time_column, notes = resolve_split_columns(
+        "group_time", group_column="customer_id", time_column="signup_day", profiler_report=report,
+    )
+    assert group_column == "customer_id"
+    assert time_column == "signup_day"
+    assert notes == []
+
+
+def test_resolve_split_columns_noop_for_stratified():
+    report = _group_time_profile_report()
+    group_column, time_column, notes = resolve_split_columns(
+        "stratified", group_column=None, time_column=None, profiler_report=report,
+    )
+    assert group_column is None
+    assert time_column is None
+    assert notes == []
+
+
+def test_resolve_split_columns_partial_override_only_fills_missing_one():
+    """If group_column was explicitly declared but time_column wasn't,
+    only the missing one gets auto-resolved."""
+    report = _group_time_profile_report()
+    group_column, time_column, notes = resolve_split_columns(
+        "group_time", group_column="customer_id", time_column=None, profiler_report=report,
+    )
+    assert group_column == "customer_id"
+    assert time_column == "signup_day"
+    assert len(notes) == 1
+    assert "time_column" in notes[0]
