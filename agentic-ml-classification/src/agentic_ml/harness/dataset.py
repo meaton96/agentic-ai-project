@@ -71,17 +71,25 @@ def _hash_dataframe(df: pd.DataFrame) -> str:
     return hasher.hexdigest()
 
 
-def load_dataset(spec: DatasetSpec) -> LoadedDataset:
-    path = Path(spec.path)
+def read_dataframe(path: str | Path) -> pd.DataFrame:
+    """CSV/parquet reading, split out of load_dataset() so callers that
+    need to look at a dataframe before a target_column/DatasetSpec exists
+    yet (e.g. the intake step, which has to propose the target column in
+    the first place) don't duplicate the format-branching logic."""
+    path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Dataset not found: {path}")
 
     if path.suffix.lower() == ".csv":
-        df = pd.read_csv(path)
+        return pd.read_csv(path)
     elif path.suffix.lower() in (".parquet", ".pq"):
-        df = pd.read_parquet(path)
+        return pd.read_parquet(path)
     else:
         raise ValueError(f"Unsupported dataset format: {path.suffix}")
+
+
+def load_dataset(spec: DatasetSpec) -> LoadedDataset:
+    df = read_dataframe(spec.path)
 
     if spec.target_column not in df.columns:
         raise ValueError(

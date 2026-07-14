@@ -107,10 +107,55 @@ and tested:**
   leaderboard if that gate passes. The agent picks a recipe; it never
   gets to grade its own homework.
 
-**Not yet built (Phase 4+):** Verification agent (the label-permutation
-gate above is currently the only automated check on agent candidates —
-no AST-level review agent, no candidate-vs-candidate audit yet),
-Orchestrator/Analyst loop, priors/evidence reuse, parallelization.
+**Phase 5 (Orchestrator) — fully built and tested, skipping ahead of
+Phase 4 by design (see below):**
+- `harness/intake.py` — `raw_schema_summary()` computes column facts
+  with NO target column assumed (dtype, missingness, cardinality,
+  name-hint flags for id/group/datetime — deliberately excludes
+  anything target-dependent, since intake's whole job is to propose
+  the target); `validate_dataset_spec_proposal()` re-validates the
+  agent's proposed target/id/group/time columns against those facts
+  and enforces the binary-classification-only MVP constraint (target
+  must have exactly 2 non-null unique values) regardless of what the
+  agent claims.
+- `tools/intake_tool.py` — `get_raw_schema` tool, same pattern as the
+  other two tools.
+- `steps/{intake_step,profiler_step,modeling_step}.py` — the agent-loop
+  + validation + sandbox-build + fit/score + leakage-gate logic for
+  each phase, extracted out of the standalone scripts into plain
+  functions so `run_orchestrator.py` and the standalone scripts drive
+  identical logic instead of duplicating it.
+- `cli_common.py` — small shared plumbing (model endpoint resolution,
+  run-dir/trace-log setup) that all three scripts need.
+- `scripts/run_orchestrator.py` — the first entry point that runs the
+  full loop: **intake** (skipped if `--target` is given) → **profiler**
+  (its `recommended_split_strategy` drives the split unless overridden)
+  → up to `--max-candidates` **modeling** proposals, nudged toward
+  trying a different template each time → select the best candidate
+  that passes the label-permutation gate → refit it on train+val → one
+  locked test-set evaluation → a short LLM-narrated plain-text summary
+  (no tools, no decisions — it only narrates already-computed facts).
+  Works from just `--data` (intake guesses a target from the schema
+  alone), from `--data --goal "<natural language>"`, or from an
+  explicit `--target` that bypasses intake entirely.
+- `tests/test_orchestrator.py` — integration tests that drive the
+  *entire* loop end to end against a synthetic dataset with a stubbed
+  `ModelClient` (dispatch by system-prompt identity + message count, no
+  real network), covering all three entry modes above. This is the
+  automated answer to "does prompt (or just a dataset) + dataset →
+  finished classification actually work."
+
+Why Phase 5 before Phase 4: the deterministic gates that already exist
+(sandbox static checks + `label_permutation_test`) block leaky/broken
+candidates without needing an LLM to audit them, so closing the full
+loop end to end surfaces more real integration bugs sooner than adding
+a dedicated verification agent would. **Not yet built:** a dedicated
+verification/audit agent (Phase 4), priors/evidence reuse (Phase 6),
+parallelization (Phase 7). Also worth knowing: a real dry run against
+the Titanic dataset surfaced `label_permutation_test`'s default
+`n_permutations=5` occasionally rejecting a legitimate (non-leaky)
+candidate by chance on smaller datasets — the gate is working as
+designed, but that default may be worth revisiting.
 
 ## Quickstart
 
@@ -150,7 +195,20 @@ python scripts/run_modeling_agent.py \
     --time-column event_date \
     --strategy group_time
 
-# 7. Run the test suite
+# 7. Run the full orchestrator loop (Phase 5 — intake -> profiler ->
+#    N modeling candidates -> selection -> one locked test-set eval ->
+#    narrated summary). Omit --target to let intake infer it from
+#    --goal (or from the schema alone if --goal is also omitted).
+python scripts/run_orchestrator.py \
+    --data datasets/raw/your_dataset.csv \
+    --goal "predict your_target_column" \
+    --max-candidates 2
+
+# 8. Or walk through the same loop interactively, one phase per cell,
+#    with inline tables/ROC curve instead of print statements:
+jupyter notebook notebooks/end_to_end_pipeline.ipynb
+
+# 9. Run the test suite
 pytest tests/ -v
 ```
 
@@ -173,19 +231,29 @@ agentic-ml/
   src/agentic_ml/
     model_client.py         # OpenAI-compatible client, stateless
     agent_runtime.py        # tool-calling loop, no session/compaction state
-    harness/                 # the trust boundary — see Phase 1 above
-    tools/                    # profiler_tool.py, template_tool.py — thin
-                               # bindings that expose harness facts/registry
+    cli_common.py            # shared script plumbing (model endpoint, run dirs)
+    harness/                 # the trust boundary — see Phase 1 above; also
+                               # intake.py (Phase 5 pre-target schema facts)
+    tools/                    # profiler_tool.py, template_tool.py, intake_tool.py
+                               # — thin bindings exposing harness facts/registry
                                # data to agents as tool calls
     templates/                # Phase 3 recipe templates + registry.py
       sources/                 # verified build_pipeline(config) .py files
+    steps/                    # intake_step.py, profiler_step.py, modeling_step.py
+                               # — agent-loop + validation logic, shared by both
+                               # the standalone scripts and run_orchestrator.py
 
   scripts/
     check_rit_connection.py
     check_gateway_connection.py
     run_baseline_ladder.py
-    run_profiler_agent.py
-    run_modeling_agent.py
+    run_profiler_agent.py     # thin CLI wrapper around steps/profiler_step.py
+    run_modeling_agent.py     # thin CLI wrapper around steps/modeling_step.py
+    run_orchestrator.py       # Phase 5 — the full loop, see above
+
+  notebooks/
+    end_to_end_pipeline.ipynb # same steps/* functions as the scripts, one
+                               # phase per cell, inline tables + ROC curve
 
   datasets/raw/              # put input CSV/Parquet here
   runs/                       # per-run trace.jsonl, split_manifest.json, etc.
@@ -207,3 +275,4 @@ agentic-ml/
    execution, subprocess isolation with resource limits during
    execution. Candidates receive a `config` dict and return an
    unfitted pipeline — never a file path, never raw data.
+

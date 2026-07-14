@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+"""
+Phase 5: the Orchestrator. This is the first entry point that runs the
+full "prompt (or just a dataset) -> agent pipeline -> finished
+classification" loop: intake (skippable via --target) -> profiler
+(drives the split strategy) -> up to --max-candidates modeling-agent
+proposals -> select the best candidate that passes the leakage gate ->
+refit it on train+val -> one locked test-set evaluation -> a short
+LLM-narrated plain-text summary.
+
+scripts/run_profiler_agent.py and scripts/run_modeling_agent.py remain
+useful for driving a single phase in isolation; this script drives the
+same underlying step functions (agentic_ml.steps.*) end to end.
+
+Scope note: there is no dedicated Phase 4 verification/audit agent yet
+— the sandbox's static checks and the label-permutation leakage gate
+are the only automated gates on agent-proposed candidates so far.
+
+Usage:
+    set -a; source .env; set +a
+
+    # natural-language goal, dataset only otherwise:
+    python scripts/run_orchestrator.py \\
+        --data datasets/raw/train.csv \\
+        --goal "predict whether a passenger survived"
+
+    # dataset only, no goal, no --target — intake infers a target from
+    # the schema alone:
+    python scripts/run_orchestrator.py --data datasets/raw/train.csv
+
+    # explicit --target skips intake entirely, same as the standalone scripts:
+    python scripts/run_orchestrator.py --data datasets/raw/train.csv --target Survived
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+from sklearn.base import clone
+
+from agentic_ml.cli_common import make_run_dir, make_tracer, resolve_model_endpoint
+from agentic_ml.harness.dataset import DatasetSpec, load_dataset, read_dataframe, write_dataset_spec
+from agentic_ml.harness.leaderboard import append_leaderboard_entry
+from agentic_ml.harness.leakage import run_all_split_leakage_checks
+from agentic_ml.harness.metrics import compute_metrics
+from agentic_ml.harness.splits import make_split
+from agentic_ml.model_client import ModelClient
+from agentic_ml.steps.intake_step import run_intake_step
+from agentic_ml.steps.modeling_step import run_modeling_step
+from agentic_ml.steps.profiler_step import run_profiler_step
+from agentic_ml.templates.registry import get_template
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data", required=True)
+    parser.add_argument("--goal", default="", help="natural-language description of the "
+                         "prediction goal; optional, only used when --target is not given")
+    parser.add_argument("--target", default=None, help="skip intake and use this target "
+                         "column directly")
+    parser.add_argument("--group-column", default=None)
+    parser.add_argument("--time-column", default=None)
+    parser.add_argument("--id-columns", default=None, help="comma-separated; overrides "
+                         "intake's proposal if given")
+    parser.add_argument("--strategy", default=None,
+                         choices=["random", "stratified", "group", "time", "group_time"],
+                         help="overrides the profiler's recommended split strategy if given")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--metrics", default="roc_auc,pr_auc,f1,accuracy")
+    parser.add_argument("--max-candidates", type=int, default=2)
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--use-gateway", action="store_true")
+    parser.add_argument("--run-id", default=None)
+    args = parser.parse_args()
+
+    run_id, run_dir = make_run_dir(args.run_id)
+    trace = make_tracer(run_dir / "trace.jsonl")
+
+    base_url, api_key, default_model = resolve_model_endpoint(
+        args.use_gateway, args.model, "qwen3-coder:30b", "rit-qwen3-coder-30b",
+    )
+    client = ModelClient(base_url=base_url, api_key=api_key, default_model=default_model)
+
+    report: dict = {"run_id": run_id, "model": default_model, "status": "in_progress"}
+
+    def write_report():
+        (run_dir / "orchestrator_report.json").write_text(json.dumps(report, indent=2, default=str))
+
+    # --- 1. Intake: figure out the DatasetSpec, unless --target was given ---
+    if args.target is None:
+        print(f"No --target given; running IntakeAgent (goal={args.goal!r})...")
+        raw_df = read_dataframe(args.data)
+
+        intake_result = run_intake_step(
+            raw_df, args.goal, client, model=default_model,
+            trace_fn=lambda record: trace(**record),
+        )
+        (run_dir / "intake_report.json").write_text(json.dumps({
+            "dataset_spec_proposal": intake_result.dataset_spec_proposal,
+            "validation_errors": intake_result.validation_errors,
+            "raw_schema": intake_result.raw_schema,
+            "llm_raw_text": intake_result.llm_raw_text,
+        }, indent=2, default=str))
+
+        if not intake_result.ok:
+            print("FAILED: IntakeAgent's proposal did not validate:")
+            for e in intake_result.validation_errors:
+                print(f"  - {e}")
+            report["status"] = "failed_intake"
+            report["errors"] = intake_result.validation_errors
+            write_report()
+            sys.exit(1)
+
+        proposal = intake_result.dataset_spec_proposal
+        target_column = proposal["target_column"]
+        group_column = args.group_column or proposal.get("group_column")
+        time_column = args.time_column or proposal.get("time_column")
+        id_columns = (
+            [c.strip() for c in args.id_columns.split(",") if c.strip()]
+            if args.id_columns is not None else (proposal.get("id_columns") or [])
+        )
+        print(f"IntakeAgent proposed target_column={target_column!r}, "
+              f"group_column={group_column!r}, time_column={time_column!r}, "
+              f"id_columns={id_columns}")
+        print(f"  reasoning: {proposal.get('reasoning', '')}")
+        report["intake"] = {
+            "target_column": target_column, "group_column": group_column,
+            "time_column": time_column, "id_columns": id_columns,
+            "reasoning": proposal.get("reasoning", ""),
+        }
+    else:
+        target_column = args.target
+        group_column = args.group_column
+        time_column = args.time_column
+        id_columns = [c.strip() for c in (args.id_columns or "").split(",") if c.strip()]
+        report["intake"] = {"skipped": True, "reason": "--target was given explicitly"}
+
+    # --- 2. Load dataset + profiler (drives split strategy unless overridden) ---
+    spec = DatasetSpec(
+        path=args.data, target_column=target_column, group_column=group_column,
+        time_column=time_column, id_columns=id_columns,
+    )
+    write_dataset_spec(spec, run_dir / "dataset_spec.json")
+    loaded = load_dataset(spec)
+    print(f"\nLoaded dataset: {len(loaded.df)} rows, data_hash={loaded.data_hash[:16]}...")
+
+    print("Running ProfilerAgent...")
+    profiler_result = run_profiler_step(
+        loaded.df, target_column, client, model=default_model,
+        trace_fn=lambda record: trace(**record),
+    )
+    (run_dir / "profiler_report.json").write_text(json.dumps({
+        "deterministic_report": profiler_result.deterministic_report,
+        "llm_narrative": profiler_result.llm_narrative,
+        "llm_raw_text": profiler_result.llm_raw_text,
+    }, indent=2, default=str))
+
+    if not profiler_result.ok:
+        print("FAILED: ProfilerAgent never called get_dataset_profile.")
+        report["status"] = "failed_profiler"
+        write_report()
+        sys.exit(1)
+
+    strategy = args.strategy or profiler_result.deterministic_report["recommended_split_strategy"]
+    print(f"Split strategy: {strategy} "
+          f"({'explicit override' if args.strategy else 'profiler recommendation'})")
+    report["profiler"] = {
+        "recommended_split_strategy": profiler_result.deterministic_report["recommended_split_strategy"],
+        "is_imbalanced": profiler_result.deterministic_report["is_imbalanced"],
+        "leakage_risk_flags": profiler_result.deterministic_report["leakage_risk_flags"],
+        "narrative": profiler_result.llm_narrative,
+        "strategy_used": strategy,
+    }
+
+    # --- 3. Split + split-level leakage checks ---
+    manifest = make_split(
+        df=loaded.df, target_column=target_column, data_hash=loaded.data_hash,
+        strategy=strategy, seed=args.seed, group_column=group_column, time_column=time_column,
+    )
+    manifest.write(run_dir / "split_manifest.json")
+    print(f"Split ({strategy}): train={len(manifest.train_idx)} "
+          f"val={len(manifest.val_idx)} test={len(manifest.test_idx)}")
+
+    leakage_checks = run_all_split_leakage_checks(
+        df=loaded.df, group_column=group_column, time_column=time_column,
+        train_idx=manifest.train_idx, val_idx=manifest.val_idx, test_idx=manifest.test_idx,
+        strategy=strategy,
+    )
+    (run_dir / "leakage_checks.json").write_text(
+        json.dumps([c.to_dict() for c in leakage_checks], indent=2)
+    )
+    for check in leakage_checks:
+        print(f"  leakage check [{'PASS' if check.passed else 'FAIL'}] {check.check_name}: {check.detail}")
+    if not all(c.passed for c in leakage_checks):
+        print("\nABORTING: split-level leakage check failed.")
+        report["status"] = "failed_split_leakage"
+        write_report()
+        sys.exit(1)
+
+    # --- 4. Modeling: try up to max_candidates, pick the best that passes the leakage gate ---
+    metric_names = args.metrics.split(",")
+    primary_metric = metric_names[0]
+    candidates_report = []
+    passing_candidates = []
+    tried_template_ids: list[str] = []
+
+    for i in range(args.max_candidates):
+        print(f"\nModelingAgent candidate {i + 1}/{args.max_candidates}...")
+        step_result = run_modeling_step(
+            full_df=loaded.df, X=loaded.X, y=loaded.y, target_column=target_column,
+            group_column=group_column, time_column=time_column,
+            train_idx=manifest.train_idx, val_idx=manifest.val_idx,
+            client=client, model=default_model, metric_names=metric_names, seed=args.seed,
+            already_tried_template_ids=tried_template_ids,
+            trace_fn=lambda record: trace(**record),
+        )
+        if step_result.template_id:
+            tried_template_ids.append(step_result.template_id)
+
+        candidate_summary = {
+            "candidate_id": step_result.candidate_id, "template_id": step_result.template_id,
+            "config": step_result.config, "explanation": step_result.explanation,
+            "metrics": step_result.metrics, "label_permutation_check": step_result.label_permutation_check,
+            "errors": step_result.errors, "passed_gate": step_result.ok,
+        }
+        candidates_report.append(candidate_summary)
+
+        if step_result.candidate_id:
+            candidate_dir = run_dir / "candidates" / step_result.candidate_id
+            candidate_dir.mkdir(parents=True, exist_ok=True)
+            if step_result.template_id:
+                (candidate_dir / "candidate.py").write_text(get_template(step_result.template_id).read_source())
+            if step_result.config:
+                (candidate_dir / "candidate_config.json").write_text(json.dumps(step_result.config, indent=2))
+            (candidate_dir / "explanation.md").write_text(
+                f"# {step_result.candidate_id}\n\ntemplate: {step_result.template_id}\n\n"
+                f"{step_result.explanation or ''}\n"
+            )
+            (candidate_dir / "evaluation.json").write_text(json.dumps(candidate_summary, indent=2, default=str))
+
+        if not step_result.ok:
+            print(f"  candidate failed/rejected: {step_result.errors}")
+            continue
+
+        print(f"  {step_result.candidate_id} ({step_result.template_id}): "
+              f"{primary_metric}={step_result.metrics[primary_metric]['value']:.4f}  PASS")
+
+        leaderboard_path = Path("artifacts/reports/leaderboard.jsonl")
+        append_leaderboard_entry(leaderboard_path, {
+            "run_id": run_id, "candidate": step_result.candidate_id, "template_id": step_result.template_id,
+            "source": "orchestrator", "model": default_model, "split": "validation", "strategy": strategy,
+            "data_hash": loaded.data_hash, "seed": args.seed, "metrics": step_result.metrics,
+        })
+        passing_candidates.append(step_result)
+
+    report["candidates"] = candidates_report
+
+    if not passing_candidates:
+        print("\nABORTING: no candidate passed the label-permutation leakage gate. "
+              "Test set was never touched.")
+        report["status"] = "no_candidate_passed"
+        write_report()
+        sys.exit(1)
+
+    best = max(passing_candidates, key=lambda r: r.metrics[primary_metric]["value"])
+    print(f"\nSelected candidate: {best.candidate_id} ({best.template_id}) "
+          f"— {primary_metric}={best.metrics[primary_metric]['value']:.4f} on validation")
+    report["selected_candidate"] = {
+        "candidate_id": best.candidate_id, "template_id": best.template_id,
+        "validation_metrics": best.metrics,
+    }
+
+    # --- 5. Final, one-time test-set evaluation: refit the selected candidate
+    # on train+val combined, then touch the test set exactly once ---
+    train_and_val_idx = sorted(manifest.train_idx + manifest.val_idx)
+    final_pipeline = clone(best.pipeline)
+    final_pipeline.fit(loaded.X.iloc[train_and_val_idx], loaded.y.iloc[train_and_val_idx])
+    y_pred = final_pipeline.predict(loaded.X.iloc[manifest.test_idx])
+    proba = final_pipeline.predict_proba(loaded.X.iloc[manifest.test_idx])
+    y_proba = proba[:, 1] if proba.shape[1] == 2 else proba.max(axis=1)
+    test_results = compute_metrics(
+        loaded.y.iloc[manifest.test_idx].values, y_pred, y_proba, metric_names,
+        n_bootstrap=200, seed=args.seed,
+    )
+    test_metrics = {m: test_results[m].to_dict() for m in metric_names}
+    print("\nFinal test-set metrics (touched exactly once):")
+    for m in metric_names:
+        r = test_metrics[m]
+        print(f"  {m}: {r['value']:.4f}  (95% CI [{r['ci_low']:.4f}, {r['ci_high']:.4f}])")
+
+    report["final_test_metrics"] = test_metrics
+    report["status"] = "success"
+
+    # --- 6. Narrated final summary: plain text only, no tools, no decisions ---
+    summary_messages = [
+        {"role": "system", "content": (
+            "You are the Analyst step of a deterministic ML pipeline. Respond "
+            "with 4-6 sentences of plain prose only (no JSON, no markdown "
+            "fences) summarizing the given facts for a non-technical "
+            "stakeholder. Do not invent any numbers not present in the input."
+        )},
+        {"role": "user", "content": json.dumps({
+            "goal": args.goal or "(none given — target inferred from data alone)",
+            "target_column": target_column,
+            "n_candidates_tried": len(candidates_report),
+            "n_candidates_passed_leakage_gate": len(passing_candidates),
+            "selected_candidate": report["selected_candidate"],
+            "final_test_metrics": test_metrics,
+        }, indent=2)},
+    ]
+    summary_response = client.call(summary_messages, model=default_model, max_tokens=400)
+    print("\n--- Final summary ---")
+    print(summary_response.text)
+    report["final_summary"] = summary_response.text
+
+    write_report()
+    print(f"\nOrchestrator report written to {run_dir / 'orchestrator_report.json'}")
+    print("SUCCESS.")
+
+
+if __name__ == "__main__":
+    main()
