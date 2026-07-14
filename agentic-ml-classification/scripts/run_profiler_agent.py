@@ -24,7 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from agentic_ml.cli_common import make_run_dir, make_tracer, resolve_model_endpoint
+from agentic_ml.cli_common import make_run_dir, make_tracer, make_transcript_writer, resolve_model_endpoint
 from agentic_ml.harness.dataset import DatasetSpec, load_dataset
 from agentic_ml.model_client import ModelClient
 from agentic_ml.steps.profiler_step import run_profiler_step
@@ -43,6 +43,7 @@ def main():
 
     run_id, run_dir = make_run_dir(args.run_id)
     trace = make_tracer(run_dir / "trace.jsonl")
+    write_transcript = make_transcript_writer(run_dir)
 
     spec = DatasetSpec(path=args.data, target_column=args.target)
     loaded = load_dataset(spec)
@@ -60,6 +61,8 @@ def main():
         trace_fn=lambda record: trace(**record),
     )
     print(f"Agent stopped: {step_result.stopped_reason} (turns_used={step_result.turns_used})")
+    transcript_path = write_transcript("profiler", step_result.messages)
+    print(f"Transcript written to {transcript_path}")
 
     # deterministic tool output is always saved, regardless of whether the
     # LLM's narrative parses cleanly — the facts don't depend on the LLM
@@ -89,6 +92,7 @@ def main():
         "llm_raw_text": step_result.llm_raw_text,
         "stopped_reason": step_result.stopped_reason,
         "turns_used": step_result.turns_used,
+        "transcript": str(transcript_path),
     }
     out_path = run_dir / "profiler_report.json"
     out_path.write_text(json.dumps(output, indent=2, default=str))

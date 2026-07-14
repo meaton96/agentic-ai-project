@@ -69,6 +69,7 @@ class IntakeStepResult:
     llm_raw_text: Optional[str]
     stopped_reason: str
     turns_used: int
+    messages: list[dict]  # full conversation this agent had — see cli_common.make_transcript_writer
 
 
 def run_intake_step(
@@ -103,6 +104,7 @@ def run_intake_step(
             validation_errors=["agent never produced a proposal"],
             raw_schema=raw_schema, llm_raw_text=None,
             stopped_reason=result.stopped_reason, turns_used=result.turns_used,
+            messages=result.messages,
         )
 
     try:
@@ -113,6 +115,7 @@ def run_intake_step(
             validation_errors=["agent's final response did not parse as JSON"],
             raw_schema=raw_schema, llm_raw_text=result.final_text,
             stopped_reason=result.stopped_reason, turns_used=result.turns_used,
+            messages=result.messages,
         )
 
     errors = validate_dataset_spec_proposal(df, proposal)
@@ -120,4 +123,5 @@ def run_intake_step(
         ok=len(errors) == 0, dataset_spec_proposal=proposal, validation_errors=errors,
         raw_schema=raw_schema, llm_raw_text=result.final_text,
         stopped_reason=result.stopped_reason, turns_used=result.turns_used,
+        messages=result.messages,
     )

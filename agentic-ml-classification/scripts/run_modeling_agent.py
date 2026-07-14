@@ -37,7 +37,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from agentic_ml.cli_common import make_run_dir, make_tracer, resolve_model_endpoint
+from agentic_ml.cli_common import make_run_dir, make_tracer, make_transcript_writer, resolve_model_endpoint
 from agentic_ml.harness.dataset import DatasetSpec, load_dataset, write_dataset_spec
 from agentic_ml.harness.leaderboard import append_leaderboard_entry
 from agentic_ml.harness.leakage import run_all_split_leakage_checks
@@ -73,6 +73,7 @@ def main():
 
     run_id, run_dir = make_run_dir(args.run_id)
     trace = make_tracer(run_dir / "trace.jsonl")
+    write_transcript = make_transcript_writer(run_dir)
 
     id_columns = [c.strip() for c in args.id_columns.split(",") if c.strip()]
     spec = DatasetSpec(
@@ -124,6 +125,8 @@ def main():
         trace_fn=lambda record: trace(**record),
     )
     print(f"Agent stopped: {step_result.stopped_reason} (turns_used={step_result.turns_used})")
+    modeling_transcript_path = write_transcript("modeling", step_result.messages)
+    print(f"Transcript written to {modeling_transcript_path}")
 
     if step_result.candidate_id:
         candidate_dir = run_dir / "candidates" / step_result.candidate_id
@@ -159,6 +162,7 @@ def main():
             "label_permutation_check": step_result.label_permutation_check,
             "feature_correlation_check": step_result.feature_correlation_check,
             "errors": step_result.errors,
+            "transcript": str(modeling_transcript_path),
         }
         (candidate_dir / "evaluation.json").write_text(json.dumps(evaluation, indent=2))
 
@@ -194,12 +198,15 @@ def main():
         print(f"  concerns: {verification_result.concerns}")
     if verification_result.reasoning:
         print(f"  reasoning: {verification_result.reasoning}")
+    verification_transcript_path = write_transcript("verification", verification_result.messages)
+    print(f"Transcript written to {verification_transcript_path}")
 
     (candidate_dir / "verification.json").write_text(json.dumps({
         "verdict": verification_result.verdict,
         "concerns": verification_result.concerns,
         "reasoning": verification_result.reasoning,
         "parsed_ok": verification_result.ok,
+        "transcript": str(verification_transcript_path),
     }, indent=2))
 
     if verification_result.verdict == "rejected":

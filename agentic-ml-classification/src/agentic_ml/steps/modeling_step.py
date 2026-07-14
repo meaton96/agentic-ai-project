@@ -144,6 +144,7 @@ class ModelingStepResult:
     errors: list[str] = field(default_factory=list)
     stopped_reason: str = ""
     turns_used: int = 0
+    messages: list[dict] = field(default_factory=list)  # full conversation — see cli_common.make_transcript_writer
 
 
 def run_modeling_step(
@@ -193,6 +194,7 @@ def run_modeling_step(
             pipeline=None, metrics=None, label_permutation_check=None,
             feature_correlation_check=None, errors=errors,
             stopped_reason=result.stopped_reason, turns_used=result.turns_used,
+            messages=result.messages,
         )
 
     if result.final_text is None:
@@ -277,4 +279,5 @@ def run_modeling_step(
         feature_correlation_check=correlation_check.to_dict(),
         errors=gate_errors,
         stopped_reason=result.stopped_reason, turns_used=result.turns_used,
+        messages=result.messages,
     )

@@ -72,6 +72,7 @@ class VerificationStepResult:
     llm_raw_text: Optional[str]
     stopped_reason: str
     turns_used: int
+    messages: list[dict]  # full conversation this agent had — see cli_common.make_transcript_writer
 
 
 def run_verification_step(
@@ -101,6 +102,7 @@ def run_verification_step(
             ok=False, verdict="flagged", concerns=[reason], reasoning=None,
             llm_raw_text=result.final_text,
             stopped_reason=result.stopped_reason, turns_used=result.turns_used,
+            messages=result.messages,
         )
 
     if result.final_text is None:
@@ -123,4 +125,5 @@ def run_verification_step(
         llm_raw_text=result.final_text,
         stopped_reason=result.stopped_reason,
         turns_used=result.turns_used,
+        messages=result.messages,
     )

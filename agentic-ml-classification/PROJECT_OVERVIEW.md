@@ -432,6 +432,20 @@ stubbed client before being considered done each time it changed,
 which has caught real bugs (e.g. a relative-path error in the final
 reporting cell) that a visual read-through did not.
 
+**A related but distinct concern is auditability after a real run**,
+not just correctness during testing. Early on, the only per-run log
+(`trace.jsonl`) recorded metadata — which model, how long, whether a
+tool was called — not what was actually said. That's enough to debug
+performance, not enough to answer "why did the modeling agent pick
+this template" after the fact. Every agent invocation now writes its
+full conversation (system prompt, tool calls with real parsed
+arguments, tool results, final response) to `runs/<run_id>/
+transcripts/`, one file per invocation, numbered so multiple candidates
+in one run don't overwrite each other. This matters more, not less, as the system runs more candidates per
+run (Phase 7, not yet built) — more things happening at once is
+exactly when "what did each one actually do" stops being answerable
+from memory.
+
 ## 11. Current status
 
 | Phase | Status |

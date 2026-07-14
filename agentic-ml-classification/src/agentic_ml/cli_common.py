@@ -1,8 +1,8 @@
 """
 Shared plumbing for scripts/*.py entry points: model endpoint
-resolution, run-directory creation, and trace-log writing. Pulled out
-once it was needed identically by run_profiler_agent.py,
-run_modeling_agent.py, and run_orchestrator.py.
+resolution, run-directory creation, trace-log writing, and per-agent
+transcript writing. Pulled out once it was needed identically by
+run_profiler_agent.py, run_modeling_agent.py, and run_orchestrator.py.
 """
 from __future__ import annotations
 
@@ -44,3 +44,62 @@ def make_tracer(trace_path: Path) -> Callable[..., None]:
         with open(trace_path, "a") as f:
             f.write(json.dumps({"ts": time.time(), "event": event, **fields}) + "\n")
     return trace
+
+
+def _prettify_tool_call(tool_call: dict) -> dict:
+    """Parses a tool call's JSON-string arguments back into a real nested
+    object, so the transcript file reads as JSON, not escaped JSON-in-JSON."""
+    out = dict(tool_call)
+    func = dict(out.get("function", {}))
+    args = func.get("arguments")
+    if isinstance(args, str):
+        try:
+            func["arguments"] = json.loads(args)
+        except json.JSONDecodeError:
+            pass
+    out["function"] = func
+    return out
+
+
+def _prettify_message(message: dict) -> dict:
+    """Same idea as _prettify_tool_call, applied to a full message: a
+    'tool' role message's content is the tool's JSON result as a string
+    (that's the wire format agent_runtime.py uses); parse it back into a
+    real object. Also opportunistically parses a plain assistant message's
+    content if it looks like the JSON almost every agent in this pipeline
+    is instructed to respond with — pure readability, never changes what
+    was actually said."""
+    out = dict(message)
+    if "tool_calls" in out:
+        out["tool_calls"] = [_prettify_tool_call(tc) for tc in out["tool_calls"]]
+    content = out.get("content")
+    if isinstance(content, str):
+        stripped = content.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            try:
+                out["content"] = json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
+    return out
+
+
+def make_transcript_writer(run_dir: Path) -> Callable[[str, list[dict]], Path]:
+    """Returns write(agent_name, messages) -> Path. Each call writes a new
+    file under runs/<run_id>/transcripts/, numbered per agent_name (so
+    calling this twice for "modeling" — e.g. two candidates in one
+    orchestrator run — produces modeling_01.json and modeling_02.json,
+    not a clobber). This is the full conversation each agent actually
+    had: system prompt, tool calls with real arguments, tool results, and
+    the final response — not just the metadata trace.jsonl records."""
+    transcripts_dir = run_dir / "transcripts"
+    counters: dict[str, int] = {}
+
+    def write(agent_name: str, messages: list[dict]) -> Path:
+        counters[agent_name] = counters.get(agent_name, 0) + 1
+        transcripts_dir.mkdir(parents=True, exist_ok=True)
+        path = transcripts_dir / f"{agent_name}_{counters[agent_name]:02d}.json"
+        pretty = [_prettify_message(m) for m in messages]
+        path.write_text(json.dumps(pretty, indent=2, default=str))
+        return path
+
+    return write

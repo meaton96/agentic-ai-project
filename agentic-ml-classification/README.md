@@ -209,6 +209,19 @@ feature-correlation gate and verification agent are additional,
 independent checks, not a fix for that specific permutation-test
 sensitivity.
 
+**Observability (added after Phase 4):** `trace.jsonl` only ever
+recorded metadata (model, latency, token counts, whether a tool was
+called) — not what was actually said. `cli_common.make_transcript_writer`
+now writes the full conversation for every agent invocation —
+system prompt, tool calls with real (not escaped-string) arguments,
+tool results, final response — to `runs/<run_id>/transcripts/
+<agent_name>_NN.json` (numbered per agent, so two modeling candidates
+in one run produce `modeling_01.json`/`modeling_02.json`, not a
+clobber). Every script and the notebook write these; the notebook's
+final section demonstrates opening one and reading it. This is
+independent of Phases 6/7 but exists now because more candidates
+running (Phase 7) means more to inspect after the fact.
+
 ## Quickstart
 
 ```bash
@@ -312,7 +325,8 @@ agentic-ml/
                                # phase per cell, inline tables + ROC curve
 
   datasets/raw/              # put input CSV/Parquet here
-  runs/                       # per-run trace.jsonl, split_manifest.json, etc.
+  runs/                       # per-run trace.jsonl, split_manifest.json,
+                               # transcripts/<agent>_NN.json, etc.
   artifacts/reports/          # leaderboard.jsonl lives here
   tests/                      # pytest suite + leaky_fixtures/ regression data
 ```

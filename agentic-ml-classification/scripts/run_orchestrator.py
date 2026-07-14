@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from sklearn.base import clone
 
-from agentic_ml.cli_common import make_run_dir, make_tracer, resolve_model_endpoint
+from agentic_ml.cli_common import make_run_dir, make_tracer, make_transcript_writer, resolve_model_endpoint
 from agentic_ml.harness.dataset import DatasetSpec, load_dataset, read_dataframe, write_dataset_spec
 from agentic_ml.harness.leaderboard import append_leaderboard_entry
 from agentic_ml.harness.leakage import run_all_split_leakage_checks
@@ -83,6 +83,7 @@ def main():
 
     run_id, run_dir = make_run_dir(args.run_id)
     trace = make_tracer(run_dir / "trace.jsonl")
+    write_transcript = make_transcript_writer(run_dir)
 
     base_url, api_key, default_model = resolve_model_endpoint(
         args.use_gateway, args.model, "qwen3-coder:30b", "rit-qwen3-coder-30b",
@@ -103,11 +104,13 @@ def main():
             raw_df, args.goal, client, model=default_model,
             trace_fn=lambda record: trace(**record),
         )
+        intake_transcript_path = write_transcript("intake", intake_result.messages)
         (run_dir / "intake_report.json").write_text(json.dumps({
             "dataset_spec_proposal": intake_result.dataset_spec_proposal,
             "validation_errors": intake_result.validation_errors,
             "raw_schema": intake_result.raw_schema,
             "llm_raw_text": intake_result.llm_raw_text,
+            "transcript": str(intake_transcript_path),
         }, indent=2, default=str))
 
         if not intake_result.ok:
@@ -135,6 +138,7 @@ def main():
             "target_column": target_column, "group_column": group_column,
             "time_column": time_column, "id_columns": id_columns,
             "reasoning": proposal.get("reasoning", ""),
+            "transcript": str(intake_transcript_path),
         }
     else:
         target_column = args.target
@@ -157,10 +161,12 @@ def main():
         loaded.df, target_column, client, model=default_model,
         trace_fn=lambda record: trace(**record),
     )
+    profiler_transcript_path = write_transcript("profiler", profiler_result.messages)
     (run_dir / "profiler_report.json").write_text(json.dumps({
         "deterministic_report": profiler_result.deterministic_report,
         "llm_narrative": profiler_result.llm_narrative,
         "llm_raw_text": profiler_result.llm_raw_text,
+        "transcript": str(profiler_transcript_path),
     }, indent=2, default=str))
 
     if not profiler_result.ok:
@@ -178,6 +184,7 @@ def main():
         "leakage_risk_flags": profiler_result.deterministic_report["leakage_risk_flags"],
         "narrative": profiler_result.llm_narrative,
         "strategy_used": strategy,
+        "transcript": str(profiler_transcript_path),
     }
 
     # --- 3. Split + split-level leakage checks ---
@@ -227,6 +234,8 @@ def main():
         if step_result.template_id:
             tried_template_ids.append(step_result.template_id)
 
+        modeling_transcript_path = write_transcript("modeling", step_result.messages)
+
         candidate_summary = {
             "candidate_id": step_result.candidate_id, "template_id": step_result.template_id,
             "config": step_result.config, "explanation": step_result.explanation,
@@ -235,6 +244,7 @@ def main():
             "feature_correlation_check": step_result.feature_correlation_check,
             "errors": step_result.errors, "passed_gate": step_result.ok,
             "verification": None,  # filled in during step 4.5, if this candidate gets reviewed
+            "transcript": str(modeling_transcript_path),
         }
         candidates_report.append(candidate_summary)
 
@@ -297,12 +307,14 @@ def main():
         )
         print(f"  verdict: {v_result.verdict}"
               + (f"  concerns: {v_result.concerns}" if v_result.concerns else ""))
+        verification_transcript_path = write_transcript("verification", v_result.messages)
 
         for entry in candidates_report:
             if entry["candidate_id"] == candidate.candidate_id:
                 entry["verification"] = {
                     "verdict": v_result.verdict, "concerns": v_result.concerns,
                     "reasoning": v_result.reasoning,
+                    "transcript": str(verification_transcript_path),
                 }
 
         append_leaderboard_entry(leaderboard_path, {
@@ -384,6 +396,10 @@ def main():
     print("\n--- Final summary ---")
     print(summary_response.text)
     report["final_summary"] = summary_response.text
+    report["final_summary_transcript"] = str(write_transcript(
+        "analyst_summary",
+        summary_messages + [{"role": "assistant", "content": summary_response.text}],
+    ))
 
     write_report()
     print(f"\nOrchestrator report written to {run_dir / 'orchestrator_report.json'}")
