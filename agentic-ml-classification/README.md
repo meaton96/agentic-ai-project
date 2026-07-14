@@ -5,6 +5,11 @@ input, binary classification, tabular data, sklearn/LightGBM/XGBoost,
 single-machine CPU, deterministic harness-owned evaluation. Agents
 never get direct access to test labels or final scoring logic.
 
+For the *what and why* behind each agent and design decision (written
+for presenting the project, not for modifying it), see
+[PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md). This file is the detailed
+file-by-file build log.
+
 ## Why there's no OpenClaw here
 
 The original plan used OpenClaw as the agent runtime. During bootstrap
