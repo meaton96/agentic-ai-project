@@ -80,6 +80,8 @@ flowchart TD
     F2 --> K
     K -->|approved / flagged| I[Harness: refit on train+val,<br/>evaluate once on locked test set]
     I --> J[Narrated summary]
+    I -.->|saves, binary target only| M[(artifacts/models/*.joblib)]
+    M -.->|on demand, per flagged example| DD[Deep-Dive Agent]
 
     style C fill:#2d3748,color:#fff
     style FEV fill:#2d3748,color:#fff
@@ -93,7 +95,9 @@ white box is an LLM agent, and every arrow leaving a white box passes
 through a validation step before it can affect anything. The
 Verification Agent's only two exits are "let it through" (approved or
 flagged) and "reject, try the next one" — there is no path from that
-box back to overriding G.
+box back to overriding G. The dashed edges are the Deep-Dive Agent
+(§5.6): it's not part of this loop — it runs afterward, on demand, per
+flagged example, against the model artifact the loop above just saved.
 
 ## 4. The deterministic harness (the trust boundary)
 
@@ -144,13 +148,16 @@ that actually decides whether a result is real. It owns:
 - **An append-only leaderboard** so every candidate ever evaluated is
   recorded, not just the winner.
 
-## 5. The five agents
+## 5. The six agents
 
 Each agent gets exactly one or two tools, a narrow JSON output
 contract, and — critically — no ability to see or influence anything
 outside that contract. None of them can read a raw file path; they
 only ever see data the harness has already loaded and computed facts
-about.
+about. The first five run as one sequential loop per §3's diagram; the
+sixth (§5.6) is a separate, on-demand agent answering a different
+question against that loop's already-finished output — see §5.6 for why
+it doesn't fit the same diagram.
 
 ### 5.1 Intake Agent
 
@@ -346,6 +353,75 @@ gate-passing candidate and reviews that one instead, continuing until
 one is accepted or the pool is exhausted. Every candidate that gets
 reviewed (not just the winner) is logged with its verdict, so the
 leaderboard is also an audit trail of what got vetoed and why.
+
+### 5.6 Deep-Dive Agent
+
+**Problem it solves:** a different question than every other agent above.
+They all help answer "is this example positive" (and whether that
+answer can be trusted). This agent answers "why" — given one specific
+example a completed run already flagged, what in the data actually
+explains it. It runs on demand, per example, after a run has finished —
+not as a step inside the classification loop itself.
+
+**What it sees:** one bundled tool, `get_flight_deep_dive_evidence`,
+that runs three deterministic measurements and returns their combined
+output — the agent cannot compute any of it itself:
+1. **Phase segmentation** (`domain/aviation/flight_phases.py`) — splits
+   the flight into ground/climb/cruise/descent using smoothed altitude,
+   robust to sensor noise and touch-and-go maneuvers.
+2. **Occlusion attribution** (`harness/attribution.py`) — replaces one
+   feature "channel" at a time with a healthy-cohort reference value and
+   measures the resulting drop in the accepted model's predicted
+   probability, ranking channels by how much they drove the prediction.
+   Model-agnostic (plain repeated `predict_proba()` calls, not a
+   SHAP-style dependency) and *not* aviation-specific — it groups
+   columns by whatever naming convention produced them, so it works for
+   any accepted candidate from this pipeline, tabular or engineered-
+   time-series alike.
+3. **Cross-cylinder localization** (`domain/aviation/anomaly_localization.py`)
+   — an independent, raw-signal check: does one cylinder's temperature
+   deviate from its siblings specifically during a load-bearing phase
+   (not just as a constant, benign offset present in every phase)?
+
+**What it proposes:** `{hypothesis, agrees_with_localization,
+confidence}` — a 2-4 sentence, hedged explanation citing the specific
+channel, cylinder, phase, and magnitude, and stating plainly whether the
+model's own attribution and the independent raw-signal localization
+agree. It's explicitly instructed not to invent a cause when the
+evidence doesn't support one, and never to recommend a specific part —
+this is a lead for an inspection, not a diagnosis.
+
+**Why this design:** the same asymmetric-trust pattern as the
+Verification Agent, applied to explanation instead of approval: three
+deterministic tools compute everything checkable, and the LLM's only
+job is synthesizing a hedged narrative from facts it cannot alter. An
+unparseable or malformed response doesn't fail the deep-dive — it
+degrades to a deterministic template built from the same evidence
+(reusing the exact hedging logic the LLM prompt itself is instructed to
+follow), so a formatting glitch never means "no explanation available."
+
+**Why it needed a new kind of trust-boundary artifact:** every other
+agent operates on data already loaded into the current run. This one
+needs the *actual accepted model* from a previous run, to explain a
+prediction it made. `run_orchestrator.py` now persists the accepted,
+refit pipeline (plus its feature columns and a healthy-cohort background
+reference) to `artifacts/models/<run_id>_model.joblib` after the final
+test-set evaluation — the one place a fitted model is saved anywhere in
+this system. Skipped for a multiclass target, since occlusion
+attribution's "positive class probability" framing is binary-only for
+now — a stated scope limit, not a silent wrong answer.
+
+**Ported from a working prototype, not designed from scratch:** the
+three measurement tools and the evidence-then-synthesize structure
+already existed in the sibling `aviation_mas_mvp/` project
+(`scripts/deep_dive/`), including a real validation result worth
+carrying forward: a controlled test where the binary label *was* a
+planted single-cylinder fault showed occlusion attribution correctly
+ranking that cylinder's channels at the top for a held-out flight — the
+regression test for this port (`tests/test_deep_dive.py`) reproduces
+that same claim through this repo's actual template-pipeline machinery,
+not a bare classifier, to prove the DataFrame-occlusion generalization
+didn't quietly break it.
 
 ## 6. Recipe templates: the middle ground
 
@@ -578,6 +654,58 @@ because none of the existing synthetic fixtures happened to have a
 feature column whose name contained "id" as a false-positive
 substring.
 
+## 10.5 Extending past tabular: long-format time-series data
+
+Every dataset so far (Titanic, Iris) arrived already shaped as one row
+per example. The first real-world dataset that broke that assumption was
+an aviation predictive-maintenance dataset: 22 sensor channels sampled
+roughly once per second, ~6363 timesteps per flight, many flights per
+plane, all concatenated into one long CSV identified by a flight `id`
+column. There's no "one row per example" yet — and a multi-gigabyte
+source file rules out just loading it all into memory to fix that.
+
+This is deliberately **not** a sixth agent. It's pre-processing, in the
+same sense `harness/dataset.py`'s CSV loading is pre-processing: rolling
+raw timesteps into one feature row per example is a measurement, not a
+judgment call, so no LLM is involved and nothing here produces a
+"proposal" for the harness to re-validate. Once it's done, the data is
+ordinary tabular data, and the entire existing pipeline — intake,
+feature engineering, profiler, modeling, verification — runs against it
+completely unchanged.
+
+`harness/timeseries_features.py` does the actual rollup: a
+`channel_features()` function computing 12 summary statistics per
+channel per example, and a streaming, chunked reader
+(`build_flight_feature_table_streaming()`) that processes the source
+file in bounded-memory pieces rather than loading it whole. The
+tricky part is chunk boundaries — a single example's rows can be split
+across two chunks, or across the middle of one — and getting that wrong
+either drops an example, double-counts it, or (the specific bug caught
+during development) silently merges two genuinely separate, non-
+contiguous examples that happen to share an id into one corrupted row.
+The fix was grouping by contiguous *run position* within each chunk
+rather than by id *value* equality, so two non-contiguous runs of the
+same id stay distinguishable and the corruption gets raised as an error
+instead of silently merged — verified by a test that reproduces exactly
+that scenario and a second test asserting the streaming output exactly
+matches a naive, non-chunked groupby computation on the same data.
+
+Everything dataset-specific — the 22 sensor column names, the
+`before_after` label-string vocabulary — lives one layer up, in
+`scripts/featurize_ngafid_flights.py`, not in the harness module itself.
+That's the same separation of concerns `harness/feature_engineering.py`
+keeps between its generic, vetted operation catalog and any particular
+dataset's use of it: the rollup logic itself is reusable for any future
+long-format grouped time-series dataset, not just this one.
+
+The output feeds the existing pipeline through CLI flags that already
+existed for a different reason (group-aware splitting, added in Phase 1
+for ordinary tabular data with a customer/entity id): `--target`,
+`--group-column plane_id`, `--strategy group`. No orchestrator code
+changed to support this dataset — which is itself evidence that
+"agents propose, harness decides" plus a genuinely general-purpose
+harness composes further than any single dataset it was built against.
+
 ## 11. Current status
 
 | Phase | Status |
@@ -604,9 +732,14 @@ logging described in §10, and the Feature Engineering agent (§5.2),
 which runs between intake and the profiler in actual pipeline order.
 Also outside the numbering: the multiclass generalization (§5.1),
 prompted by a real crash the first time a second dataset (Iris) was
-actually tried. Phases 6 and 7 are still deliberately on hold — proven
-against two real datasets now instead of one, but still not enough of
-a sample to justify building cross-run evidence reuse (Phase 6).
+actually tried; the time-series featurization pre-processing stage
+(§10.5), prompted by the first dataset (aviation/NGAFID-MC) that wasn't
+already one row per example; and the Deep-Dive Agent (§5.6), ported from
+a working prototype to answer a second analysis question ("why") the
+first five agents don't address. Phases 6 and 7 are still deliberately
+on hold — proven against three real datasets and two distinct problem
+types now, but still not enough of a sample to justify building
+cross-run evidence reuse (Phase 6).
 
 ## 12. Key takeaways
 

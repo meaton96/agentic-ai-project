@@ -330,10 +330,113 @@ on the Iris dataset — the first non-Titanic dataset actually tried):**
     modeling → verification → test-eval loop) — the exact scenario
     originally reported as a crash now completes successfully.
 
+**Time-series featurization (extensibility addition, pre-processing —
+runs *before* the pipeline, not inside it):** the first non-tabular
+dataset tried was a real aviation predictive-maintenance dataset
+(NGAFID-MC): 22 sensor channels sampled ~1Hz, ~6363 timesteps per
+flight, many flights per plane, concatenated into one long CSV
+identified by a flight `id` column. A standard row-per-example split
+can't run against data shaped like that — there's no "one row" yet.
+- `harness/timeseries_features.py` — dataset-agnostic, deterministic
+  (no LLM) rollup: `channel_features()` computes 12 summary stats
+  (mean/std/min/max/range/p10/p50/p90/slope/mean_abs_diff/max_abs_diff/
+  last) per channel; `build_flight_feature_table_streaming()` streams a
+  long-format CSV chunk-by-chunk and emits exactly one row per id, so
+  memory use is bounded by chunk size, not file size (the real source
+  file is 4.2GB). The streaming reader groups by contiguous *run*
+  position, not id value, specifically so that two separate,
+  non-contiguous runs of the same id (a real corruption case, not just
+  a hypothetical) can't silently merge into one row — an earlier,
+  simpler version of this check (matching on the trailing chunk's id
+  value) let exactly that slip through undetected; caught by
+  `tests/test_timeseries_features.py::test_streaming_non_contiguous_id_raises`
+  during development, not after. No dataset-specific column names or
+  label vocabulary live in this module — see the adapter below for
+  those — so it's reusable for any future long-format grouped
+  time-series dataset, not just this one.
+- `scripts/featurize_ngafid_flights.py` — the NGAFID-specific adapter:
+  the 22 sensor column names, `before_after` label-string resolution
+  (`before`/`pre`/`1`/`true` → 1, `after`/`post`/`0`/`false` → 0), and a
+  defensive exactly-2-classes check (since passing `--target` straight
+  to `run_orchestrator.py` skips intake's own class-count validation).
+  Run once, standalone, to produce an ordinary flight-level tabular CSV;
+  nothing downstream changes — the existing group-aware split strategy
+  (`--group-column plane_id --strategy group`) and `--target` CLI
+  plumbing already handle it, because after this step the data is just
+  a normal classification table.
+- `tests/test_timeseries_features.py` — channel-stat correctness
+  (including empty/all-NaN/single-value edge cases), and the
+  streaming-vs-naive-groupby equivalence test described above, run with
+  a deliberately tiny `chunksize` to force multiple ids to straddle
+  chunk boundaries — the exact scenario the carry-over logic exists to
+  handle correctly.
+
+**Deep-Dive agent (sixth agent; extensibility addition — a second
+analysis problem, "why was this flight flagged," not a step in the
+classification loop):** ported from a working prototype in the sibling
+`aviation_mas_mvp/` project's `scripts/deep_dive/`, following the exact
+same trust-boundary pattern as every other agent here — one bundled
+tool exposing deterministic evidence the agent cannot alter, a strict
+JSON response contract, and a conservative deterministic fallback on
+anything unparseable.
+- `harness/attribution.py` — generic (not aviation-specific) occlusion
+  attribution: `channel_of()`, `compute_background()`,
+  `attribute_prediction()`. Generalized from the original prototype,
+  which assumed a raw classifier taking a pre-aligned numpy array; this
+  repo's accepted candidates are sklearn `Pipeline`s taking a named
+  DataFrame (they do their own imputation/scaling internally), so the
+  port occludes columns *by name* in a single-row DataFrame and calls
+  `pipeline.predict_proba()` instead — works for any accepted candidate
+  from this pipeline, tabular or engineered-time-series alike, not just
+  the aviation dataset it was first built against. Binary-classification
+  only for now (a scope limit, not a silent multiclass wrong-answer).
+- `domain/aviation/flight_phases.py` (`segment_flight`) and
+  `domain/aviation/anomaly_localization.py` (`localize_anomaly`) —
+  straight ports; these genuinely are aviation-specific (hardcoded
+  `AltMSL`/`IAS`/`VSpd`/`E1 EGT<n>`/`E1 CHT<n>` column names), so they
+  live under a new `domain/` package rather than `harness/`, keeping the
+  same separation Phase 1 established between generic and
+  dataset-specific code.
+- `harness/timeseries_features.py` gained `extract_single_flight_raw()`
+  — streams a raw long-format CSV for just one flight's timesteps
+  (reusing the existing chunked reader), so the deep-dive agent doesn't
+  need to load a multi-GB file to explain one flagged flight.
+- `tools/deep_dive_tool.py` + `steps/deep_dive_step.py` — one bundled
+  tool, `get_flight_deep_dive_evidence` (segmentation → attribution →
+  localization, composed exactly as the original prototype's
+  `gather_evidence` did), then a single LLM call synthesizing a hedged
+  2-4-sentence hypothesis as JSON. An unparseable/malformed response
+  degrades to a deterministic template built from the same evidence
+  (ported from the prototype's own template fallback) rather than
+  failing outright — same conservative default this repo uses
+  everywhere.
+- `scripts/run_deep_dive_agent.py` — standalone CLI, same pattern as
+  `run_profiler_agent.py`. Needs a persisted model bundle (see below).
+- `run_orchestrator.py` gained one small additive step: after the final
+  test-set evaluation, it now saves the accepted, refit pipeline to
+  `artifacts/models/<run_id>_model.joblib` (bundled with its feature
+  columns and a healthy-cohort background reference) — previously the
+  fitted model was never saved anywhere. Skipped for a multiclass target
+  (attribution is binary-only for now). This is what
+  `run_deep_dive_agent.py` loads to explain a specific later flight.
+- `tests/test_deep_dive.py` — phase segmentation and short-run merging,
+  a planted single-cylinder fault correctly detected *and* a benign
+  constant cross-cylinder offset correctly rejected (the specific
+  false-positive claim `localize_anomaly`'s docstring makes), an
+  attribution regression test (adapted from the prototype's own
+  controlled test) proving the DataFrame-occlusion generalization still
+  recovers a planted fault channel when fit through one of this repo's
+  own real template pipelines (not a bare classifier), and the
+  unparseable-response-degrades-to-template case.
+
 **Not yet built:** priors/evidence reuse (Phase 6), parallelization
-(Phase 7). Both are intentionally on hold until the pipeline has been
-proven against more than a couple of real datasets — reuse-across-runs
-evidence isn't worth building on a sample size of one or two.
+(Phase 7), dynamic agent orchestration (the orchestrator is still a
+fixed sequence of phases, not an agent that decides which agents/
+pipelines to run for a given problem — the deep-dive agent above is
+triggered manually, per flight, not routed to automatically). Multiclass
+occlusion attribution is also unbuilt (a scope limit noted above, not a
+crash). All intentionally on hold until the pipeline has been proven
+against more real datasets and problem types.
 
 ## Quickstart
 
@@ -350,6 +453,16 @@ python scripts/check_rit_connection.py
 # 3. (optional) stand up the gateway once you have multiple callers
 docker compose up -d model-gateway
 python scripts/check_gateway_connection.py
+
+# 3.5. (only for long-format, grouped time-series data, e.g. one row per
+#      timestep with many timesteps per example) roll it up into one row
+#      per example first — no LLM, run once, standalone:
+python scripts/featurize_ngafid_flights.py \
+    --csv /path/to/raw_ngafid.csv \
+    --out datasets/processed/ngafid_flights.csv \
+    --max-flights 100   # smoke test a slice first; omit for the full file
+#      the resulting CSV is ordinary tabular data — every step below
+#      works on it unchanged.
 
 # 4. Run the deterministic harness against a real dataset — no LLM needed
 python scripts/run_baseline_ladder.py \
@@ -394,6 +507,15 @@ python scripts/run_orchestrator.py \
 #    with inline tables/ROC curve instead of print statements:
 jupyter notebook notebooks/end_to_end_pipeline.ipynb
 
+# 8.5. (aviation/time-series datasets only, binary target) explain why
+#      one already-flagged flight was flagged — needs the model bundle
+#      step 7 just saved to artifacts/models/<run_id>_model.joblib:
+python scripts/run_deep_dive_agent.py \
+    --model artifacts/models/<run_id>_model.joblib \
+    --raw-csv /path/to/raw_ngafid.csv \
+    --features-csv datasets/processed/ngafid_flights.csv \
+    --flight-id 5
+
 # 9. Run the test suite
 pytest tests/ -v
 ```
@@ -421,18 +543,32 @@ agentic-ml/
     harness/                 # the trust boundary — see Phase 1 above; also
                                # intake.py (Phase 5 pre-target schema facts),
                                # verification.py (Phase 4 review bundle
-                               # assembly), and feature_engineering.py (vetted
-                               # stateless derived-feature/drop-column ops)
+                               # assembly), feature_engineering.py (vetted
+                               # stateless derived-feature/drop-column ops),
+                               # and timeseries_features.py (dataset-agnostic
+                               # long-format time-series -> flight-level
+                               # tabular rollup — pre-processing, run
+                               # standalone before the pipeline, not a step
+                               # inside it; also attribution.py — generic
+                               # occlusion attribution used by the deep-dive
+                               # agent, not aviation-specific)
+    domain/aviation/          # aviation-specific deep-dive measurements:
+                               # flight_phases.py (segment_flight),
+                               # anomaly_localization.py (localize_anomaly) —
+                               # separate from harness/ because these hardcode
+                               # aviation column names, unlike attribution.py
     tools/                    # profiler_tool.py, template_tool.py, intake_tool.py,
-                               # verification_tool.py, feature_tool.py — thin
-                               # bindings exposing harness facts/registry data
-                               # to agents as tool calls
+                               # verification_tool.py, feature_tool.py,
+                               # deep_dive_tool.py — thin bindings exposing
+                               # harness facts/registry data to agents as tool
+                               # calls
     templates/                # Phase 3 recipe templates + registry.py
       sources/                 # verified build_pipeline(config) .py files
     steps/                    # intake_step.py, profiler_step.py, modeling_step.py,
-                               # verification_step.py, feature_engineering_step.py
-                               # — agent-loop + validation logic, shared by both
-                               # the standalone scripts and run_orchestrator.py
+                               # verification_step.py, feature_engineering_step.py,
+                               # deep_dive_step.py — agent-loop + validation
+                               # logic, shared by both the standalone scripts
+                               # and run_orchestrator.py
 
   scripts/
     check_rit_connection.py
@@ -441,7 +577,15 @@ agentic-ml/
     run_profiler_agent.py     # thin CLI wrapper around steps/profiler_step.py
     run_feature_engineering_agent.py  # thin CLI wrapper around steps/feature_engineering_step.py
     run_modeling_agent.py     # thin CLI wrapper around steps/modeling_step.py
-    run_orchestrator.py       # Phase 5 — the full loop, see above
+    run_orchestrator.py       # Phase 5 — the full loop, see above; also
+                               # persists the accepted model bundle to
+                               # artifacts/models/<run_id>_model.joblib
+    featurize_ngafid_flights.py  # NGAFID-specific adapter around
+                               # harness/timeseries_features.py — run once,
+                               # standalone, before the orchestrator
+    run_deep_dive_agent.py    # thin CLI wrapper around steps/deep_dive_step.py
+                               # — explains one already-flagged flight,
+                               # on-demand, using a saved model bundle
 
   notebooks/
     end_to_end_pipeline.ipynb # same steps/* functions as the scripts, one
@@ -451,6 +595,10 @@ agentic-ml/
   runs/                       # per-run trace.jsonl, split_manifest.json,
                                # transcripts/<agent>_NN.json, etc.
   artifacts/reports/          # leaderboard.jsonl lives here
+  artifacts/models/           # <run_id>_model.joblib bundles (model +
+                               # feature_columns + background), one per
+                               # successful run with a binary target — what
+                               # the deep-dive agent loads
   tests/                      # pytest suite + leaky_fixtures/ regression data
 ```
 

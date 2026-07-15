@@ -41,9 +41,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+import joblib
 from sklearn.base import clone
 
 from agentic_ml.cli_common import make_run_dir, make_tracer, make_transcript_writer, resolve_model_endpoint
+from agentic_ml.harness.attribution import compute_background
 from agentic_ml.harness.dataset import DatasetSpec, LoadedDataset, load_dataset, read_dataframe, write_dataset_spec
 from agentic_ml.harness.leaderboard import append_leaderboard_entry
 from agentic_ml.harness.leakage import run_all_split_leakage_checks
@@ -447,6 +449,31 @@ def main():
 
     report["final_test_metrics"] = test_metrics
     report["status"] = "success"
+
+    # --- 5.5. Persist the accepted model as a bundle the deep-dive agent
+    # (scripts/run_deep_dive_agent.py) can load later, against a specific
+    # flagged example — this is the only place the fitted pipeline is ever
+    # saved. Deep-dive's occlusion attribution (harness/attribution.py) is
+    # binary-classification-only for now, so only persist for a binary
+    # target; the background reference is scoped to the negative-class
+    # ("healthy") cohort of train+val, matching what "occlude toward the
+    # background" is meant to mean. ---
+    if loaded.y.iloc[train_and_val_idx].nunique() == 2:
+        background = compute_background(
+            loaded.X.iloc[train_and_val_idx], list(loaded.X.columns),
+            normal_mask=(loaded.y.iloc[train_and_val_idx] == 0),
+        )
+        model_path = Path("artifacts/models") / f"{run_id}_model.joblib"
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(
+            {"model": final_pipeline, "feature_columns": list(loaded.X.columns), "background": background},
+            model_path,
+        )
+        report["model_artifact"] = str(model_path)
+        print(f"Model bundle saved to {model_path} (for scripts/run_deep_dive_agent.py)")
+    else:
+        print("Skipping model bundle persistence: deep-dive attribution is binary-only "
+              "and this target has more than 2 classes.")
 
     # --- 6. Narrated final summary: plain text only, no tools, no decisions ---
     summary_messages = [
