@@ -83,6 +83,10 @@ def main():
                          "model_name for the VerificationAgent; defaults to a reasoning-"
                          "oriented model distinct from the modeling agent's default")
     parser.add_argument("--use-gateway", action="store_true")
+    parser.add_argument("--use-local", action="store_true", help="call a local OpenAI-"
+                         "compatible server (LOCAL_MODEL_BASE_URL, default "
+                         "http://localhost:8000/v1) instead of RIT/the gateway — "
+                         "takes precedence over --use-gateway if both are given")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--skip-feature-engineering", action="store_true",
                          help="skip the feature-engineering step entirely")
@@ -94,6 +98,7 @@ def main():
 
     base_url, api_key, default_model = resolve_model_endpoint(
         args.use_gateway, args.model, "qwen3-coder:30b", "rit-qwen3-coder-30b",
+        use_local=args.use_local,
     )
     client = ModelClient(base_url=base_url, api_key=api_key, default_model=default_model)
 
@@ -365,6 +370,7 @@ def main():
     # never sees those. A rejection falls back to the next-best candidate. ---
     _, _, verification_model = resolve_model_endpoint(
         args.use_gateway, args.verification_model, "gemma4:latest", "rit-gemma4-latest",
+        use_local=args.use_local,
     )
     ranked = sorted(passing_candidates, key=lambda r: r.metrics[primary_metric]["value"], reverse=True)
     leaderboard_path = Path("artifacts/reports/leaderboard.jsonl")

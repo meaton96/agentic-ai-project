@@ -32,6 +32,28 @@ multi-channel features (e.g. a Slack front-end onto this pipeline), it
 can be added back as an optional caller of the same LiteLLM gateway
 without touching anything below.
 
+## Three model endpoints: RIT, gateway, or local
+
+`resolve_model_endpoint()` (`src/agentic_ml/cli_common.py`) supports
+three interchangeable OpenAI-compatible endpoints, selected per-script
+with `--use-gateway` / `--use-local` (RIT direct is the default if
+neither is given; `--use-local` takes precedence if both are given):
+
+- **RIT direct** (default) — `RIT_BASE_URL`/`RIT_API_KEY` in `.env`.
+- **LiteLLM gateway** (`--use-gateway`) — routes to RIT or local models
+  via `docker compose up -d model-gateway`; useful once you have more
+  than one caller.
+- **Local** (`--use-local`) — any OpenAI-compatible server on this
+  machine (vLLM/Ollama/SGLang), configured via `LOCAL_MODEL_BASE_URL` /
+  `LOCAL_MODEL_API_KEY` / `LOCAL_DEFAULT_MODEL` in `.env`. Added because
+  RIT's shared endpoint returns real, intermittent 504s under agentic
+  tool-calling load (every agent here makes several tool-calling turns
+  per run) — a local server sidesteps that for development, at the cost
+  of not being the model an eventual deployment would run against.
+  Verify it's reachable and that tool-calling actually works (not just
+  plain completions — every agent here depends on real `tool_calls`
+  coming back) with `python scripts/check_local_connection.py`.
+
 ## What's built so far
 
 **Phase 0 (connectivity) — replaces the OpenClaw bootstrap milestone:**
@@ -42,6 +64,9 @@ without touching anything below.
   pass without needing network access)
 - `scripts/check_rit_connection.py` — direct RIT smoke test
 - `scripts/check_gateway_connection.py` — gateway-mediated smoke test
+- `scripts/check_local_connection.py` — local OpenAI-compatible server
+  smoke test (plain completion + tool-calling), see "Three model
+  endpoints" below
 - `configs/litellm.yaml` + `docker-compose.yml` — LiteLLM gateway,
   routes to the models your own benchmarking proved reliable
   (`qwen3-coder:30b`, `gemma4:26b`/`latest`, `qwen3:8b`, `gpt-oss:120b`);
@@ -454,6 +479,11 @@ python scripts/check_rit_connection.py
 docker compose up -d model-gateway
 python scripts/check_gateway_connection.py
 
+# 3.25. (optional) or point every script at a local OpenAI-compatible
+#       server instead (vLLM/Ollama/SGLang) via --use-local — sidesteps
+#       RIT's real, intermittent 504s under agentic tool-calling load
+python scripts/check_local_connection.py
+
 # 3.5. (only for long-format, grouped time-series data, e.g. one row per
 #      timestep with many timesteps per example) roll it up into one row
 #      per example first — no LLM, run once, standalone:
@@ -573,6 +603,7 @@ agentic-ml/
   scripts/
     check_rit_connection.py
     check_gateway_connection.py
+    check_local_connection.py
     run_baseline_ladder.py
     run_profiler_agent.py     # thin CLI wrapper around steps/profiler_step.py
     run_feature_engineering_agent.py  # thin CLI wrapper around steps/feature_engineering_step.py

@@ -65,6 +65,9 @@ def main():
     parser.add_argument("--model-id", default=None, help="LLM model id or gateway "
                          "model_name; defaults to RIT_DEFAULT_MODEL env var")
     parser.add_argument("--use-gateway", action="store_true")
+    parser.add_argument("--use-local", action="store_true", help="call a local OpenAI-"
+                         "compatible server (LOCAL_MODEL_BASE_URL) instead of RIT/the "
+                         "gateway — takes precedence over --use-gateway if both are given")
     parser.add_argument("--run-id", default=None)
     args = parser.parse_args()
 
@@ -93,6 +96,7 @@ def main():
 
     base_url, api_key, default_model = resolve_model_endpoint(
         args.use_gateway, args.model_id, "qwen3-coder:30b", "rit-qwen3-coder-30b",
+        use_local=args.use_local,
     )
     client = ModelClient(base_url=base_url, api_key=api_key, default_model=default_model)
 

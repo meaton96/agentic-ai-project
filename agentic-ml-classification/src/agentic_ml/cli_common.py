@@ -19,9 +19,26 @@ def resolve_model_endpoint(
     model: Optional[str],
     default_direct_model: str,
     default_gateway_model: str,
+    use_local: bool = False,
 ) -> tuple[str, str, str]:
-    """Returns (base_url, api_key, default_model)."""
-    if use_gateway:
+    """Returns (base_url, api_key, default_model).
+
+    Three endpoints, checked in this order: a local OpenAI-compatible
+    server (use_local — e.g. vLLM/Ollama/SGLang running on this
+    machine; no per-script default model, since unlike RIT/the gateway
+    there's normally exactly one model actually being served), the
+    LiteLLM gateway (use_gateway), or RIT directly (the default). Added
+    because RIT's shared endpoint returns real, intermittent 504s under
+    agentic tool-calling load (documented in README.md's "Why there's
+    no OpenClaw" history) — a local server sidesteps that entirely for
+    development, at the cost of not being the model an eventual
+    deployment would actually run against.
+    """
+    if use_local:
+        base_url = os.environ.get("LOCAL_MODEL_BASE_URL", "http://localhost:8000/v1")
+        api_key = os.environ.get("LOCAL_MODEL_API_KEY", "not-needed")
+        default_model = model or os.environ.get("LOCAL_DEFAULT_MODEL", "Qwen/Qwen3-Coder-30B-A3B-Instruct")
+    elif use_gateway:
         base_url = os.environ.get("MODEL_GATEWAY_BASE_URL", "http://localhost:4000/v1")
         api_key = os.environ.get("LITELLM_MASTER_KEY", "")
         default_model = model or default_gateway_model
