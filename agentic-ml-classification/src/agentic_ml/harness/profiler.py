@@ -5,6 +5,7 @@ based on what this module computes. No LLM call can change these facts.
 """
 from __future__ import annotations
 
+import re
 import warnings
 from dataclasses import dataclass, field, asdict
 
@@ -16,6 +17,8 @@ from .leakage import check_suspicious_feature_correlation
 DATETIME_NAME_HINTS = ("date", "time", "timestamp", "day", "created", "updated", "dob")
 ID_NAME_HINTS = ("id", "uuid", "guid", "key", "index", "idx")
 GROUP_NAME_HINTS = ("customer", "user", "patient", "machine", "session", "account", "entity", "device")
+
+_TOKEN_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
 
 
 @dataclass
@@ -81,8 +84,13 @@ def _looks_like_datetime(series: pd.Series, sample_size: int = 50) -> bool:
 
 
 def _name_hints(name: str, hints: tuple[str, ...]) -> bool:
-    lower = name.lower()
-    return any(h in lower for h in hints)
+    """Matches hints against whole name tokens (snake_case/camelCase-aware),
+    not a raw substring — a naive substring check flagged columns like
+    'SepalWidthCm'/'PetalWidthCm' as ID columns because "id" is a
+    substring of "Width", which broke every feature column on the Iris
+    dataset."""
+    tokens = {t.lower() for t in _TOKEN_RE.findall(name)}
+    return any(h in tokens for h in hints)
 
 
 def profile_dataset(

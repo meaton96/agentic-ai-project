@@ -29,6 +29,58 @@ from sklearn.model_selection import StratifiedKFold, KFold, GroupKFold
 VALID_STRATEGIES = {"random", "stratified", "group", "time", "group_time"}
 
 
+def resolve_split_columns(
+    strategy: str,
+    group_column: Optional[str],
+    time_column: Optional[str],
+    profiler_report: dict,
+) -> tuple[Optional[str], Optional[str], list[str]]:
+    """Reconciles a chosen split strategy against whatever group/time
+    columns were actually declared (by intake or a CLI/config override).
+
+    Why this exists: harness/profiler.py's recommended_split_strategy is
+    computed purely from its own heuristic detection
+    (likely_group_columns / likely_datetime_columns on the whole
+    dataframe) — it has no idea what intake actually declared as
+    group_column/time_column. If intake didn't declare a time_column but
+    the profiler still detected (and recommended splitting on) one, using
+    that recommendation verbatim sends make_split() a strategy it can't
+    satisfy, and it raises a ValueError deep in the call stack instead of
+    a clear, actionable message.
+
+    Whenever recommended_split_strategy is "time"/"group"/"group_time",
+    the corresponding likely_* list is guaranteed non-empty (that's
+    exactly the condition that produced the recommendation) — so this
+    always has a real candidate to fall back on; auto-adopting it is not
+    a guess pulled from nowhere, it's the same signal the recommendation
+    itself was based on. This is intentionally transparent (returns the
+    notes for the caller to print) rather than silent, and it does NOT
+    fall back to a different (weaker) strategy — the whole point is to
+    honor the recommended strategy using the evidence that justified it.
+    """
+    notes: list[str] = []
+    likely_group = profiler_report.get("likely_group_columns") or []
+    likely_time = profiler_report.get("likely_datetime_columns") or []
+
+    if strategy in ("group", "group_time") and not group_column and likely_group:
+        group_column = likely_group[0]
+        notes.append(
+            f"strategy='{strategy}' needs a group_column; none was declared, so "
+            f"auto-using the profiler's detected '{group_column}' "
+            f"(likely_group_columns={likely_group})"
+        )
+
+    if strategy in ("time", "group_time") and not time_column and likely_time:
+        time_column = likely_time[0]
+        notes.append(
+            f"strategy='{strategy}' needs a time_column; none was declared, so "
+            f"auto-using the profiler's detected '{time_column}' "
+            f"(likely_datetime_columns={likely_time})"
+        )
+
+    return group_column, time_column, notes
+
+
 @dataclass
 class SplitManifest:
     strategy: str

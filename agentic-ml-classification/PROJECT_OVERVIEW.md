@@ -1,0 +1,938 @@
+# Agentic ML Classification Pipeline — Project Overview
+
+*A design-and-rationale walkthrough, written for someone evaluating the
+project rather than someone about to modify the code. For the
+file-by-file inventory of what's implemented, see [README.md](README.md).*
+
+## 1. What we're building
+
+A system where LLM agents handle the parts of a machine learning
+workflow that require judgment — reading a dataset, deciding what to
+predict, choosing a modeling approach — while a completely
+deterministic, non-LLM "harness" handles every part that requires
+correctness: splitting data, fitting models, computing metrics, and
+detecting data leakage.
+
+The input is a CSV or Parquet file and, optionally, a one-sentence
+natural-language goal ("predict whether a customer will churn"). The
+output is a trained classifier (binary or multiclass), an honest
+held-out test-set score, and a plain-language summary — produced with
+no human in the loop deciding column names, hyperparameters, or which
+model to trust.
+
+The scope is deliberately narrow: single-machine, CPU, tabular data,
+classification only (binary or multiclass, up to 20 distinct class
+labels). The point of the project isn't "build the biggest AutoML
+system" — it's "build the smallest system where an LLM agent can
+safely make modeling decisions without being able to fool itself (or
+us) about whether those decisions were any good."
+
+## 2. The central design principle: agents propose, the harness decides
+
+This is the one idea everything else in the codebase follows from.
+
+An LLM is good at judgment over structured facts: "this column's name
+suggests it's a customer ID," "this dataset is imbalanced, prefer a
+class-weighted model." An LLM is bad at things that need to be *exactly
+right*: computing a statistic, holding out a test set correctly,
+noticing its own preprocessing code leaked information from the test
+fold into training. Those failure modes aren't rare edge cases in ML —
+they're the standard ways a modeling result turns out to be wrong.
+
+So the system draws a hard line:
+
+| Agents are allowed to | Agents are never allowed to |
+|---|---|
+| Propose a target column | Choose the train/val/test split |
+| Propose columns to drop + stateless derived features | Decide imputation values or scaling |
+| Propose which columns are features | See the test set before final evaluation |
+| Pick a modeling template + hyperparameters | Compute their own metrics |
+| Summarize results in plain language | Decide which candidate gets promoted |
+| Flag or reject a candidate on a second look | Approve/unblock a candidate that failed a gate |
+
+That last row is the verification agent (§5.5), and it's worth
+stating precisely: it has strictly one-directional power. It can make
+an already-gated candidate's fate *worse* (flagged or rejected), never
+*better*. It is structurally incapable of overriding a deterministic
+failure, because it is never shown a candidate that produced one.
+
+Every agent output is a **proposal** — a JSON object — that the harness
+independently re-validates before acting on it. An agent hallucinating
+a column name, picking a leaky preprocessing step, or claiming a metric
+it never computed doesn't corrupt the result; it just gets rejected.
+This is what makes the phrase "LLM agent" survivable in a context where
+the output has to be trustworthy.
+
+## 3. System architecture
+
+```mermaid
+flowchart TD
+    A[Dataset + optional goal] --> B[Intake Agent]
+    B -->|proposes DatasetSpec| C{Harness validates}
+    C --> FE[Feature Engineering Agent]
+    FE -->|proposes drops + derived features| FEV{Harness validates + applies}
+    FEV --> D[Profiler Agent]
+    D -->|proposes split strategy| E[Harness: split + leakage checks]
+    E --> F[Modeling Agent]
+    F -->|proposes candidate x N| G[Harness: sandbox build + fit + score<br/>+ TWO leakage gates]
+    G --> K[Verification Agent<br/>reviews gate-passers, best-first]
+    K -->|rejected| F2[Fall back to next-best candidate]
+    F2 --> K
+    K -->|approved / flagged| I[Harness: refit on train+val,<br/>evaluate once on locked test set]
+    I --> J[Narrated summary]
+    I -.->|saves, binary target only| M[(artifacts/models/*.joblib)]
+    M -.->|on demand, per flagged example| DD[Deep-Dive Agent]
+
+    style C fill:#2d3748,color:#fff
+    style FEV fill:#2d3748,color:#fff
+    style E fill:#2d3748,color:#fff
+    style G fill:#2d3748,color:#fff
+    style I fill:#2d3748,color:#fff
+```
+
+Every box shaded dark is pure deterministic code — no LLM call. Every
+white box is an LLM agent, and every arrow leaving a white box passes
+through a validation step before it can affect anything. The
+Verification Agent's only two exits are "let it through" (approved or
+flagged) and "reject, try the next one" — there is no path from that
+box back to overriding G. The dashed edges are the Deep-Dive Agent
+(§5.6): it's not part of this loop — it runs afterward, on demand, per
+flagged example, against the model artifact the loop above just saved.
+
+## 4. The deterministic harness (the trust boundary)
+
+The harness is not a supporting library — it's the part of the system
+that actually decides whether a result is real. It owns:
+
+- **Dataset loading + content hashing.** Every run records a SHA-256
+  hash of the exact data used, so a result is always traceable to
+  specific bytes, not just a filename that might have changed.
+- **Splitting.** Five strategies — random, stratified, group, time,
+  and group+time — chosen because the most common way a classroom or
+  real-world ML result turns out to be fake is a random split on data
+  that isn't independent and identically distributed (repeated
+  customers, or a timestamp). The harness requires an explicit
+  strategy; there's no silent default to random split when a time or
+  group column is declared. One subtlety a real run surfaced: the
+  profiler's strategy *recommendation* comes from its own heuristic
+  column detection, entirely separate from what intake actually
+  declared as the group/time column — running with an explicit
+  `--target` (skipping intake) and no `--time-column` could get a
+  `"time"` recommendation with no declared time column to satisfy it.
+  `resolve_split_columns()` reconciles the two transparently (the
+  detected column is, by construction, the same evidence that produced
+  the recommendation in the first place) rather than crashing or
+  guessing blindly.
+- **Leakage checks**, run automatically and independently of each
+  other: exact-duplicate rows across splits, group overlap across
+  splits, chronological ordering for time splits, a raw
+  feature-vs-target correlation check, and a **label-permutation
+  test** — fit the *actual candidate pipeline* on shuffled labels and
+  confirm it scores at chance. That last one is the most important:
+  it catches the classic bug where a preprocessing step (a scaler, an
+  encoder) was accidentally fit on data outside its proper training
+  fold, which a simple leakage check on the raw split can't see at
+  all because the corruption happens inside the modeling code, not in
+  the split itself.
+- **Sandboxed execution.** Agent-selected model code never runs in the
+  main process. It's statically checked (AST-level — reject forbidden
+  imports and calls like `eval`, `open`, `subprocess`) and then
+  executed in an isolated subprocess with no network access, a
+  wall-clock timeout, and CPU limits. Only the resulting *unfitted*
+  model object is allowed to cross back — never raw data, never a file
+  path.
+- **Metrics with confidence intervals**, via bootstrap resampling —
+  because a single point-estimate ROC-AUC on 130 held-out rows without
+  a confidence interval is not a claim, it's a guess with a stated
+  precision hidden.
+- **An append-only leaderboard** so every candidate ever evaluated is
+  recorded, not just the winner.
+
+## 5. The six agents
+
+Each agent gets exactly one or two tools, a narrow JSON output
+contract, and — critically — no ability to see or influence anything
+outside that contract. None of them can read a raw file path; they
+only ever see data the harness has already loaded and computed facts
+about. The first five run as one sequential loop per §3's diagram; the
+sixth (§5.6) is a separate, on-demand agent answering a different
+question against that loop's already-finished output — see §5.6 for why
+it doesn't fit the same diagram.
+
+### 5.1 Intake Agent
+
+**Problem it solves:** turning "here's a CSV, and maybe a sentence
+about what I want" into a formal problem specification — which column
+is the label, which columns are identifiers or timestamps that must be
+excluded from modeling.
+
+**What it sees:** column names, dtypes, missingness, cardinality, and
+name-based hints ("this column is named `customer_id`") — computed
+*before* any target column is known, since proposing the target is
+literally intake's job. It never sees anything that would require
+already knowing the target (class balance, correlation with the
+label) — that would be circular.
+
+**What it proposes:** `{target_column, task, id_columns, group_column,
+time_column, positive_label, reasoning}`.
+
+**Why this design:** without intake, every dataset needs a human to
+manually specify the target column before the pipeline can start. With
+it, the system can run from just a dataset and a sentence — or from
+just a dataset, guessing the most plausible target from the schema
+alone. The harness re-validates the proposal regardless: the target
+must have between 2 and `MAX_CLASSES` (20) non-null unique values —
+binary or multiclass — and the harness enforces that itself; it does
+not trust the agent's self-reported `task` field. Above `MAX_CLASSES`
+a column is judged more likely a continuous/ID field mistaken for a
+target than genuine class labels, and is rejected.
+
+**A real crash, and what it generalized into:** the original MVP
+required *exactly* 2 unique target values. The first non-Titanic
+dataset actually tried — Iris, with 3 species — crashed immediately at
+this check. Generalizing meant more than loosening one comparison:
+`harness/metrics.py`'s roc_auc/pr_auc/f1/precision/recall/brier all
+needed macro-averaged one-vs-rest variants, every caller had to stop
+slicing `predict_proba()` down to a single positive-class column
+(`proba[:, 1] if proba.shape[1] == 2 else proba.max(axis=1)` was
+silently producing a meaningless number for 3+ classes, not erroring —
+worse than a crash), and `xgboost_mixed`'s hardcoded
+`eval_metric="logloss"` had to go entirely so XGBoost could infer the
+right objective from the class count itself. Fixing this surfaced a
+second, unrelated bug: `harness/profiler.py`'s name-hint matcher used
+raw substring containment, so `"id" in "sepalwidthcm"` matched (the
+"id" inside "Wid**th**") and excluded two of Iris's four real features
+as false-positive ID columns — fixed by tokenizing column names
+instead of substring-matching them. Both fixes were verified with a
+real end-to-end dry run of `run_orchestrator.py` against
+`datasets/raw/iris.csv`, not just unit tests — see §10.
+
+### 5.2 Feature Engineering Agent
+
+**Problem it solves:** deciding whether the feature set itself needs
+structural changes before modeling even starts — dropping a column
+that's mostly missing or an obvious identifier, or adding a derived
+column (a ratio, an interaction term, extracted date parts, a missing-
+value flag) that might carry signal the raw columns don't.
+
+**What it sees:** the same `get_dataset_profile` facts the profiler
+agent sees (column dtypes, missingness, cardinality, likely id/group/
+datetime flags), plus a catalog of five vetted operations
+(`list_feature_ops`): `ratio`, `interaction`, `log1p`, `datetime_parts`,
+`missing_indicator`.
+
+**What it proposes:** `{drop_columns, derived_features, explanation}`
+— a list of columns to exclude, and a list of `{op_id, params}` picked
+from that catalog. **It does not write transformation code**, for the
+same reason the modeling agent doesn't write model code (§6).
+
+**Why every operation in the catalog is stateless:** each one computes
+a value from that row's own columns only — never a fitted statistic
+like a mean, a quantile, or a per-group aggregate. That's precisely
+what makes it safe to apply to the *entire* dataset before the train/
+val/test split even exists, the same way the profiler's own
+descriptive facts are computed dataset-wide. Anything that needs a
+fitted statistic — imputation values, scaling, target encoding — stays
+inside the modeling templates' `ColumnTransformer`, fit only on the
+training fold, exactly as before. This agent's decision surface is
+deliberately narrower than "feature engineering" often means in
+practice; it's the subset of feature engineering that's provably safe
+to do before a split boundary exists.
+
+**Worked example of real usage finding a bug in the validator itself,
+not in the agent:** the first version of `validate_feature_proposal`
+gated `ratio`/`interaction`/`log1p` on the profiler's `is_likely_numeric`
+flag. That flag is computed for a different purpose — deciding
+one-hot-encoding vs. scaling boundaries in the baseline modeling
+templates — and it's `False` for any low-cardinality integer column,
+*including genuine counts*. In a real run against the Titanic dataset,
+the agent proposed `SibSp * Parch` (siblings/spouses times parents/
+children aboard) as an interaction term — `family_size = SibSp + Parch
++ 1` is a well-known engineered feature for this exact dataset, and
+this was a reasonable variant of it. The validator rejected it anyway,
+because both columns have single-digit cardinality and the profiler
+flags them `is_likely_categorical=True` / `is_likely_numeric=False`.
+The agent's proposal was right; the validator was wrong. The fix was
+to gate numeric ops on the column's actual dtype (int/float — can
+pandas do arithmetic on it) instead of a heuristic tuned for a
+completely different modeling decision. The general lesson: a
+validation rule should encode "would this literally break or produce
+garbage," not silently borrow a heuristic that happens to exist for
+an unrelated purpose — reusing profiler facts is good, reusing them
+for a question they were never designed to answer isn't. See
+`harness/feature_engineering.py::_is_numeric_dtype` for the fix and
+`tests/test_feature_engineering.py::test_validate_accepts_arithmetic_on_low_cardinality_integer_count`
+for the regression test.
+
+### 5.3 Profiler Agent
+
+**Problem it solves:** producing a human-readable characterization of
+the dataset and a data-driven recommendation for how to split it.
+
+**What it sees:** one tool call's worth of deterministic facts — column
+types, missingness, cardinality, likely id/group/datetime columns,
+class imbalance ratio, and a rule-based `recommended_split_strategy`
+(e.g., "this dataset has a customer ID column *and* a timestamp column,
+so use group+time splitting to prevent both entity leakage and
+temporal leakage simultaneously").
+
+**What it proposes:** a plain-language summary and a list of key risks
+— but it is explicitly instructed not to contradict or override the
+tool's `recommended_split_strategy` or leakage flags. Its job is to
+*explain* the facts, not generate new ones.
+
+**Why this design:** this is the clearest illustration of the "agents
+propose, harness decides" principle in the codebase. The split
+strategy — arguably the single decision most likely to silently
+invalidate every downstream result — is computed by a fully tested,
+rule-based function with zero LLM involvement. The agent's only role is
+narration for a human reader.
+
+### 5.4 Modeling Agent
+
+**Problem it solves:** choosing a modeling approach appropriate to the
+dataset's characteristics and producing a working, evaluable pipeline.
+
+**What it sees:** the profiler's facts, plus a catalog of six
+pre-built, pre-validated "recipe templates" with descriptions of when
+each is appropriate.
+
+**What it proposes:** `{candidate_id, template_id, config,
+explanation}` — it picks a template by name and fills in a config
+dictionary (which columns are numeric/categorical, a few
+hyperparameters). **It does not write model code.** See §6 for why.
+
+**What the harness does with the proposal, none of which the agent
+controls:** re-validates every column name against the profiler's
+facts (rejecting anything hallucinated, or anything flagged as an ID,
+group, or time column); statically checks and sandbox-builds the
+chosen template with the agent's config; fits it on the training
+fold; scores it on the validation fold with bootstrapped confidence
+intervals; and requires **two independent leakage checks to both
+pass** — the label-permutation test, and a feature-correlation check
+re-run scoped to exactly the columns *this* candidate selected (§7
+explains why one check alone isn't enough). Only then does the
+candidate become eligible for review by the next agent.
+
+### 5.5 Verification Agent
+
+**Problem it solves:** a second, independent opinion on a candidate
+that has already cleared every deterministic gate — the kind of review
+a human collaborator would give a teammate's already-passing pull
+request before merging it.
+
+**What it sees:** a bundle assembled purely from facts other parts of
+the system already computed: the template's own description of when
+it's appropriate, the candidate's config and stated explanation,
+validation metrics with confidence intervals, both leakage check
+results, and the profiler's imbalance/leakage-risk facts. It computes
+nothing itself.
+
+**What it proposes:** `{verdict, concerns, reasoning}`, where `verdict`
+is `"approved"`, `"flagged"` (proceed, but the concern is recorded for
+a human), or `"rejected"` (blocked). It's told to look for things a
+deterministic check can't easily express: does the candidate's stated
+*reason* for its choices actually match what the config *does*? Does a
+suspiciously perfect score deserve a second look even though it
+technically passed both leakage gates?
+
+**Why this design — the asymmetric trust boundary:** this agent is
+structurally unable to approve or unblock a candidate that failed a
+deterministic gate, because the harness only ever shows it candidates
+that already passed both. Its JSON schema has no "override" option. A
+malformed or unparseable response from the LLM doesn't default to
+`"approved"` either — it degrades to `"flagged"`, the same conservative
+middle ground used everywhere else in this system when something
+doesn't parse cleanly. This is a one-way ratchet: every layer this
+agent sits behind can only make a candidate's fate worse, never better.
+
+**How the orchestrator uses it:** candidates that passed the harness's
+gates are reviewed **best-first, by validation score**. A `"rejected"`
+verdict doesn't fail the whole run — it falls back to the next-best
+gate-passing candidate and reviews that one instead, continuing until
+one is accepted or the pool is exhausted. Every candidate that gets
+reviewed (not just the winner) is logged with its verdict, so the
+leaderboard is also an audit trail of what got vetoed and why.
+
+### 5.6 Deep-Dive Agent
+
+**Problem it solves:** a different question than every other agent above.
+They all help answer "is this example positive" (and whether that
+answer can be trusted). This agent answers "why" — given one specific
+example a completed run already flagged, what in the data actually
+explains it. It runs on demand, per example, after a run has finished —
+not as a step inside the classification loop itself.
+
+**What it sees:** one bundled tool, `get_flight_deep_dive_evidence`,
+that runs three deterministic measurements and returns their combined
+output — the agent cannot compute any of it itself:
+1. **Phase segmentation** (`domain/aviation/flight_phases.py`) — splits
+   the flight into ground/climb/cruise/descent using smoothed altitude,
+   robust to sensor noise and touch-and-go maneuvers.
+2. **Occlusion attribution** (`harness/attribution.py`) — replaces one
+   feature "channel" at a time with a healthy-cohort reference value and
+   measures the resulting drop in the accepted model's predicted
+   probability, ranking channels by how much they drove the prediction.
+   Model-agnostic (plain repeated `predict_proba()` calls, not a
+   SHAP-style dependency) and *not* aviation-specific — it groups
+   columns by whatever naming convention produced them, so it works for
+   any accepted candidate from this pipeline, tabular or engineered-
+   time-series alike.
+3. **Cross-cylinder localization** (`domain/aviation/anomaly_localization.py`)
+   — an independent, raw-signal check: does one cylinder's temperature
+   deviate from its siblings specifically during a load-bearing phase
+   (not just as a constant, benign offset present in every phase)?
+
+**What it proposes:** `{hypothesis, agrees_with_localization,
+confidence}` — a 2-4 sentence, hedged explanation citing the specific
+channel, cylinder, phase, and magnitude, and stating plainly whether the
+model's own attribution and the independent raw-signal localization
+agree. It's explicitly instructed not to invent a cause when the
+evidence doesn't support one, and never to recommend a specific part —
+this is a lead for an inspection, not a diagnosis.
+
+**Why this design:** the same asymmetric-trust pattern as the
+Verification Agent, applied to explanation instead of approval: three
+deterministic tools compute everything checkable, and the LLM's only
+job is synthesizing a hedged narrative from facts it cannot alter. An
+unparseable or malformed response doesn't fail the deep-dive — it
+degrades to a deterministic template built from the same evidence
+(reusing the exact hedging logic the LLM prompt itself is instructed to
+follow), so a formatting glitch never means "no explanation available."
+
+**Why it needed a new kind of trust-boundary artifact:** every other
+agent operates on data already loaded into the current run. This one
+needs the *actual accepted model* from a previous run, to explain a
+prediction it made. `run_orchestrator.py` now persists the accepted,
+refit pipeline (plus its feature columns and a healthy-cohort background
+reference) to `artifacts/models/<run_id>_model.joblib` after the final
+test-set evaluation — the one place a fitted model is saved anywhere in
+this system. Skipped for a multiclass target, since occlusion
+attribution's "positive class probability" framing is binary-only for
+now — a stated scope limit, not a silent wrong answer.
+
+**Ported from a working prototype, not designed from scratch:** the
+three measurement tools and the evidence-then-synthesize structure
+already existed in the sibling `aviation_mas_mvp/` project
+(`scripts/deep_dive/`), including a real validation result worth
+carrying forward: a controlled test where the binary label *was* a
+planted single-cylinder fault showed occlusion attribution correctly
+ranking that cylinder's channels at the top for a held-out flight — the
+regression test for this port (`tests/test_deep_dive.py`) reproduces
+that same claim through this repo's actual template-pipeline machinery,
+not a bare classifier, to prove the DataFrame-occlusion generalization
+didn't quietly break it.
+
+## 6. Recipe templates: the middle ground
+
+The most consequential design decision in the whole project is **what
+the modeling agent is and isn't allowed to generate.**
+
+The tempting version — let the LLM write arbitrary Python/sklearn code
+— was rejected. Free-form generated code is very hard to statically
+verify for safety or correctness, and a subtly wrong preprocessing
+step (the single most common way ML pipelines leak information) is
+exactly the kind of bug that's easy for an LLM to introduce and hard
+for a static checker to catch.
+
+The other extreme — one fixed pipeline, no agent choice at all — was
+also rejected, because then there's no meaningful modeling decision
+left for an agent to make.
+
+The middle ground: a small library of **verified templates**, each a
+static Python file exposing a `build_pipeline(config)` function. The
+agent's decision surface is choosing *which* template and *which*
+config values — a much smaller, much more auditable space than
+arbitrary code. Currently there are six, each chosen to cover a
+distinct, real failure mode in tabular ML:
+
+| Template | Handles |
+|---|---|
+| `logistic_numeric` | Numeric-only baseline, cheapest linear-separability check |
+| `sklearn_mixed_pipeline` | General mixed numeric/categorical data |
+| `lightgbm_mixed` | Moderate/high-cardinality categoricals without one-hot blowup |
+| `xgboost_mixed` | Missing values as potentially informative (no imputation) |
+| `imbalanced_binary_boosted` | Class-weighted reweighting instead of resampling, avoiding the classic "fit the resampler before the split" leakage bug |
+| `high_cardinality_target_encoding` | sklearn's cross-fitted `TargetEncoder` — leakage-safe by construction |
+
+Each template's docstring explains *why* it's built the way it is, not
+just what it does — several encode a specific leakage lesson (e.g. why
+target encoding must be internally cross-fitted, why resampling for
+class imbalance is riskier than reweighting).
+
+## 7. Safety layers, concretely
+
+It's worth being specific about what actually stops a bad agent
+proposal from becoming a bad result, because "the harness validates
+things" is vague until you see the layers:
+
+1. **Shape validation** — is the proposal even well-formed JSON with
+   the required keys?
+2. **Column validation** — does every referenced column exist, and is
+   it not the target/id/group/time column?
+3. **Config validation** — does the config satisfy the chosen
+   template's required keys?
+4. **Static AST check** — before executing anything, reject forbidden
+   imports (`os`, `subprocess`, `socket`, ...) and forbidden calls
+   (`eval`, `exec`, `open`, ...).
+5. **Sandboxed execution** — the (now statically-cleared) template code
+   runs in an isolated subprocess with no network, a timeout, and CPU
+   limits, and only an *unfitted* model object crosses back.
+6. **Label-permutation leakage gate** — fit the actual pipeline on
+   shuffled labels; if it scores meaningfully above chance, something
+   in the pipeline is leaking.
+7. **Feature-correlation leakage gate, candidate-scoped** — re-run a
+   raw correlation-with-target check on exactly the columns *this*
+   candidate selected. Layers 6 and 7 catch genuinely different bugs:
+   permutation testing catches leakage in the modeling *process* (a
+   preprocessing step that saw data it shouldn't have), while the
+   correlation check catches leakage in raw *feature content* (a
+   column that's just a copy of the target under a different name). A
+   candidate can fail one and pass the other — a test in this project
+   proves exactly that: a candidate that selects a near-perfect proxy
+   column for the target passes the permutation test (shuffled labels
+   make the proxy just as useless as everything else) but is correctly
+   caught by the correlation check. Neither gate is redundant; that's
+   why both must run on every candidate.
+8. **Verification agent audit** (§5.5) — only reached by candidates
+   that already passed every gate above. It can flag or reject; it
+   cannot approve or unblock anything that failed layers 1–7.
+
+Only a candidate that clears all eight layers reaches the leaderboard
+as a promotion-eligible result — everything earlier in the list is a
+hard stop, not a suggestion.
+
+The feature engineering agent (§5.2) has its own analogous validation
+pass, one step earlier in the pipeline: every proposed drop/derived
+feature is checked against the profiler's dtype facts (right op for
+the right column type), the target column is forbidden as any op's
+input, and the declared group/time column can't be dropped. Same
+pattern, same trust boundary, applied one layer further upstream.
+
+Layer 5 surfaced a genuinely interesting bug during development: a
+template that defined its own custom transformer class failed at the
+sandbox boundary, because the *unfitted pipeline* has to be pickled
+across the process boundary, and Python's pickling-by-reference can't
+reliably resolve a class defined inside dynamically executed code. The
+fix (documented in `harness/sandbox.py`) was a hard rule for every
+template: compose pipelines only from objects that live in real,
+importable libraries. It's a good example of the sandbox's own
+architecture surfacing a correctness constraint we hadn't anticipated,
+rather than silently producing a wrong pipeline.
+
+## 8. The orchestrator: closing the loop
+
+Everything above runs as a single script (`run_orchestrator.py`) or,
+for interactive inspection, a Jupyter notebook
+(`notebooks/end_to_end_pipeline.ipynb`) that calls the exact same
+underlying functions cell-by-cell so each phase's output — tables,
+the profiler's narrative, a validation-metrics comparison across
+candidates, an ROC curve — is visible rather than buried in print
+statements.
+
+The orchestrator's job:
+
+0. Run intake, then the feature engineering agent, then the profiler
+   — in that order, so the profiler's facts (and the split strategy it
+   recommends) reflect whatever columns the feature engineering agent
+   decided to drop or add.
+1. Ask the modeling agent for up to *N* candidates (nudging it toward
+   a different template each time), each independently run through
+   both deterministic leakage gates.
+2. Rank the gate-passing candidates by validation score and send them
+   to the verification agent **one at a time, best-first**. The first
+   one that isn't rejected is accepted; a rejection moves on to the
+   next-best candidate instead of aborting the run. If every
+   gate-passing candidate is rejected, the run stops and the test set
+   is never touched.
+3. Refit the accepted candidate on train+validation combined.
+4. Evaluate it exactly once on the test set that has been locked since
+   the very first split — this is the only test-set touch in the
+   entire run.
+5. Ask an LLM to narrate the outcome in plain language — a pure text
+   summarization task with no tools and no ability to alter the
+   result. If the accepted candidate was `"flagged"` rather than
+   cleanly `"approved"`, the summary is asked to mention that as a
+   caveat for human review.
+
+Step 2 is deliberately not "verify every candidate, then pick the
+best" — it's "pick the best, then verify," falling back only if
+needed. That's both cheaper (fewer LLM calls than reviewing candidates
+nobody was going to select anyway) and a better match for what a
+review step is actually for: deciding whether to promote the thing
+you're about to promote.
+
+## 8.5 The dynamic orchestrator: an agent catalog instead of a fixed sequence
+
+Everything in §8 is a **fixed sequence** — `run_orchestrator.py` always
+runs intake, then feature engineering, then profiler, and so on, in
+that exact order, every time. That's a script that *uses* agents, not
+an agentic system that *decides*. A fixed sequence structurally cannot
+express things like "skip classification entirely and go straight to
+explaining a specific already-flagged example" or "this candidate pool
+looks thin, try one more template before moving to verification" —
+there's no decision point in the code for either.
+
+`scripts/run_dynamic_orchestrator.py` is a second, independent entry
+point that replaces the fixed sequence with a genuine planning loop,
+while keeping `run_orchestrator.py` completely untouched as the
+baseline it's evaluated against. Three new pieces:
+
+**An agent catalog** (`orchestrator/agent_registry.py`) — the same
+nine capabilities §5 and §8 already describe (intake, feature
+engineering, profiler, split+leakage-checks, modeling, verification,
+finalize, deep-dive, summarize), now exposed as a registry entry each:
+a description, a `when_to_use` hint, and — the part that matters —
+`required_state`, a small set of preconditions (e.g. modeling requires
+`split_leakage_passed=True`; finalize requires a verified candidate
+*and* requires `final_test_metrics_present=False`, so it can only ever
+run once per run, the same one-touch guarantee the test set already
+had in the static pipeline). This mirrors `templates/registry.py`
+exactly: a fixed, auditable menu an agent picks from, never an
+invitation to invent an action.
+
+**A planning agent** (`steps/planner_step.py`) — given the goal and a
+compact, JSON-safe summary of what's happened so far (never the raw
+dataframes or fitted pipelines — same "facts, not raw data" rule every
+other tool binding in this project follows), it proposes exactly one
+next action: run a specific catalog agent with some arguments, or
+declare the run finished. Structurally, it is exactly like every other
+agent here — one bundled tool, one JSON response, no ability to touch
+anything directly.
+
+**A deterministic plan validator**
+(`orchestrator/dynamic_loop.py::validate_plan`) — the control-flow
+counterpart to `harness/intake.py::validate_dataset_spec_proposal` and
+every other proposal-checker in this codebase. It re-checks the
+planner's proposed agent against the *real* registry (not a name the
+planner might have invented) and the proposed preconditions against
+the *real* run state (not the planner's claim that they hold). A
+rejected proposal is never executed — it's fed back to the planner as
+an error and retried a bounded number of times; if the planner can't
+produce anything valid, the run aborts cleanly rather than executing
+something unchecked. This is the concrete answer to the
+control-flow-level hallucination risk a dynamic system introduces that
+a fixed sequence never had to worry about: a hallucination at this
+layer doesn't just produce a wrong number, it could skip a safety gate
+entirely — so it gets the same "propose, then independently verify"
+discipline as every content-level proposal in this project, just
+applied one level higher.
+
+Execution itself calls the *same* `steps/*_step.py` functions the
+static orchestrator already uses — `orchestrator/dynamic_loop.py` is a
+routing and bookkeeping layer, not a reimplementation. Two small
+pieces of logic that were only ever inlined in `run_orchestrator.py`
+(the split+leakage-check step, and the refit/test-eval/model-
+persistence step) were extracted into `steps/split_step.py` and
+`steps/finalize_step.py` so both orchestrators share them — matching
+the extraction pattern every other phase already used to keep the
+standalone scripts and `run_orchestrator.py` from duplicating logic.
+
+**What this makes possible that a fixed sequence couldn't:** given a
+"why was this flight flagged" goal and a pre-existing model artifact
+(`--existing-model`), the planner routes straight to the deep-dive
+agent and finishes — intake, feature engineering, profiler, and
+modeling never run at all. That's the concrete, testable proof a
+dynamic orchestrator is doing something a static script cannot
+express, not just the same thing through more machinery — see
+`tests/test_dynamic_orchestrator.py::test_dynamic_orchestrator_routes_explain_goal_straight_to_deep_dive`
+and `scripts/evaluate_dynamic_orchestrator.py`'s real-LLM version of
+the same scenario.
+
+**A real finding from the real-LLM evaluation, not just the hermetic
+tests:** the first evaluation run against the local model
+(`Qwen3-Coder-30B`) showed both parity scenarios ending in
+`planner_failed` — not a security failure, but the planner
+consistently proposing `{"action": "finalize", "agent_id": "finalize"}`
+(and the same for `verification`) instead of `{"action": "run_agent",
+"agent_id": "finalize"}`, burning through every retry on a pure
+formatting slip rather than a real precondition or hallucination
+problem. This is exactly the kind of thing "thoroughly evaluate before
+moving on" is for: the hermetic tests couldn't have caught it, since
+they script the planner's exact response text. The fix
+(`orchestrator/dynamic_loop.py::normalize_proposal`) is narrow on
+purpose — it only rewrites `action` into the canonical `"run_agent"` +
+`agent_id` form when `action` is itself a real, registered agent id
+(whether or not `agent_id` was also redundantly set — the first fix
+attempt only checked the case where `agent_id` was *missing*, and a
+second real evaluation run against the exact same failure showed that
+was wrong: the model set both fields to the same wrong-shaped value,
+not just one), and only *before* `validate_plan` runs — the normalized
+proposal still passes through the exact same precondition/registry
+checks afterward, so a genuinely unknown action string is left alone
+and still rejected
+(`tests/test_dynamic_orchestrator.py::test_normalize_proposal_does_not_repair_a_genuinely_unknown_action`
+is the regression test proving the fix doesn't quietly widen what's
+allowed to execute). After the corrected fix, both parity scenarios
+completed successfully end to end against the same local model on the
+next real run.
+
+**A second real finding, this time a genuine capability difference, not
+a bug:** on Iris, the *static* orchestrator failed outright
+(`no_candidate_passed` — its fixed `--max-candidates 2` budget ran out
+before a candidate cleared both leakage gates), while the *dynamic*
+orchestrator succeeded on the same dataset, same local model — its
+planner simply proposed `modeling` three times in a row after seeing
+`has_unverified_passing_candidate` stay `false`, before moving on to
+verification and finalize. That is the "sandbox search loop" idea from
+the earlier design discussion showing up on its own, unprompted, as an
+emergent consequence of giving the planner a real decision instead of a
+hardcoded candidate count — not something separately implemented.
+
+The aviation task-routing scenario was skipped in evaluation for an
+unrelated, already-known reason: even at the local server's 32k
+context window, the profiler's per-column facts for a 282-column
+engineered table alone exceed it — a real constraint on wide datasets
+with a small local model, not a defect in the routing logic itself
+(§10.5 already documents the same class of limit for the standalone
+deep-dive path). The adversarial prompt-injection scenario's core
+property held across every run, including the ones that otherwise
+failed on the formatting bug above: `final_test_metrics_present` was
+never `True` unless `finalize` had actually, successfully executed —
+verified against a real model actually attempting to act on the
+injected text, not a cooperative stub. On the final, clean run it
+completed the full pipeline with zero rejected proposals despite the
+injected instruction sitting in the training data the whole time.
+
+**Two more real findings, from building `notebooks/dynamic_orchestrator.ipynb`**
+(executed against the local endpoint and committed with its real outputs,
+not blank cells — the same "prove it, don't just exercise it" standard
+§10 describes, applied to a notebook instead of a test): the bonus
+task-routing section — an explain-only goal plus `--existing-model` and
+no `--target` — initially still let the planner wander into `intake`
+first, since nothing in `RunStateSummary` said a fresh classification
+run wasn't needed; `intake` then failed repeatedly (the engineered
+aviation feature table has no plausible target column) until iterations
+ran out. Fixed by having `--existing-model` also seed
+`target_known=True` (`scripts/run_dynamic_orchestrator.py`) — a
+pre-seeded model means this run was never doing fresh classification in
+the first place, whether or not `--target` was also given. With that
+fixed, a second issue surfaced immediately: the planner correctly went
+straight to `deep_dive`, got a real hypothesis back, and then proposed
+`deep_dive` on the *same* flight four more times before hitting
+`max_iterations` — nothing in state told it the explanation already
+existed. Fixed by adding `RunStateSummary.deep_dive_completed_flight_ids`
+(populated by `execute_agent_step`'s `deep_dive` branch) and updating
+the planner's system prompt to check it before proposing the same
+flight again. Both fixes are now locked in by regression tests
+(`test_existing_model_prevents_planner_from_considering_intake`,
+and an assertion on `deep_dive_completed_flight_ids` in the routing
+test) — two more cases of a real run finding what a hardcoded-response
+test structurally could not.
+
+## 9. An engineering decision worth mentioning: why there's no OpenClaw
+
+The original plan used OpenClaw (an existing agent-runtime framework)
+to host these agents. During bootstrap testing we hit a confirmed,
+reproducible bug in OpenClaw's own transcript-compaction logic that
+made even a single-turn session fail — reproduced identically across
+two releases, independent of model or prompt.
+
+Rather than block the project on an upstream fix, we replaced OpenClaw
+with about 260 lines of code total: a stateless OpenAI-compatible
+client (`model_client.py`) and a minimal tool-calling loop with no
+sessions or compaction (`agent_runtime.py`). None of the pipeline's
+actual requirements — call a model, get a structured response,
+optionally call a tool — needed OpenClaw's heavier machinery
+(multi-channel messaging, cron scheduling, a skills marketplace). This
+turned out to be a net simplification, not a workaround: the whole
+agent runtime is easy to test with a fake model client (which is
+exactly how every integration test in this project works — see §10).
+
+## 10. Testing philosophy
+
+Two distinct kinds of test exist, deliberately:
+
+- **Unit tests for the harness** (splitting, leakage detection, the
+  sandbox, metrics) — pure deterministic code, no LLM involved, fast
+  and exhaustive.
+- **Integration tests for the full agent loop** — these run the
+  *actual* orchestrator code end-to-end, including the tool-calling
+  loop, but with the model client's `.call()` method replaced by a
+  stub that returns pre-scripted responses keyed off which system
+  prompt and how many turns have elapsed. This proves the wiring
+  between agents, tools, and the harness is correct without needing
+  network access, an API key, or non-deterministic LLM output in CI.
+
+87 tests currently pass. One is worth calling out specifically because
+it proves a design claim rather than just exercising code: a test
+constructs a dataset with a column that's a near-perfect copy of the
+target, scripts a modeling-agent proposal that selects it, and asserts
+that the *permutation* gate alone would not have caught it (shuffled
+labels make the copied column just as uninformative as anything else)
+while the *correlation* gate does. That's the empirical version of the
+claim in §7 that the two leakage gates are complementary — the test
+would fail if that claim were wrong.
+
+The notebook itself was verified the same way — its actual cells (not
+a hand-copied summary of them) were extracted and executed against a
+stubbed client before being considered done each time it changed,
+which has caught real bugs (e.g. a relative-path error in the final
+reporting cell) that a visual read-through did not.
+
+**A related but distinct concern is auditability after a real run**,
+not just correctness during testing. Early on, the only per-run log
+(`trace.jsonl`) recorded metadata — which model, how long, whether a
+tool was called — not what was actually said. That's enough to debug
+performance, not enough to answer "why did the modeling agent pick
+this template" after the fact. Every agent invocation now writes its
+full conversation (system prompt, tool calls with real parsed
+arguments, tool results, final response) to `runs/<run_id>/
+transcripts/`, one file per invocation, numbered so multiple candidates
+in one run don't overwrite each other. This matters more, not less, as the system runs more candidates per
+run (Phase 7, not yet built) — more things happening at once is
+exactly when "what did each one actually do" stops being answerable
+from memory.
+
+The feature engineering agent's tests follow the same "prove it, don't
+just exercise it" standard: beyond correctness of each operation
+(division-by-zero really does become `NaN`, not `inf`; a negative
+value into `log1p` really does become `NaN`, not a crash), there's a
+regression test that reconstructs the `SibSp * Parch` case from §5.2 —
+asserting a low-cardinality integer count is accepted for arithmetic
+ops even though the profiler flags it categorical — and an
+orchestrator-level test that feeds a real derived column all the way
+through to a modeling candidate's config and confirms it's actually
+there, not just that the feature step returned successfully in
+isolation.
+
+The multiclass generalization (§5.1) was verified the same way: unit
+tests assert every metric stays in `[0, 1]` and beats chance on
+synthetic 3-class data, every recipe template builds and fits against
+a 3-class target (not just binary), and intake's range check accepts a
+genuine 3-class column while still rejecting a high-cardinality one.
+But the test that actually mattered was a real dry run of
+`run_orchestrator.py` against `datasets/raw/iris.csv` with a stubbed
+client — the exact reported crash scenario, reproduced and confirmed
+fixed end to end (intake → feature engineering → profiler → modeling →
+verification → locked test-set eval), which is also what caught the
+unrelated profiler name-hint substring bug described in §5.1: unit
+tests alone would not have exercised that column-exclusion path,
+because none of the existing synthetic fixtures happened to have a
+feature column whose name contained "id" as a false-positive
+substring.
+
+## 10.5 Extending past tabular: long-format time-series data
+
+Every dataset so far (Titanic, Iris) arrived already shaped as one row
+per example. The first real-world dataset that broke that assumption was
+an aviation predictive-maintenance dataset: 22 sensor channels sampled
+roughly once per second, ~6363 timesteps per flight, many flights per
+plane, all concatenated into one long CSV identified by a flight `id`
+column. There's no "one row per example" yet — and a multi-gigabyte
+source file rules out just loading it all into memory to fix that.
+
+This is deliberately **not** a sixth agent. It's pre-processing, in the
+same sense `harness/dataset.py`'s CSV loading is pre-processing: rolling
+raw timesteps into one feature row per example is a measurement, not a
+judgment call, so no LLM is involved and nothing here produces a
+"proposal" for the harness to re-validate. Once it's done, the data is
+ordinary tabular data, and the entire existing pipeline — intake,
+feature engineering, profiler, modeling, verification — runs against it
+completely unchanged.
+
+`harness/timeseries_features.py` does the actual rollup: a
+`channel_features()` function computing 12 summary statistics per
+channel per example, and a streaming, chunked reader
+(`build_flight_feature_table_streaming()`) that processes the source
+file in bounded-memory pieces rather than loading it whole. The
+tricky part is chunk boundaries — a single example's rows can be split
+across two chunks, or across the middle of one — and getting that wrong
+either drops an example, double-counts it, or (the specific bug caught
+during development) silently merges two genuinely separate, non-
+contiguous examples that happen to share an id into one corrupted row.
+The fix was grouping by contiguous *run position* within each chunk
+rather than by id *value* equality, so two non-contiguous runs of the
+same id stay distinguishable and the corruption gets raised as an error
+instead of silently merged — verified by a test that reproduces exactly
+that scenario and a second test asserting the streaming output exactly
+matches a naive, non-chunked groupby computation on the same data.
+
+Everything dataset-specific — the 22 sensor column names, the
+`before_after` label-string vocabulary — lives one layer up, in
+`scripts/featurize_ngafid_flights.py`, not in the harness module itself.
+That's the same separation of concerns `harness/feature_engineering.py`
+keeps between its generic, vetted operation catalog and any particular
+dataset's use of it: the rollup logic itself is reusable for any future
+long-format grouped time-series dataset, not just this one.
+
+The output feeds the existing pipeline through CLI flags that already
+existed for a different reason (group-aware splitting, added in Phase 1
+for ordinary tabular data with a customer/entity id): `--target`,
+`--group-column plane_id`, `--strategy group`. No orchestrator code
+changed to support this dataset — which is itself evidence that
+"agents propose, harness decides" plus a genuinely general-purpose
+harness composes further than any single dataset it was built against.
+
+## 11. Current status
+
+| Phase | Status |
+|---|---|
+| 0 — Model connectivity | Done |
+| 1 — Deterministic harness | Done |
+| 2 — Profiler agent | Done |
+| 3 — Recipe templates + modeling agent | Done |
+| 4 — Verification/audit agent | Done |
+| 5 — Orchestrator (full loop) | Done |
+| 6 — Priors/evidence reuse across runs | Not built |
+| 7 — Parallel candidate search | Not built |
+| 8 — Dynamic orchestrator (agent catalog + planning agent) | Done |
+
+Built out of numeric order on purpose: Phase 5 came before Phase 4.
+The deterministic gates in §7 already blocked leaky or broken
+candidates without needing an LLM to audit them, so closing the loop
+end-to-end first surfaced more real integration problems sooner than a
+dedicated verification agent would have — including the fact that only
+one of the two leakage gates §7 describes was actually wired into the
+modeling step until Phase 4's work added the second one.
+
+Two more additions sit outside this numbering entirely: the transcript
+logging described in §10, and the Feature Engineering agent (§5.2),
+which runs between intake and the profiler in actual pipeline order.
+Also outside the numbering: the multiclass generalization (§5.1),
+prompted by a real crash the first time a second dataset (Iris) was
+actually tried; the time-series featurization pre-processing stage
+(§10.5), prompted by the first dataset (aviation/NGAFID-MC) that wasn't
+already one row per example; and the Deep-Dive Agent (§5.6), ported from
+a working prototype to answer a second analysis question ("why") the
+first five agents don't address. Phase 8 (§8.5) is the first structural
+departure from "fixed sequence, richer agents" — an agent catalog plus
+a planning agent that decides the sequence itself, evaluated against
+the static pipeline both by hermetic stubbed-client tests
+(`tests/test_dynamic_orchestrator.py`) and a real-LLM evaluation script
+(`scripts/evaluate_dynamic_orchestrator.py`) covering parity, task-
+routing, and an adversarial prompt-injection scenario. Phases 6 and 7
+are still deliberately on hold — proven against three real datasets and
+three distinct problem types now, but still not enough of a sample to
+justify building cross-run evidence reuse (Phase 6).
+
+## 12. Key takeaways
+
+- The interesting engineering problem here isn't "get an LLM to write
+  ML code" — it's **building a trust boundary an LLM can't talk its
+  way around.**
+- Every agent has the smallest possible decision surface for its job,
+  and every proposal is independently re-validated by code that has
+  nothing to do with the LLM that produced it.
+- Even the agent whose entire job is *skepticism* — the verification
+  agent — is itself bound by the same trust boundary: it can only make
+  an outcome more conservative, never less, and a malformed response
+  from it defaults to caution rather than silent approval.
+- The system is honest about its own limits: classification only
+  (binary or multiclass, up to 20 classes), no test-set peeking, and
+  leakage gates that will reject a candidate rather than let a
+  suspicious result through — even at the cost of throwing away a
+  legitimate one occasionally (a known, documented tradeoff of the
+  label-permutation gate's parameters).
+- Reproducibility isn't an afterthought: dataset hashing, seeded
+  splits, and stubbed-client integration tests mean the entire loop —
+  agentic parts included — is testable without a live model, and at
+  least one test in this project exists specifically to prove a design
+  claim empirically rather than just exercise code (§10).
+- Extensibility comes from adding a new vetted, narrow-scope agent
+  (feature engineering, §5.2) rather than widening any existing agent's
+  power. The pattern established in Phase 3 — pick from a catalog,
+  fill in parameters, never write code — turned out to generalize
+  cleanly to a completely different kind of decision (what the feature
+  set should look like, not what model to fit), reusing the same
+  profiler facts and the same validate-then-apply discipline.

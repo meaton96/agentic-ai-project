@@ -23,6 +23,27 @@ multi-tenant use, layer this inside a Docker/gVisor sandbox as well
 (see docs on agents.defaults.sandbox in the wider architecture doc) —
 this module gives you the static+resource-limit layer regardless of
 what container boundary you put around it.
+
+Constraint this implies for template/candidate authors: the returned
+pipeline is pickled in the child and unpickled in the parent, so
+build_pipeline() must only return objects composed from already-
+importable libraries (sklearn/lightgbm/xgboost/pandas/numpy/...).
+Candidate code must NOT define its own class or function and use an
+instance of it inside the returned pipeline — pickle resolves objects
+by reference to `__module__` + `__qualname__`, and a class defined via
+exec() into this runner's synthetic namespace has `__module__ ==
+"candidate"`, which isn't a real registered module. If a same-named
+candidate.py happens to be importable from the child's cwd, pickling
+will "succeed" against a *second, distinct* class object and then fail
+with a confusing "not the same object as candidate.X" error; if it
+isn't importable at all, unpickling in the parent fails outright since
+no "candidate" module exists there either. There is no fix for this
+short of registering the exec'd module in both processes, which would
+mean re-executing untrusted source in the trusted parent — so the rule
+is simply: don't do it. (See templates/sources/lightgbm_mixed.py's
+docstring for a worked example of routing around this with
+FunctionTransformer + a real library function instead of a custom
+transformer class.)
 """
 from __future__ import annotations
 
