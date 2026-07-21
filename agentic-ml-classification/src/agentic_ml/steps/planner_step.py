@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from agentic_ml.agent_runtime import ToolCallingAgent
+from agentic_ml.events import emit_event
 from agentic_ml.model_client import ModelClient
 from agentic_ml.tools.planner_tool import make_planning_context_tool
 
@@ -113,7 +114,10 @@ def run_planner_step(
     max_turns: int = 4,
     previous_error: Optional[str] = None,
     trace_fn: Optional[Callable[[dict], None]] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
 ) -> PlannerTurnResult:
+    emit_event(on_event, "planner", "agent_started", {"iteration": iteration, "previous_error": previous_error})
+
     tool = make_planning_context_tool(goal, state_dict, available_agents, iteration, max_iterations)
     agent = ToolCallingAgent(
         model_client=client, tools=[tool], system_prompt=SYSTEM_PROMPT,
@@ -126,8 +130,12 @@ def run_planner_step(
         "Decide the next action."
     )
     result = agent.run(user_message, trace_fn=trace_fn)
+    for entry in result.tool_call_log:
+        emit_event(on_event, "planner", "tool_called", {"tool": entry["tool"], "result": entry["result"]})
 
     if result.final_text is None:
+        emit_event(on_event, "planner", "planner_proposal",
+                    {"ok": False, "proposal": None, "reason": "no final text"})
         return PlannerTurnResult(
             ok=False, proposal=None, llm_raw_text=None,
             stopped_reason=result.stopped_reason, turns_used=result.turns_used,
@@ -136,11 +144,14 @@ def run_planner_step(
     try:
         proposal = json.loads(result.final_text)
     except json.JSONDecodeError:
+        emit_event(on_event, "planner", "planner_proposal",
+                    {"ok": False, "proposal": None, "reason": "did not parse as JSON"})
         return PlannerTurnResult(
             ok=False, proposal=None, llm_raw_text=result.final_text,
             stopped_reason=result.stopped_reason, turns_used=result.turns_used,
             messages=result.messages,
         )
+    emit_event(on_event, "planner", "planner_proposal", {"ok": True, "proposal": proposal})
     return PlannerTurnResult(
         ok=True, proposal=proposal, llm_raw_text=result.final_text,
         stopped_reason=result.stopped_reason, turns_used=result.turns_used,

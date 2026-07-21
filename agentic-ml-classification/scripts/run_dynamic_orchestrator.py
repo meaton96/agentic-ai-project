@@ -37,19 +37,21 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Callable, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import joblib
 
 from agentic_ml.cli_common import make_run_dir, make_tracer, make_transcript_writer, resolve_model_endpoint
+from agentic_ml.events import make_event_emitter, make_event_logger
 from agentic_ml.harness.dataset import read_dataframe
 from agentic_ml.model_client import ModelClient
 from agentic_ml.orchestrator.dynamic_loop import load_raw_hash, run_dynamic_loop
 from agentic_ml.orchestrator.run_state import DynamicRunContext, RunStateSummary
 
 
-def main():
+def main(on_event: Optional[Callable[[dict], None]] = None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True)
     parser.add_argument("--goal", default="")
@@ -83,6 +85,7 @@ def main():
     run_id, run_dir = make_run_dir(args.run_id)
     trace = make_tracer(run_dir / "trace.jsonl")
     write_transcript = make_transcript_writer(run_dir)
+    emit = make_event_emitter(run_id, external_on_event=on_event, persist_fn=make_event_logger(run_dir))
 
     base_url, api_key, default_model = resolve_model_endpoint(
         args.use_gateway, args.model, "qwen3-coder:30b", "rit-qwen3-coder-30b",
@@ -141,6 +144,7 @@ def main():
         ctx, state, client, model=default_model, verification_model=verification_model,
         max_iterations=args.max_iterations,
         trace_fn=lambda record: trace(**record), write_transcript=write_transcript,
+        on_event=emit,
     )
 
     for entry in result.history:

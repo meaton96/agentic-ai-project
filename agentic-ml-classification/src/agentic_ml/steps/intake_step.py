@@ -16,6 +16,7 @@ from typing import Callable, Optional
 import pandas as pd
 
 from agentic_ml.agent_runtime import ToolCallingAgent
+from agentic_ml.events import emit_event
 from agentic_ml.harness.intake import validate_dataset_spec_proposal
 from agentic_ml.model_client import ModelClient
 from agentic_ml.tools.intake_tool import make_raw_schema_tool
@@ -79,7 +80,10 @@ def run_intake_step(
     model: Optional[str] = None,
     max_turns: int = 4,
     trace_fn: Optional[Callable[[dict], None]] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
 ) -> IntakeStepResult:
+    emit_event(on_event, "intake", "agent_started", {"goal": goal_text})
+
     tool = make_raw_schema_tool(df)
     agent = ToolCallingAgent(
         model_client=client, tools=[tool], system_prompt=SYSTEM_PROMPT,
@@ -97,8 +101,11 @@ def run_intake_step(
     for entry in result.tool_call_log:
         if entry["tool"] == "get_raw_schema":
             raw_schema = entry["result"]
+        emit_event(on_event, "intake", "tool_called", {"tool": entry["tool"], "result": entry["result"]})
 
     if result.final_text is None:
+        emit_event(on_event, "intake", "proposal_rejected",
+                    {"errors": ["agent never produced a proposal"]})
         return IntakeStepResult(
             ok=False, dataset_spec_proposal=None,
             validation_errors=["agent never produced a proposal"],
@@ -110,6 +117,8 @@ def run_intake_step(
     try:
         proposal = json.loads(result.final_text)
     except json.JSONDecodeError:
+        emit_event(on_event, "intake", "proposal_rejected",
+                    {"errors": ["agent's final response did not parse as JSON"]})
         return IntakeStepResult(
             ok=False, dataset_spec_proposal=None,
             validation_errors=["agent's final response did not parse as JSON"],
@@ -119,6 +128,10 @@ def run_intake_step(
         )
 
     errors = validate_dataset_spec_proposal(df, proposal)
+    emit_event(
+        on_event, "intake", "proposal_validated" if not errors else "proposal_rejected",
+        {"dataset_spec_proposal": proposal, "errors": errors},
+    )
     return IntakeStepResult(
         ok=len(errors) == 0, dataset_spec_proposal=proposal, validation_errors=errors,
         raw_schema=raw_schema, llm_raw_text=result.final_text,

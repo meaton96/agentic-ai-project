@@ -13,6 +13,8 @@ import uuid
 from pathlib import Path
 from typing import Callable, Optional
 
+from agentic_ml.paths import run_dir as resolve_run_dir
+
 
 def resolve_model_endpoint(
     use_gateway: bool,
@@ -51,7 +53,7 @@ def resolve_model_endpoint(
 
 def make_run_dir(run_id: Optional[str]) -> tuple[str, Path]:
     run_id = run_id or f"run_{uuid.uuid4().hex[:8]}"
-    run_dir = Path("runs") / run_id
+    run_dir = resolve_run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_id, run_dir
 

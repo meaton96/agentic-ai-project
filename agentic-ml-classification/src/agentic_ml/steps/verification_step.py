@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from agentic_ml.agent_runtime import ToolCallingAgent
+from agentic_ml.events import emit_event
 from agentic_ml.model_client import ModelClient
 from agentic_ml.tools.verification_tool import make_review_bundle_tool
 
@@ -81,7 +82,10 @@ def run_verification_step(
     model: Optional[str] = None,
     max_turns: int = 4,
     trace_fn: Optional[Callable[[dict], None]] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
 ) -> VerificationStepResult:
+    emit_event(on_event, "verification", "agent_started", {"candidate_id": bundle.get("candidate_id")})
+
     tool = make_review_bundle_tool(bundle)
     agent = ToolCallingAgent(
         model_client=client, tools=[tool], system_prompt=SYSTEM_PROMPT,
@@ -91,6 +95,8 @@ def run_verification_step(
         f"Review candidate {bundle.get('candidate_id')!r} and give your verdict.",
         trace_fn=trace_fn,
     )
+    for entry in result.tool_call_log:
+        emit_event(on_event, "verification", "tool_called", {"tool": entry["tool"], "result": entry["result"]})
 
     def unparseable(reason: str) -> VerificationStepResult:
         # Defensive default: a formatting glitch from the LLM shouldn't silently
@@ -98,6 +104,10 @@ def run_verification_step(
         # nor should it hard-block a candidate that already passed two deterministic
         # gates over an LLM output-formatting issue. "flagged" is the conservative
         # middle ground — proceed, but make sure a human sees why.
+        emit_event(on_event, "verification", "verification_verdict", {
+            "candidate_id": bundle.get("candidate_id"), "verdict": "flagged", "concerns": [reason],
+            "reasoning": None, "unparseable": True,
+        })
         return VerificationStepResult(
             ok=False, verdict="flagged", concerns=[reason], reasoning=None,
             llm_raw_text=result.final_text,
@@ -117,6 +127,11 @@ def run_verification_step(
     if verdict not in VALID_VERDICTS:
         return unparseable(f"verification agent returned an invalid verdict: {verdict!r}")
 
+    emit_event(on_event, "verification", "verification_verdict", {
+        "candidate_id": bundle.get("candidate_id"), "verdict": verdict,
+        "concerns": parsed.get("concerns") or [], "reasoning": parsed.get("reasoning"),
+        "unparseable": False,
+    })
     return VerificationStepResult(
         ok=True,
         verdict=verdict,

@@ -29,6 +29,8 @@ from agentic_ml.harness.leakage import run_all_split_leakage_checks
 from agentic_ml.harness.baseline_ladder import ColumnProfile, build_baseline_pipelines, fit_and_predict
 from agentic_ml.harness.metrics import compute_metrics
 from agentic_ml.harness.leaderboard import append_leaderboard_entry
+from agentic_ml.paths import leaderboard_path as resolve_leaderboard_path
+from agentic_ml.paths import run_dir as resolve_run_dir
 
 
 def main():
@@ -48,7 +50,7 @@ def main():
     args = parser.parse_args()
 
     run_id = args.run_id or f"run_{uuid.uuid4().hex[:8]}"
-    run_dir = Path("runs") / run_id
+    run_dir = resolve_run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     trace_path = run_dir / "trace.jsonl"
@@ -130,7 +132,7 @@ def main():
     print(f"\nRunning baseline ladder ({len(pipelines)} candidates) on VALIDATION split:")
     print(f"{'candidate':<24}" + "".join(f"{m:>12}" for m in metric_names))
 
-    leaderboard_path = Path("artifacts/reports/leaderboard.jsonl")
+    leaderboard_path = resolve_leaderboard_path()
 
     for name, pipeline in pipelines.items():
         start = time.time()

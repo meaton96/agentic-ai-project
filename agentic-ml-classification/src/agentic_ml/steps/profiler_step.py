@@ -13,6 +13,7 @@ from typing import Callable, Optional
 import pandas as pd
 
 from agentic_ml.agent_runtime import ToolCallingAgent
+from agentic_ml.events import emit_event
 from agentic_ml.model_client import ModelClient
 from agentic_ml.tools.profiler_tool import make_profiler_tool
 
@@ -53,7 +54,10 @@ def run_profiler_step(
     model: Optional[str] = None,
     max_turns: int = 4,
     trace_fn: Optional[Callable[[dict], None]] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
 ) -> ProfilerStepResult:
+    emit_event(on_event, "profiler", "agent_started", {"target_column": target_column})
+
     tool = make_profiler_tool(df, target_column)
     agent = ToolCallingAgent(
         model_client=client, tools=[tool], system_prompt=SYSTEM_PROMPT,
@@ -66,9 +70,9 @@ def run_profiler_step(
 
     deterministic_report = None
     for entry in result.tool_call_log:
-        if entry["tool"] == "get_dataset_profile":
+        emit_event(on_event, "profiler", "tool_called", {"tool": entry["tool"], "result": entry["result"]})
+        if entry["tool"] == "get_dataset_profile" and deterministic_report is None:
             deterministic_report = entry["result"]
-            break
 
     llm_parsed = None
     if result.final_text:
@@ -76,6 +80,13 @@ def run_profiler_step(
             llm_parsed = json.loads(result.final_text)
         except json.JSONDecodeError:
             llm_parsed = None
+
+    emit_event(on_event, "profiler", "profiler_report", {
+        "ok": deterministic_report is not None,
+        "recommended_split_strategy": (deterministic_report or {}).get("recommended_split_strategy"),
+        "is_imbalanced": (deterministic_report or {}).get("is_imbalanced"),
+        "leakage_risk_flags": (deterministic_report or {}).get("leakage_risk_flags"),
+    })
 
     return ProfilerStepResult(
         ok=deterministic_report is not None,

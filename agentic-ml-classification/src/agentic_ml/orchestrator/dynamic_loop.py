@@ -14,12 +14,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable, Optional
 
 import joblib
 import pandas as pd
 
+from agentic_ml.events import emit_event
 from agentic_ml.harness.dataset import DatasetSpec, LoadedDataset, load_dataset
 from agentic_ml.harness.drift import compute_drift_report
 from agentic_ml.harness.leaderboard import append_leaderboard_entry
@@ -29,6 +29,7 @@ from agentic_ml.harness.verification import build_review_bundle
 from agentic_ml.model_client import ModelClient
 from agentic_ml.orchestrator.agent_registry import AGENTS, get_agent, list_agent_summaries
 from agentic_ml.orchestrator.run_state import CandidateSummary, DynamicRunContext, RunStateSummary
+from agentic_ml.paths import leaderboard_path
 from agentic_ml.steps.deep_dive_step import run_deep_dive_step
 from agentic_ml.steps.feature_engineering_step import run_feature_engineering_step
 from agentic_ml.steps.finalize_step import run_finalize_step
@@ -148,6 +149,7 @@ def execute_agent_step(
     agent_id: str, args: dict, ctx: DynamicRunContext, state: RunStateSummary,
     client: ModelClient, model: Optional[str], verification_model: Optional[str],
     trace_fn: Optional[Callable[[dict], None]], write_transcript: Callable[[str, list[dict]], object],
+    on_event: Optional[Callable[[dict], None]] = None,
 ) -> tuple[bool, list[str]]:
     """Executes one already-validated agent step, mutating ctx/state in
     place. Returns (ok, errors). ok=False means this attempt didn't
@@ -158,7 +160,7 @@ def execute_agent_step(
     the "something is wrong" cases."""
     try:
         if agent_id == "intake":
-            result = run_intake_step(ctx.raw_df, ctx.goal, client, model=model, trace_fn=trace_fn)
+            result = run_intake_step(ctx.raw_df, ctx.goal, client, model=model, trace_fn=trace_fn, on_event=on_event)
             write_transcript("intake", result.messages)
             if not result.ok:
                 return False, result.validation_errors or ["intake agent failed"]
@@ -176,7 +178,7 @@ def execute_agent_step(
             result = run_feature_engineering_step(
                 ctx.engineered_df, ctx.target_column, client,
                 group_column=ctx.group_column, time_column=ctx.time_column,
-                model=model, trace_fn=trace_fn,
+                model=model, trace_fn=trace_fn, on_event=on_event,
             )
             write_transcript("feature_engineering", result.messages)
             if not result.ok:
@@ -188,7 +190,7 @@ def execute_agent_step(
 
         if agent_id == "profiler":
             result = run_profiler_step(ctx.engineered_df, ctx.target_column, client,
-                                       model=model, trace_fn=trace_fn)
+                                       model=model, trace_fn=trace_fn, on_event=on_event)
             write_transcript("profiler", result.messages)
             if not result.ok:
                 return False, ["profiler agent never called get_dataset_profile"]
@@ -208,6 +210,7 @@ def execute_agent_step(
             result = run_split_step(
                 ctx.loaded.df, ctx.target_column, ctx.loaded.data_hash, ctx.profiler_report,
                 ctx.group_column, ctx.time_column, ctx.seed, strategy_override=ctx.strategy_override,
+                on_event=on_event,
             )
             ctx.manifest = result.manifest
             ctx.strategy_used = result.strategy_used
@@ -225,7 +228,7 @@ def execute_agent_step(
                 group_column=ctx.group_column, time_column=ctx.time_column,
                 train_idx=ctx.manifest.train_idx, val_idx=ctx.manifest.val_idx,
                 client=client, model=model, metric_names=ctx.metric_names, seed=ctx.seed,
-                already_tried_template_ids=ctx.tried_template_ids, trace_fn=trace_fn,
+                already_tried_template_ids=ctx.tried_template_ids, trace_fn=trace_fn, on_event=on_event,
             )
             write_transcript("modeling", result.messages)
             if result.template_id:
@@ -256,12 +259,13 @@ def execute_agent_step(
                 feature_correlation_check=candidate.feature_correlation_check,
                 profiler_report=ctx.profiler_report,
             )
-            result = run_verification_step(bundle, client, model=verification_model, trace_fn=trace_fn)
+            result = run_verification_step(bundle, client, model=verification_model, trace_fn=trace_fn,
+                                            on_event=on_event)
             write_transcript("verification", result.messages)
             for c in state.candidates:
                 if c.candidate_id == candidate_id:
                     c.verification_verdict = result.verdict
-            append_leaderboard_entry(Path("artifacts/reports/leaderboard.jsonl"), {
+            append_leaderboard_entry(leaderboard_path(), {
                 "run_id": ctx.run_id, "candidate": candidate_id, "template_id": candidate.template_id,
                 "source": "dynamic_orchestrator", "model": model, "split": "validation",
                 "strategy": ctx.strategy_used, "data_hash": ctx.loaded.data_hash, "seed": ctx.seed,
@@ -276,7 +280,7 @@ def execute_agent_step(
             candidate = ctx.modeling_results[candidate_id]
             result = run_finalize_step(
                 ctx.loaded.X, ctx.loaded.y, ctx.manifest, candidate.pipeline,
-                ctx.metric_names, ctx.seed, ctx.run_id,
+                ctx.metric_names, ctx.seed, ctx.run_id, on_event=on_event,
             )
             ctx.final_pipeline = result.pipeline
             ctx.final_test_metrics = result.test_metrics
@@ -329,6 +333,7 @@ def execute_agent_step(
             state.drift_checked = True
             state.drift_summary = report
             state.last_action = f"monitor_drift: mean_abs_shift={report['mean_abs_shift']}"
+            emit_event(on_event, "monitor_drift", "drift_report", report)
             return True, []
 
         if agent_id == "retrain_decision":
@@ -344,7 +349,8 @@ def execute_agent_step(
                 "n_batches_since_last_retrain": ctx.n_batches_since_last_train,
                 "n_examples_accumulated_since_last_retrain": n_examples_since_last_train,
             }
-            result = run_retrain_decision_step(monitoring_context, client, model=model, trace_fn=trace_fn)
+            result = run_retrain_decision_step(monitoring_context, client, model=model, trace_fn=trace_fn,
+                                                on_event=on_event)
             write_transcript("retrain_decision", result.messages)
             state.pending_retrain_action = result.action
             state.last_action = f"retrain_decision: {result.action} ({result.reasoning or 'n/a'})"
@@ -424,6 +430,9 @@ def execute_agent_step(
             })
             state.batch_action_completed = True
             state.last_action = f"infer_batch: scored {len(ctx.pending_batch_df)} examples"
+            emit_event(on_event, "infer_batch", "batch_inference_completed", {
+                "n_examples": len(ctx.pending_batch_df), "metrics": batch_metrics,
+            })
             return True, []
 
         if agent_id == "deep_dive":
@@ -446,7 +455,7 @@ def execute_agent_step(
             flight_df = extract_single_flight_raw(ctx.raw_csv, flight_id, NGAFID_SENSORS, id_column="id")
             result = run_deep_dive_step(
                 flight_df, feature_row, pipeline, feature_columns, background, client,
-                model=model, trace_fn=trace_fn,
+                model=model, trace_fn=trace_fn, on_event=on_event,
             )
             write_transcript("deep_dive", result.messages)
             ctx.deep_dive_results[str(flight_id)] = result
@@ -455,6 +464,7 @@ def execute_agent_step(
             return True, []
 
         if agent_id == "summarize":
+            emit_event(on_event, "summarize", "agent_started", {})
             summary_messages = [
                 {"role": "system", "content": (
                     "You are the Analyst step of a dynamic, agentic ML pipeline. Respond "
@@ -472,6 +482,7 @@ def execute_agent_step(
             ctx.summary_text = response.text
             write_transcript("summarize", summary_messages + [{"role": "assistant", "content": response.text}])
             state.summary_present = True
+            emit_event(on_event, "summarize", "summary_produced", {"summary": response.text})
             return True, []
 
         return False, [f"no dispatcher registered for agent_id {agent_id!r}"]
@@ -497,10 +508,13 @@ def run_dynamic_loop(
     max_retries_per_iteration: int = 2,
     trace_fn: Optional[Callable[[dict], None]] = None,
     write_transcript: Optional[Callable[[str, list[dict]], object]] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
 ) -> DynamicLoopResult:
     write_transcript = write_transcript or (lambda name, messages: None)
     history: list[dict] = []
     capabilities = ctx.capabilities()
+
+    emit_event(on_event, "run", "run_started", {"goal": ctx.goal, "max_iterations": max_iterations})
 
     for iteration in range(max_iterations):
         state.iteration = iteration
@@ -513,25 +527,33 @@ def run_dynamic_loop(
             state_dict = state.to_planner_dict()
             planner_result = run_planner_step(
                 ctx.goal, state_dict, available_agents, iteration, max_iterations,
-                client, model=model, previous_error=previous_error, trace_fn=trace_fn,
+                client, model=model, previous_error=previous_error, trace_fn=trace_fn, on_event=on_event,
             )
             write_transcript("planner", planner_result.messages)
             if not planner_result.ok:
                 previous_error = "your response did not parse as the required JSON schema"
                 attempts.append({"proposal": planner_result.llm_raw_text, "errors": [previous_error]})
+                emit_event(on_event, "planner", "planner_proposal_rejected",
+                            {"iteration": iteration, "proposal": planner_result.llm_raw_text,
+                             "errors": [previous_error]})
                 continue
             normalized_proposal = normalize_proposal(planner_result.proposal)
             plan_errors = validate_plan(normalized_proposal, state, capabilities)
             if not plan_errors:
                 proposal = normalized_proposal
+                emit_event(on_event, "planner", "planner_proposal_accepted",
+                            {"iteration": iteration, "proposal": proposal})
                 break
             previous_error = "; ".join(plan_errors)
             attempts.append({"proposal": normalized_proposal, "errors": plan_errors})
+            emit_event(on_event, "planner", "planner_proposal_rejected",
+                        {"iteration": iteration, "proposal": normalized_proposal, "errors": plan_errors})
         else:
             history.append({
                 "iteration": iteration, "proposal": None, "attempts": attempts,
                 "validation_errors": [previous_error], "executed": False,
             })
+            emit_event(on_event, "run", "run_failed", {"status": "planner_failed", "iteration": iteration})
             return DynamicLoopResult(status="planner_failed", state=state, ctx=ctx, history=history)
 
         if proposal["action"] == "finish":
@@ -539,13 +561,14 @@ def run_dynamic_loop(
                 "iteration": iteration, "proposal": proposal, "attempts": attempts,
                 "validation_errors": [], "executed": False, "finished": True,
             })
+            emit_event(on_event, "run", "run_completed", {"status": "success", "iteration": iteration})
             return DynamicLoopResult(status="success", state=state, ctx=ctx, history=history)
 
         agent_id = proposal["agent_id"]
         step_args = proposal.get("args") or {}
         ok, errors = execute_agent_step(
             agent_id, step_args, ctx, state, client, model, verification_model,
-            trace_fn, write_transcript,
+            trace_fn, write_transcript, on_event=on_event,
         )
         state.last_action = f"{agent_id}: {'OK' if ok else 'FAILED - ' + '; '.join(errors)}"
         history.append({
@@ -553,4 +576,5 @@ def run_dynamic_loop(
             "validation_errors": [], "executed": True, "agent_id": agent_id, "ok": ok, "errors": errors,
         })
 
+    emit_event(on_event, "run", "run_failed", {"status": "max_iterations_reached"})
     return DynamicLoopResult(status="max_iterations_reached", state=state, ctx=ctx, history=history)

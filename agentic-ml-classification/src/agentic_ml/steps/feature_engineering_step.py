@@ -21,6 +21,7 @@ from typing import Callable, Optional
 import pandas as pd
 
 from agentic_ml.agent_runtime import ToolCallingAgent
+from agentic_ml.events import emit_event
 from agentic_ml.harness.feature_engineering import apply_feature_op, validate_feature_proposal
 from agentic_ml.model_client import ModelClient
 from agentic_ml.tools.feature_tool import make_list_feature_ops_tool
@@ -97,7 +98,10 @@ def run_feature_engineering_step(
     model: Optional[str] = None,
     max_turns: int = 6,
     trace_fn: Optional[Callable[[dict], None]] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
 ) -> FeatureEngineeringStepResult:
+    emit_event(on_event, "feature_engineering", "agent_started", {"target_column": target_column})
+
     tools = [make_profiler_tool(df, target_column), make_list_feature_ops_tool()]
     agent = ToolCallingAgent(
         model_client=client, tools=tools, system_prompt=SYSTEM_PROMPT,
@@ -112,8 +116,11 @@ def run_feature_engineering_step(
     for entry in result.tool_call_log:
         if entry["tool"] == "get_dataset_profile":
             profile_report = entry["result"]
+        emit_event(on_event, "feature_engineering", "tool_called",
+                    {"tool": entry["tool"], "result": entry["result"]})
 
     def fail(errors: list[str]) -> FeatureEngineeringStepResult:
+        emit_event(on_event, "feature_engineering", "proposal_rejected", {"errors": errors})
         return FeatureEngineeringStepResult(
             ok=False, df=None, drop_columns=[], new_columns=[], applied_ops=[],
             explanation=None, errors=errors,
@@ -153,6 +160,9 @@ def run_feature_engineering_step(
         new_columns.extend(names)
         applied_ops.append({"op_id": op_id, "params": params, "new_columns": names})
 
+    emit_event(on_event, "feature_engineering", "proposal_validated", {
+        "drop_columns": drop_columns, "new_columns": new_columns, "applied_ops": applied_ops,
+    })
     return FeatureEngineeringStepResult(
         ok=True, df=new_df, drop_columns=drop_columns, new_columns=new_columns,
         applied_ops=applied_ops, explanation=explanation, errors=[],

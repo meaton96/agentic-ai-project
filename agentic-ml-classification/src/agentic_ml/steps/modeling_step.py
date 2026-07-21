@@ -35,6 +35,7 @@ import pandas as pd
 from sklearn.base import clone
 
 from agentic_ml.agent_runtime import ToolCallingAgent
+from agentic_ml.events import emit_event
 from agentic_ml.harness.leakage import check_suspicious_feature_correlation, label_permutation_test
 from agentic_ml.harness.sandbox import run_candidate_build
 from agentic_ml.harness.metrics import compute_metrics, roc_auc_any
@@ -162,9 +163,12 @@ def run_modeling_step(
     seed: int = 42,
     already_tried_template_ids: Optional[list[str]] = None,
     trace_fn: Optional[Callable[[dict], None]] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
 ) -> ModelingStepResult:
     if metric_names is None:
         metric_names = ["roc_auc", "pr_auc", "f1", "accuracy"]
+
+    emit_event(on_event, "modeling", "agent_started", {"already_tried_template_ids": already_tried_template_ids or []})
 
     system_prompt = SYSTEM_PROMPT
     if already_tried_template_ids:
@@ -184,8 +188,13 @@ def run_modeling_step(
     for entry in result.tool_call_log:
         if entry["tool"] == "get_dataset_profile":
             profile_report = entry["result"]
+        emit_event(on_event, "modeling", "tool_called", {"tool": entry["tool"], "result": entry["result"]})
 
     def fail(errors: list[str], **extra) -> ModelingStepResult:
+        emit_event(on_event, "modeling", "candidate_rejected", {
+            "candidate_id": extra.get("candidate_id"), "template_id": extra.get("template_id"),
+            "errors": errors,
+        })
         return ModelingStepResult(
             ok=False,
             candidate_id=extra.get("candidate_id"), template_id=extra.get("template_id"),
@@ -256,11 +265,15 @@ def run_modeling_step(
         fit_and_score, X.iloc[train_idx], y.iloc[train_idx], X.iloc[val_idx], y.iloc[val_idx],
         metric_name="roc_auc", seed=seed,
     )
+    emit_event(on_event, "modeling", "leakage_gate_result",
+                {"candidate_id": candidate_id, **permutation_check.to_dict()})
 
     selected_cols = [c for c in config.get("numeric_cols", []) + config.get("categorical_cols", []) if c in X.columns]
     correlation_check = check_suspicious_feature_correlation(
         X[selected_cols].iloc[train_idx], y.iloc[train_idx],
     )
+    emit_event(on_event, "modeling", "leakage_gate_result",
+                {"candidate_id": candidate_id, **correlation_check.to_dict()})
 
     passed_both_gates = permutation_check.passed and correlation_check.passed
     gate_errors = []
@@ -268,6 +281,11 @@ def run_modeling_step(
         gate_errors.append("failed label_permutation_test leakage gate")
     if not correlation_check.passed:
         gate_errors.append("failed feature-correlation leakage gate")
+
+    emit_event(on_event, "modeling", "candidate_scored", {
+        "candidate_id": candidate_id, "template_id": template_id, "metrics": metrics_dict,
+        "passed_gate": passed_both_gates,
+    })
 
     return ModelingStepResult(
         ok=passed_both_gates,
