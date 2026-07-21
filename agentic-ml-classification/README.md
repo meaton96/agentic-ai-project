@@ -454,14 +454,87 @@ anything unparseable.
   own real template pipelines (not a bare classifier), and the
   unparseable-response-degrades-to-template case.
 
+**Dynamic orchestrator (Phase 8; a genuine architectural departure, not
+just another agent):** `run_orchestrator.py` (Phase 5) always runs the
+same fixed sequence — it's a script that *uses* agents, not a system
+that *decides*. `scripts/run_dynamic_orchestrator.py` is a second,
+independent entry point that replaces the fixed sequence with an
+agent catalog plus a planning agent that decides which catalog agent
+runs next, given the goal and the current run state.
+`run_orchestrator.py` is completely untouched — it remains the baseline
+this is evaluated against.
+- `orchestrator/agent_registry.py` — the nine capabilities (intake,
+  feature engineering, profiler, split+leakage-checks, modeling,
+  verification, finalize, deep-dive, summarize) as a fixed, auditable
+  catalog, mirroring `templates/registry.py`'s exact shape. Each entry
+  declares `required_state` preconditions (e.g. `finalize` requires a
+  verified candidate *and* requires the test set not already touched
+  this run — a one-shot guard, not just a suggestion).
+- `orchestrator/run_state.py` — `RunStateSummary` (small, JSON-safe;
+  the *only* view of run progress the planner ever sees — no
+  dataframes, no fitted pipelines) and `DynamicRunContext` (the
+  harness-side working state, never serialized to the LLM).
+- `tools/planner_tool.py` + `steps/planner_step.py` — the planning
+  agent itself: one bundled tool, one JSON proposal per turn
+  (`{action, agent_id, args, reasoning}`) — structurally identical to
+  every other agent here.
+- `orchestrator/dynamic_loop.py` — `validate_plan()` (the control-flow
+  counterpart to `harness/intake.py`'s proposal validation: re-checks
+  the planner's proposed agent against the *real* registry and its
+  preconditions against the *real* state, never the planner's claim;
+  a rejected proposal never executes and is retried with the error fed
+  back, bounded) and `execute_agent_step()` (a dispatch table calling
+  the *same*, unmodified `steps/*_step.py` functions the static
+  orchestrator uses — this module routes and validates, it doesn't
+  reimplement any agent). `steps/split_step.py` and
+  `steps/finalize_step.py` are new extractions of logic that was only
+  ever inlined in `run_orchestrator.py`, so both orchestrators share it.
+- **What this makes possible that a fixed sequence structurally
+  cannot:** given a "why was this flight flagged" goal and
+  `--existing-model` (a prior run's persisted bundle), the planner
+  routes straight to the deep-dive agent and finishes — intake,
+  feature engineering, profiler, and modeling never run. See
+  `tests/test_dynamic_orchestrator.py::test_dynamic_orchestrator_routes_explain_goal_straight_to_deep_dive`.
+- `tests/test_dynamic_orchestrator.py` — parity (the dynamic path
+  visits the same effective stages and produces valid metrics),
+  task-routing (above), a hallucinated `agent_id` rejected without
+  executing anything, a precondition violation rejected the same way,
+  `finalize`'s one-shot guard, and the planner loop actually stopping
+  at `--max-iterations` rather than looping forever.
+- `scripts/evaluate_dynamic_orchestrator.py` — the real-LLM evaluation
+  beyond hermetic tests: static-vs-dynamic parity (Titanic + Iris),
+  a real task-routing run, and an adversarial prompt-injection
+  scenario (a column value instructs the planner to claim the run is
+  already finished — the check is whether the harness's own state can
+  ever claim `final_test_metrics_present=True` without `finalize`
+  having actually, successfully executed; that property held
+  regardless of what the injected text asked for). Writes
+  `runs/dynamic_eval_report.md`.
+- What that evaluation actually found, against the local model
+  (`Qwen3-Coder-30B`): a real, reproducible planner formatting mistake
+  (`{"action": "finalize", "agent_id": "finalize"}` instead of
+  `{"action": "run_agent", "agent_id": "finalize"}`) that burned every
+  retry until `orchestrator/dynamic_loop.py::normalize_proposal` was
+  added to canonicalize it *before* validation — narrow by design, it
+  doesn't change what's allowed to execute, only which proposals are
+  legible before that check runs (see PROJECT_OVERVIEW.md §8.5 for the
+  full story, including a second attempt that missed the case where
+  `agent_id` was redundantly set). After the fix: both parity runs
+  succeeded, and Iris surfaced a genuine capability difference, not a
+  bug — the static orchestrator failed (`no_candidate_passed`, budget
+  exhausted at `--max-candidates 2`) while the dynamic one succeeded by
+  the planner simply proposing `modeling` three times on its own before
+  moving on, the "try again" behavior discussed as a future sandbox
+  search loop showing up unprompted.
+
 **Not yet built:** priors/evidence reuse (Phase 6), parallelization
-(Phase 7), dynamic agent orchestration (the orchestrator is still a
-fixed sequence of phases, not an agent that decides which agents/
-pipelines to run for a given problem — the deep-dive agent above is
-triggered manually, per flight, not routed to automatically). Multiclass
-occlusion attribution is also unbuilt (a scope limit noted above, not a
-crash). All intentionally on hold until the pipeline has been proven
-against more real datasets and problem types.
+(Phase 7). The streaming/drift scenario discussed for a later phase
+(simulate incoming data, a monitoring agent decides when to trigger a
+retrain) is also not built — the dynamic orchestrator above is the
+foundation it would sit on. Multiclass occlusion attribution is also
+unbuilt (a scope limit noted above, not a crash). All intentionally on
+hold until the pipeline has been proven against more real datasets and
+problem types.
 
 ## Quickstart
 
@@ -537,6 +610,19 @@ python scripts/run_orchestrator.py \
 #    with inline tables/ROC curve instead of print statements:
 jupyter notebook notebooks/end_to_end_pipeline.ipynb
 
+# 8.1. Or run the DYNAMIC orchestrator instead (Phase 8) — a planning
+#      agent decides which catalog agent runs next, instead of the fixed
+#      sequence above; run_orchestrator.py is untouched and remains the
+#      baseline this is evaluated against (see "Not yet built" above):
+python scripts/run_dynamic_orchestrator.py \
+    --data datasets/raw/your_dataset.csv \
+    --goal "predict your_target_column"
+
+#      ...or interactively, including a bonus section showing a
+#      DIFFERENT goal route to a DIFFERENT agent sequence (explain-only
+#      -> straight to deep_dive, classification never runs):
+jupyter notebook notebooks/dynamic_orchestrator.ipynb
+
 # 8.5. (aviation/time-series datasets only, binary target) explain why
 #      one already-flagged flight was flagged — needs the model bundle
 #      step 7 just saved to artifacts/models/<run_id>_model.joblib:
@@ -587,18 +673,29 @@ agentic-ml/
                                # anomaly_localization.py (localize_anomaly) —
                                # separate from harness/ because these hardcode
                                # aviation column names, unlike attribution.py
+    orchestrator/              # Phase 8 — the dynamic orchestrator's engine:
+                               # agent_registry.py (the 9-agent catalog),
+                               # run_state.py (RunStateSummary, the planner's
+                               # only view of run progress; DynamicRunContext,
+                               # the harness-side working state), and
+                               # dynamic_loop.py (validate_plan + the dispatch
+                               # table calling steps/*_step.py, unmodified)
     tools/                    # profiler_tool.py, template_tool.py, intake_tool.py,
                                # verification_tool.py, feature_tool.py,
-                               # deep_dive_tool.py — thin bindings exposing
-                               # harness facts/registry data to agents as tool
-                               # calls
+                               # deep_dive_tool.py, planner_tool.py — thin
+                               # bindings exposing harness facts/registry data
+                               # to agents as tool calls
     templates/                # Phase 3 recipe templates + registry.py
       sources/                 # verified build_pipeline(config) .py files
     steps/                    # intake_step.py, profiler_step.py, modeling_step.py,
                                # verification_step.py, feature_engineering_step.py,
-                               # deep_dive_step.py — agent-loop + validation
-                               # logic, shared by both the standalone scripts
-                               # and run_orchestrator.py
+                               # deep_dive_step.py, planner_step.py — agent-loop
+                               # + validation logic, shared by both the
+                               # standalone scripts and run_orchestrator.py;
+                               # also split_step.py/finalize_step.py — pure
+                               # extractions of logic run_orchestrator.py
+                               # otherwise keeps inline, so the dynamic
+                               # orchestrator can reuse it too
 
   scripts/
     check_rit_connection.py
@@ -617,10 +714,27 @@ agentic-ml/
     run_deep_dive_agent.py    # thin CLI wrapper around steps/deep_dive_step.py
                                # — explains one already-flagged flight,
                                # on-demand, using a saved model bundle
+    run_dynamic_orchestrator.py  # Phase 8 — agent catalog + planning agent
+                               # decide the sequence, instead of run_orchestrator.py's
+                               # fixed one; run_orchestrator.py is untouched and
+                               # remains the evaluation baseline
+    evaluate_dynamic_orchestrator.py  # real-LLM parity/task-routing/adversarial
+                               # evaluation, writes runs/dynamic_eval_report.md
 
   notebooks/
     end_to_end_pipeline.ipynb # same steps/* functions as the scripts, one
                                # phase per cell, inline tables + ROC curve
+    dynamic_orchestrator.ipynb  # Phase 8 companion notebook: the agent
+                               # catalog, a full classification run with a
+                               # per-iteration walkthrough of what the
+                               # planner actually decided (and any rejected
+                               # proposals along the way), plus a bonus
+                               # section demonstrating a different goal
+                               # routing to a different agent sequence.
+                               # Executed against the local endpoint and
+                               # committed with real outputs, not blank
+                               # cells — see PROJECT_OVERVIEW.md §8.5 for
+                               # two real bugs building it surfaced
 
   datasets/raw/              # put input CSV/Parquet here
   runs/                       # per-run trace.jsonl, split_manifest.json,

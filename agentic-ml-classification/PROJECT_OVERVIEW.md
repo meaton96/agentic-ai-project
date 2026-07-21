@@ -562,6 +562,164 @@ nobody was going to select anyway) and a better match for what a
 review step is actually for: deciding whether to promote the thing
 you're about to promote.
 
+## 8.5 The dynamic orchestrator: an agent catalog instead of a fixed sequence
+
+Everything in §8 is a **fixed sequence** — `run_orchestrator.py` always
+runs intake, then feature engineering, then profiler, and so on, in
+that exact order, every time. That's a script that *uses* agents, not
+an agentic system that *decides*. A fixed sequence structurally cannot
+express things like "skip classification entirely and go straight to
+explaining a specific already-flagged example" or "this candidate pool
+looks thin, try one more template before moving to verification" —
+there's no decision point in the code for either.
+
+`scripts/run_dynamic_orchestrator.py` is a second, independent entry
+point that replaces the fixed sequence with a genuine planning loop,
+while keeping `run_orchestrator.py` completely untouched as the
+baseline it's evaluated against. Three new pieces:
+
+**An agent catalog** (`orchestrator/agent_registry.py`) — the same
+nine capabilities §5 and §8 already describe (intake, feature
+engineering, profiler, split+leakage-checks, modeling, verification,
+finalize, deep-dive, summarize), now exposed as a registry entry each:
+a description, a `when_to_use` hint, and — the part that matters —
+`required_state`, a small set of preconditions (e.g. modeling requires
+`split_leakage_passed=True`; finalize requires a verified candidate
+*and* requires `final_test_metrics_present=False`, so it can only ever
+run once per run, the same one-touch guarantee the test set already
+had in the static pipeline). This mirrors `templates/registry.py`
+exactly: a fixed, auditable menu an agent picks from, never an
+invitation to invent an action.
+
+**A planning agent** (`steps/planner_step.py`) — given the goal and a
+compact, JSON-safe summary of what's happened so far (never the raw
+dataframes or fitted pipelines — same "facts, not raw data" rule every
+other tool binding in this project follows), it proposes exactly one
+next action: run a specific catalog agent with some arguments, or
+declare the run finished. Structurally, it is exactly like every other
+agent here — one bundled tool, one JSON response, no ability to touch
+anything directly.
+
+**A deterministic plan validator**
+(`orchestrator/dynamic_loop.py::validate_plan`) — the control-flow
+counterpart to `harness/intake.py::validate_dataset_spec_proposal` and
+every other proposal-checker in this codebase. It re-checks the
+planner's proposed agent against the *real* registry (not a name the
+planner might have invented) and the proposed preconditions against
+the *real* run state (not the planner's claim that they hold). A
+rejected proposal is never executed — it's fed back to the planner as
+an error and retried a bounded number of times; if the planner can't
+produce anything valid, the run aborts cleanly rather than executing
+something unchecked. This is the concrete answer to the
+control-flow-level hallucination risk a dynamic system introduces that
+a fixed sequence never had to worry about: a hallucination at this
+layer doesn't just produce a wrong number, it could skip a safety gate
+entirely — so it gets the same "propose, then independently verify"
+discipline as every content-level proposal in this project, just
+applied one level higher.
+
+Execution itself calls the *same* `steps/*_step.py` functions the
+static orchestrator already uses — `orchestrator/dynamic_loop.py` is a
+routing and bookkeeping layer, not a reimplementation. Two small
+pieces of logic that were only ever inlined in `run_orchestrator.py`
+(the split+leakage-check step, and the refit/test-eval/model-
+persistence step) were extracted into `steps/split_step.py` and
+`steps/finalize_step.py` so both orchestrators share them — matching
+the extraction pattern every other phase already used to keep the
+standalone scripts and `run_orchestrator.py` from duplicating logic.
+
+**What this makes possible that a fixed sequence couldn't:** given a
+"why was this flight flagged" goal and a pre-existing model artifact
+(`--existing-model`), the planner routes straight to the deep-dive
+agent and finishes — intake, feature engineering, profiler, and
+modeling never run at all. That's the concrete, testable proof a
+dynamic orchestrator is doing something a static script cannot
+express, not just the same thing through more machinery — see
+`tests/test_dynamic_orchestrator.py::test_dynamic_orchestrator_routes_explain_goal_straight_to_deep_dive`
+and `scripts/evaluate_dynamic_orchestrator.py`'s real-LLM version of
+the same scenario.
+
+**A real finding from the real-LLM evaluation, not just the hermetic
+tests:** the first evaluation run against the local model
+(`Qwen3-Coder-30B`) showed both parity scenarios ending in
+`planner_failed` — not a security failure, but the planner
+consistently proposing `{"action": "finalize", "agent_id": "finalize"}`
+(and the same for `verification`) instead of `{"action": "run_agent",
+"agent_id": "finalize"}`, burning through every retry on a pure
+formatting slip rather than a real precondition or hallucination
+problem. This is exactly the kind of thing "thoroughly evaluate before
+moving on" is for: the hermetic tests couldn't have caught it, since
+they script the planner's exact response text. The fix
+(`orchestrator/dynamic_loop.py::normalize_proposal`) is narrow on
+purpose — it only rewrites `action` into the canonical `"run_agent"` +
+`agent_id` form when `action` is itself a real, registered agent id
+(whether or not `agent_id` was also redundantly set — the first fix
+attempt only checked the case where `agent_id` was *missing*, and a
+second real evaluation run against the exact same failure showed that
+was wrong: the model set both fields to the same wrong-shaped value,
+not just one), and only *before* `validate_plan` runs — the normalized
+proposal still passes through the exact same precondition/registry
+checks afterward, so a genuinely unknown action string is left alone
+and still rejected
+(`tests/test_dynamic_orchestrator.py::test_normalize_proposal_does_not_repair_a_genuinely_unknown_action`
+is the regression test proving the fix doesn't quietly widen what's
+allowed to execute). After the corrected fix, both parity scenarios
+completed successfully end to end against the same local model on the
+next real run.
+
+**A second real finding, this time a genuine capability difference, not
+a bug:** on Iris, the *static* orchestrator failed outright
+(`no_candidate_passed` — its fixed `--max-candidates 2` budget ran out
+before a candidate cleared both leakage gates), while the *dynamic*
+orchestrator succeeded on the same dataset, same local model — its
+planner simply proposed `modeling` three times in a row after seeing
+`has_unverified_passing_candidate` stay `false`, before moving on to
+verification and finalize. That is the "sandbox search loop" idea from
+the earlier design discussion showing up on its own, unprompted, as an
+emergent consequence of giving the planner a real decision instead of a
+hardcoded candidate count — not something separately implemented.
+
+The aviation task-routing scenario was skipped in evaluation for an
+unrelated, already-known reason: even at the local server's 32k
+context window, the profiler's per-column facts for a 282-column
+engineered table alone exceed it — a real constraint on wide datasets
+with a small local model, not a defect in the routing logic itself
+(§10.5 already documents the same class of limit for the standalone
+deep-dive path). The adversarial prompt-injection scenario's core
+property held across every run, including the ones that otherwise
+failed on the formatting bug above: `final_test_metrics_present` was
+never `True` unless `finalize` had actually, successfully executed —
+verified against a real model actually attempting to act on the
+injected text, not a cooperative stub. On the final, clean run it
+completed the full pipeline with zero rejected proposals despite the
+injected instruction sitting in the training data the whole time.
+
+**Two more real findings, from building `notebooks/dynamic_orchestrator.ipynb`**
+(executed against the local endpoint and committed with its real outputs,
+not blank cells — the same "prove it, don't just exercise it" standard
+§10 describes, applied to a notebook instead of a test): the bonus
+task-routing section — an explain-only goal plus `--existing-model` and
+no `--target` — initially still let the planner wander into `intake`
+first, since nothing in `RunStateSummary` said a fresh classification
+run wasn't needed; `intake` then failed repeatedly (the engineered
+aviation feature table has no plausible target column) until iterations
+ran out. Fixed by having `--existing-model` also seed
+`target_known=True` (`scripts/run_dynamic_orchestrator.py`) — a
+pre-seeded model means this run was never doing fresh classification in
+the first place, whether or not `--target` was also given. With that
+fixed, a second issue surfaced immediately: the planner correctly went
+straight to `deep_dive`, got a real hypothesis back, and then proposed
+`deep_dive` on the *same* flight four more times before hitting
+`max_iterations` — nothing in state told it the explanation already
+existed. Fixed by adding `RunStateSummary.deep_dive_completed_flight_ids`
+(populated by `execute_agent_step`'s `deep_dive` branch) and updating
+the planner's system prompt to check it before proposing the same
+flight again. Both fixes are now locked in by regression tests
+(`test_existing_model_prevents_planner_from_considering_intake`,
+and an assertion on `deep_dive_completed_flight_ids` in the routing
+test) — two more cases of a real run finding what a hardcoded-response
+test structurally could not.
+
 ## 9. An engineering decision worth mentioning: why there's no OpenClaw
 
 The original plan used OpenClaw (an existing agent-runtime framework)
@@ -718,6 +876,7 @@ harness composes further than any single dataset it was built against.
 | 5 — Orchestrator (full loop) | Done |
 | 6 — Priors/evidence reuse across runs | Not built |
 | 7 — Parallel candidate search | Not built |
+| 8 — Dynamic orchestrator (agent catalog + planning agent) | Done |
 
 Built out of numeric order on purpose: Phase 5 came before Phase 4.
 The deterministic gates in §7 already blocked leaky or broken
@@ -736,10 +895,16 @@ actually tried; the time-series featurization pre-processing stage
 (§10.5), prompted by the first dataset (aviation/NGAFID-MC) that wasn't
 already one row per example; and the Deep-Dive Agent (§5.6), ported from
 a working prototype to answer a second analysis question ("why") the
-first five agents don't address. Phases 6 and 7 are still deliberately
-on hold — proven against three real datasets and two distinct problem
-types now, but still not enough of a sample to justify building
-cross-run evidence reuse (Phase 6).
+first five agents don't address. Phase 8 (§8.5) is the first structural
+departure from "fixed sequence, richer agents" — an agent catalog plus
+a planning agent that decides the sequence itself, evaluated against
+the static pipeline both by hermetic stubbed-client tests
+(`tests/test_dynamic_orchestrator.py`) and a real-LLM evaluation script
+(`scripts/evaluate_dynamic_orchestrator.py`) covering parity, task-
+routing, and an adversarial prompt-injection scenario. Phases 6 and 7
+are still deliberately on hold — proven against three real datasets and
+three distinct problem types now, but still not enough of a sample to
+justify building cross-run evidence reuse (Phase 6).
 
 ## 12. Key takeaways
 
