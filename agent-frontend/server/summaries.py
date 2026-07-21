@@ -5,6 +5,12 @@ server-launched run and a run that only exists on disk from a prior CLI
 invocation — the only difference is whether RunManager has a TrackedRun
 for it, which just changes where status/started_at/finished_at come
 from (RunManager's bookkeeping vs. events.jsonl's own terminal event).
+
+first_event is exposed alongside last_event because it's the only place
+the run's launch parameters (dataset path, target/goal) live — neither
+orchestrator's report.json records them, and the run-summary shape has
+no room to duplicate that as separate top-level fields without
+reinventing what's already in run_started's payload.
 """
 from __future__ import annotations
 
@@ -69,6 +75,7 @@ def assemble_run_summary(run_id: str, run_manager: RunManager) -> Optional[dict]
         "finished_at": finished_at,
         "error": error,
         "n_events": len(events),
+        "first_event": events[0] if events else None,
         "last_event": events[-1] if events else None,
         "report": report,
         "leaderboard_entries": leaderboard_entries,

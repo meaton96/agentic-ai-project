@@ -27,6 +27,8 @@ def test_launch_run_end_to_end(stubbed_client, dataset_csv):
     assert final["orchestrator"] == "static"
     assert final["error"] is None
     assert final["n_events"] > 0
+    assert final["first_event"]["type"] == "run_started"
+    assert final["first_event"]["payload"]["target"] == "churned"
     assert final["last_event"]["type"] == "run_completed"
 
     report = final["report"]

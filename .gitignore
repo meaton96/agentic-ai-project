@@ -261,3 +261,7 @@ agentic-ml-classification/spec
 openclaw-ml-pipe
 
 agent-frontend/CLAUDE.md
+agentic-ml-classification/CLAUDE.md
+
+agent-frontend/runs/
+agent-frontend/artifacts/

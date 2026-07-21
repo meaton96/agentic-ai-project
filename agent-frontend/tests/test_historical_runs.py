@@ -66,6 +66,7 @@ def test_historical_run_parity_with_live_run_shape(client):
     assert summary["finished_at"] is None
     assert summary["error"] is None
     assert summary["n_events"] == 3
+    assert summary["first_event"]["type"] == "run_started"
     assert summary["last_event"]["type"] == "run_completed"
     assert summary["report"]["status"] == "success"
     assert len(summary["leaderboard_entries"]) == 1
@@ -75,7 +76,7 @@ def test_historical_run_parity_with_live_run_shape(client):
     # (see test_run_lifecycle.test_launch_run_end_to_end)
     assert set(summary) == {
         "run_id", "orchestrator", "status", "started_at", "finished_at",
-        "error", "n_events", "last_event", "report", "leaderboard_entries",
+        "error", "n_events", "first_event", "last_event", "report", "leaderboard_entries",
     }
 
     # shows up in the list endpoint too, without ever being started via this API
