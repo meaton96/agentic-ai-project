@@ -7,11 +7,14 @@ never "invent an action" — the same way the modeling agent picks a
 template_id rather than writing pipeline code.
 
 `required_state` is the precondition gate: a dict of
-RunStateSummary.to_planner_dict() keys to the truthiness they must have
-before this agent is eligible to run. The planner is told about these
-gates, but they are enforced by orchestrator/dynamic_loop.py's
-validate_plan() against the REAL state — never trusted from the
-planner's own claim that a precondition holds.
+RunStateSummary.to_planner_dict() keys to the value they must have
+before this agent is eligible to run — a bool means "must be truthy/
+falsy" (checked via `bool(actual) == required_val`), any other value
+(e.g. None, or a specific string like "infer_only") means "must equal
+this exact value" (checked via `actual == required_val`) — see
+orchestrator/dynamic_loop.py::validate_plan. The planner is told about
+these gates, but they are enforced there against the REAL state —
+never trusted from the planner's own claim that a precondition holds.
 """
 from __future__ import annotations
 
@@ -25,7 +28,7 @@ class AgentSpec:
     title: str
     description: str
     when_to_use: str
-    required_state: dict[str, bool]
+    required_state: dict[str, object]  # bool -> truthiness check; anything else -> exact-match check
     arg_schema: dict[str, dict] = field(default_factory=dict)  # arg_name -> {"type": "string", "required": bool}
     requires_capability: Optional[str] = None  # None = always available; else gated by run capabilities
 
@@ -115,6 +118,51 @@ AGENTS: dict[str, AgentSpec] = {
                         "flagged) and you're ready to lock in a result. Touches the test "
                         "set — can only run once per run.",
             required_state={"has_verified_candidate": True, "final_test_metrics_present": False},
+        ),
+        # --- Phase 9: streaming ingestion + drift-triggered retraining ---
+        # Same catalog-and-validator mechanism as every agent above, gated
+        # behind requires_capability="streaming" so an ordinary (non-
+        # streaming) dynamic-orchestrator run never even sees these three
+        # in its catalog — see DynamicRunContext.capabilities() in
+        # orchestrator/run_state.py, which only grants "streaming" once
+        # ctx.accumulated_df has been established (i.e. after a cold-start
+        # finalize has run under scripts/run_streaming_monitor.py).
+        AgentSpec(
+            agent_id="monitor_drift",
+            title="Monitor Drift",
+            description="Deterministic (no LLM): compares the newly arrived batch "
+                        "against the data the current model was trained on and computes "
+                        "a per-feature distribution-shift summary plus (since this is a "
+                        "replay of historical, already-labeled data) the batch's own "
+                        "performance metrics under the current model.",
+            when_to_use="Whenever a new batch has arrived and hasn't been checked for "
+                        "drift yet this cycle.",
+            required_state={"new_batch_pending": True, "drift_checked": False},
+            requires_capability="streaming",
+        ),
+        AgentSpec(
+            agent_id="retrain_decision",
+            title="Retrain Decision",
+            description="Given the drift summary and how much has accumulated since the "
+                        "model was last (re)trained, decides whether to do nothing, run "
+                        "inference only on the new batch, or trigger a full retrain. "
+                        "Never retrains anything itself — only proposes the action, the "
+                        "same way a modeling candidate is only ever a proposal until the "
+                        "harness's gates pass it.",
+            when_to_use="Immediately after monitor_drift has run for this batch and no "
+                        "decision has been made yet.",
+            required_state={"drift_checked": True, "pending_retrain_action": None},
+            requires_capability="streaming",
+        ),
+        AgentSpec(
+            agent_id="infer_batch",
+            title="Infer Batch",
+            description="Deterministic (no LLM): scores the new batch with the current "
+                        "model and logs the result — no retraining, no test-set exposure.",
+            when_to_use="After retrain_decision has chosen infer_only for this batch, and "
+                        "only once — running it again would just re-score the same batch.",
+            required_state={"pending_retrain_action": "infer_only", "batch_action_completed": False},
+            requires_capability="streaming",
         ),
         AgentSpec(
             agent_id="deep_dive",

@@ -56,10 +56,39 @@ before proposing it, check current_state's deep_dive_completed_flight_ids: if th
 you're about to ask for is already in that list, the explanation already exists, and you \
 should propose "finish" instead of running it again.
 - Call modeling more than once only for a real reason (no candidate has passed the leakage \
-gates yet, or you want to compare templates) — every call is a full fit/score cycle.
-- Use "finish" once the goal is actually satisfied (summarize has run for a classification \
-goal, or the flight_id you were asked to explain already appears in \
-deep_dive_completed_flight_ids for an explanation goal) — not before, and not needlessly \
+gates yet, or you want to compare templates) — every call is a full fit/score cycle. This \
+includes a verification "rejected" verdict: if current_state shows has_verified_candidate=\
+false AND has_unverified_passing_candidate=false, there is nothing left to verify or \
+finalize — every candidate tried so far either failed the harness's gates or was rejected on \
+review, so the only valid next step is another modeling call (ideally a different template), \
+not repeating verification or finalize.
+- monitor_drift/retrain_decision/infer_batch only appear in available_agents for a streaming \
+monitoring session, ONE NEW BATCH AT A TIME — a completely separate task from classification, \
+even in a session where classification already finished earlier (current_state can show \
+final_test_metrics_present=true AND new_batch_pending=true at the same time: a model already \
+exists from an earlier finalize, and a new batch has now arrived for it to be checked against). \
+If current_state's new_batch_pending is true and drift_checked is false, a new batch needs \
+monitor_drift BEFORE you can finish, no matter what already happened earlier in this session. \
+Once drift_checked is true, run retrain_decision next if pending_retrain_action is still null. \
+If retrain_decision chose "infer_only" and batch_action_completed is still false, run \
+infer_batch — then that batch is done, propose "finish". If retrain_decision chose "retrain", \
+current_state's profiler_done/split_done/final_test_metrics_present flip back to false (feature_\
+engineering_done stays true — it never re-runs in a streaming session): this means resume the \
+ORDINARY classification order on the grown dataset — profiler -> split_and_check_leakage -> \
+modeling (one or more times) -> verification -> finalize — using the exact same rules above \
+(including the "verification rejected -> try modeling again" rule) as you would for a fresh \
+classification goal, until final_test_metrics_present is true again, THEN propose "finish". Do \
+NOT propose monitor_drift/retrain_decision/infer_batch again for this same batch once \
+pending_retrain_action is already set (retrain_decision's own precondition requires \
+pending_retrain_action to still be null) — if you're unsure what to do next mid-retrain, look at \
+which of profiler_done/split_done/final_test_metrics_present is false and propose that step, \
+same as any classification goal. Only propose "finish" for a batch cycle once every step above \
+is done given current_state — do not finish just because summarize/finalize ran at some earlier \
+point in the session.
+- Use "finish" once the goal is actually satisfied: summarize has run for a classification \
+goal with no batch pending, the flight_id you were asked to explain already appears in \
+deep_dive_completed_flight_ids for an explanation goal, or (for a streaming batch cycle) the \
+current batch has been fully handled per the rule above — not before, and not needlessly \
 after."""
 
 

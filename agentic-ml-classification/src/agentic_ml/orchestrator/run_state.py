@@ -57,6 +57,30 @@ class RunStateSummary:
                                         # the planner textual feedback beyond just the
                                         # boolean state deltas
 
+    # --- Phase 9: streaming ingestion + drift-triggered retraining ---
+    # One outer driver call (scripts/run_streaming_monitor.py) handles ONE
+    # incoming batch per run_dynamic_loop invocation; these fields are that
+    # batch's per-cycle bookkeeping, reset by the driver each time it pushes
+    # a new batch (see push_batch() there) — never touched by ordinary
+    # (non-streaming) dynamic-orchestrator runs, where they stay at their
+    # defaults for the whole run.
+    new_batch_pending: bool = False
+    drift_checked: bool = False
+    drift_summary: Optional[dict] = None  # small, JSON-safe — see harness/drift.py
+    pending_retrain_action: Optional[str] = None  # None | "no_action" | "infer_only" | "retrain"
+    batch_action_completed: bool = False  # distinguishes "infer_only was chosen" from
+                                        # "infer_batch has now actually run" — without this,
+                                        # infer_batch's precondition (pending_retrain_action
+                                        # == "infer_only") never goes false on its own once
+                                        # satisfied, and a planner could propose it forever
+                                        # for the same batch (the same repeatable-agent problem
+                                        # deep_dive_completed_flight_ids solves for deep_dive,
+                                        # here solved with a plain completion flag since
+                                        # infer_batch has no per-call identity to track)
+    model_version: int = 0  # bumped by finalize's execute_agent_step branch each time
+                             # it runs — v1 after cold start, v(n+1) after each retrain
+    n_batches_processed: int = 0
+
     @property
     def has_unverified_passing_candidate(self) -> bool:
         return any(c.passed_gate and c.verification_verdict is None for c in self.candidates)
@@ -101,6 +125,13 @@ class RunStateSummary:
             "deep_dive_completed_flight_ids": self.deep_dive_completed_flight_ids,
             "iteration": self.iteration,
             "last_action": self.last_action,
+            "new_batch_pending": self.new_batch_pending,
+            "drift_checked": self.drift_checked,
+            "drift_summary": self.drift_summary,
+            "pending_retrain_action": self.pending_retrain_action,
+            "batch_action_completed": self.batch_action_completed,
+            "model_version": self.model_version,
+            "n_batches_processed": self.n_batches_processed,
         }
 
 
@@ -161,8 +192,34 @@ class DynamicRunContext:
         self.features_csv = features_csv
         self.deep_dive_results: dict[str, object] = {}  # flight_id -> DeepDiveStepResult
 
+        # --- Phase 9: streaming ingestion + drift-triggered retraining ---
+        # accumulated_df is None until the first finalize (cold start or
+        # otherwise) establishes it from engineered_df — that's also what
+        # capabilities() below uses to decide whether the streaming-only
+        # catalog entries (monitor_drift/retrain_decision/infer_batch) are
+        # even visible to the planner, so an ordinary classification run
+        # never sees them. Once set, it always holds ALL data seen so far
+        # (baseline pool + every batch processed), regardless of whether
+        # each batch triggered a retrain — see dynamic_loop.py's
+        # retrain_decision branch, the one place that grows it.
+        self.accumulated_df: Optional[object] = None
+        self.pending_batch_df: Optional[object] = None  # set by the streaming driver
+                                                          # before each run_dynamic_loop call
+        self.last_train_accumulated_len: int = 0  # len(accumulated_df) as of the CURRENT
+                                                    # model's last (re)training — the
+                                                    # prefix of accumulated_df monitor_drift
+                                                    # treats as "what the model was trained on"
+        self.n_batches_since_last_train: int = 0
+        self.model_version: int = 0
+        self.model_history: list[dict] = []  # one entry per finalize: version, model_path,
+                                              # test_metrics, n_training_examples
+        self.drift_report: Optional[dict] = None  # most recent monitor_drift output
+        self.batch_inference_log: list[dict] = []  # one entry per infer_batch execution
+
     def capabilities(self) -> set[str]:
         caps = set()
         if self.raw_csv and self.features_csv:
             caps.add("deep_dive")
+        if self.accumulated_df is not None:
+            caps.add("streaming")
         return caps

@@ -21,7 +21,9 @@ import joblib
 import pandas as pd
 
 from agentic_ml.harness.dataset import DatasetSpec, LoadedDataset, load_dataset
+from agentic_ml.harness.drift import compute_drift_report
 from agentic_ml.harness.leaderboard import append_leaderboard_entry
+from agentic_ml.harness.metrics import compute_metrics
 from agentic_ml.harness.timeseries_features import extract_single_flight_raw
 from agentic_ml.harness.verification import build_review_bundle
 from agentic_ml.model_client import ModelClient
@@ -34,6 +36,7 @@ from agentic_ml.steps.intake_step import run_intake_step
 from agentic_ml.steps.modeling_step import run_modeling_step
 from agentic_ml.steps.planner_step import run_planner_step
 from agentic_ml.steps.profiler_step import run_profiler_step
+from agentic_ml.steps.retrain_decision_step import run_retrain_decision_step
 from agentic_ml.steps.split_step import run_split_step
 from agentic_ml.steps.verification_step import run_verification_step
 from agentic_ml.templates.registry import get_template
@@ -98,9 +101,15 @@ def validate_plan(proposal, state: RunStateSummary, capabilities: set) -> list[s
     errors = []
     for key, required_val in spec.required_state.items():
         actual = state_dict.get(key)
-        if bool(actual) != required_val:
+        # bool preconditions check truthiness (the original, still-dominant case);
+        # anything else (e.g. required_val=None, or a specific string like
+        # "infer_only" — see agent_registry.py's retrain_decision/infer_batch
+        # entries) checks exact equality instead. isinstance check comes first
+        # since bool is a subtype of int and would otherwise compare oddly.
+        satisfied = bool(actual) == required_val if isinstance(required_val, bool) else actual == required_val
+        if not satisfied:
             errors.append(
-                f"precondition failed for '{agent_id}': requires {key}={required_val}, "
+                f"precondition failed for '{agent_id}': requires {key}={required_val!r}, "
                 f"actual {key}={actual!r}"
             )
 
@@ -275,6 +284,146 @@ def execute_agent_step(
             ctx.model_feature_columns = result.feature_columns
             state.final_test_metrics_present = True
             state.model_path_available = result.model_path is not None
+
+            # Phase 9 bookkeeping — harmless no-op shape for ordinary (non-
+            # streaming) runs: accumulated_df just becomes a copy of
+            # engineered_df and model_history gets one entry nobody reads.
+            # First finalize (cold start, or any plain classification run)
+            # establishes accumulated_df; a later retrain's finalize call
+            # finds it already pointed at the grown dataset (see the
+            # retrain_decision branch below) and just records against it.
+            if ctx.accumulated_df is None:
+                ctx.accumulated_df = ctx.engineered_df
+            ctx.last_train_accumulated_len = len(ctx.accumulated_df)
+            ctx.model_version += 1
+            ctx.model_history.append({
+                "version": ctx.model_version, "model_path": result.model_path,
+                "test_metrics": ctx.final_test_metrics,
+                "n_training_examples": ctx.last_train_accumulated_len,
+            })
+            state.model_version = ctx.model_version
+            return True, []
+
+        # --- Phase 9: streaming ingestion + drift-triggered retraining ---
+        # Both new_batch_pending and drift_checked (required_state for the
+        # two agents below) are only ever True inside a run driven by
+        # scripts/run_streaming_monitor.py — ordinary dynamic-orchestrator
+        # runs never set them, and these agents are also invisible to those
+        # runs' planners (requires_capability="streaming", granted only
+        # once ctx.accumulated_df exists — see DynamicRunContext.capabilities()).
+
+        if agent_id == "monitor_drift":
+            if ctx.accumulated_df is None or ctx.pending_batch_df is None:
+                return False, ["monitor_drift requires an accumulated baseline and a pending batch"]
+            baseline_df = ctx.accumulated_df.iloc[: ctx.last_train_accumulated_len]
+            feature_columns = ctx.model_feature_columns or list(ctx.loaded.X.columns)
+            batch_y = (
+                ctx.pending_batch_df[ctx.target_column]
+                if ctx.target_column in ctx.pending_batch_df.columns else None
+            )
+            report = compute_drift_report(
+                baseline_df, ctx.pending_batch_df, feature_columns,
+                pipeline=ctx.final_pipeline, batch_y=batch_y, metric_names=ctx.metric_names,
+            )
+            ctx.drift_report = report
+            state.drift_checked = True
+            state.drift_summary = report
+            state.last_action = f"monitor_drift: mean_abs_shift={report['mean_abs_shift']}"
+            return True, []
+
+        if agent_id == "retrain_decision":
+            ctx.n_batches_since_last_train += 1
+            n_new_examples = len(ctx.pending_batch_df) if ctx.pending_batch_df is not None else 0
+            n_examples_since_last_train = (
+                (len(ctx.accumulated_df) - ctx.last_train_accumulated_len) + n_new_examples
+            )
+            monitoring_context = {
+                "drift_summary": state.drift_summary,
+                "current_model_test_metrics": ctx.final_test_metrics,
+                "model_version": ctx.model_version,
+                "n_batches_since_last_retrain": ctx.n_batches_since_last_train,
+                "n_examples_accumulated_since_last_retrain": n_examples_since_last_train,
+            }
+            result = run_retrain_decision_step(monitoring_context, client, model=model, trace_fn=trace_fn)
+            write_transcript("retrain_decision", result.messages)
+            state.pending_retrain_action = result.action
+            state.last_action = f"retrain_decision: {result.action} ({result.reasoning or 'n/a'})"
+
+            # The batch has now been "seen" regardless of which action was
+            # chosen — fold it into the accumulated pool so a later retrain
+            # (or the next batch's drift comparison) reflects everything
+            # observed, not just the newest arrival.
+            if ctx.pending_batch_df is not None:
+                ctx.accumulated_df = pd.concat(
+                    [ctx.accumulated_df, ctx.pending_batch_df], ignore_index=True,
+                )
+            state.n_batches_processed += 1
+
+            if result.action == "retrain":
+                ctx.n_batches_since_last_train = 0
+                ctx.engineered_df = ctx.accumulated_df
+                # Resets the classification-phase state a fresh cycle needs to
+                # redo — profiler/split/modeling/verification/finalize are the
+                # SAME catalog entries Phase 8 already has, completely
+                # unchanged; this reset is what lets the same planner walk
+                # them again on the grown dataset. split_leakage_passed is
+                # reset alongside split_done (required for correctness:
+                # without it, "modeling" — gated only on
+                # split_leakage_passed=True — would stay validly proposable
+                # using the OLD split/manifest the instant split_done flips
+                # to False, before split_and_check_leakage has re-run on the
+                # grown data).
+                #
+                # Deliberately NOT resetting feature_engineering_done: every
+                # incoming batch (ctx.pending_batch_df) is always a RAW slice
+                # of the source table — batches are never run through
+                # feature_engineering (there's no mechanism to replay
+                # arbitrary derived-feature ops onto a streaming arrival).
+                # monitor_drift/infer_batch index into pending_batch_df using
+                # ctx.model_feature_columns, so the feature/column schema has
+                # to stay identical for the WHOLE session. If feature
+                # engineering were allowed to run again here, it could
+                # legitimately choose a DIFFERENT column set than cold start
+                # did, and the very next batch's monitor_drift/infer_batch
+                # call would KeyError on columns that only exist in
+                # engineered_df, not in the raw batch. Real-model evaluation
+                # (scripts/evaluate_streaming_monitor.py) hit exactly this
+                # before feature_engineering_done was excluded from this
+                # reset — see run_streaming_monitor.py, which also pre-seeds
+                # feature_engineering_done=True before cold start so it never
+                # runs even once in a streaming session.
+                state.profiler_done = False
+                state.split_done = False
+                state.split_leakage_passed = False
+                state.final_test_metrics_present = False
+                state.candidates = []
+                ctx.modeling_results = {}
+                ctx.tried_template_ids = []
+
+            return True, []
+
+        if agent_id == "infer_batch":
+            if ctx.pending_batch_df is None or ctx.final_pipeline is None:
+                return False, ["infer_batch requires a pending batch and an existing model"]
+            feature_columns = ctx.model_feature_columns or list(ctx.loaded.X.columns)
+            X_batch = ctx.pending_batch_df[feature_columns]
+            y_pred = ctx.final_pipeline.predict(X_batch)
+            y_proba = ctx.final_pipeline.predict_proba(X_batch)
+            batch_metrics = None
+            if ctx.target_column in ctx.pending_batch_df.columns:
+                y_batch = ctx.pending_batch_df[ctx.target_column]
+                metric_results = compute_metrics(
+                    y_batch.values, y_pred, y_proba, ctx.metric_names, n_bootstrap=200, seed=ctx.seed,
+                )
+                batch_metrics = {m: metric_results[m].to_dict() for m in ctx.metric_names}
+            ctx.batch_inference_log.append({
+                "batch_index": state.n_batches_processed,
+                "n_examples": len(ctx.pending_batch_df),
+                "model_version": ctx.model_version,
+                "metrics": batch_metrics,
+            })
+            state.batch_action_completed = True
+            state.last_action = f"infer_batch: scored {len(ctx.pending_batch_df)} examples"
             return True, []
 
         if agent_id == "deep_dive":
