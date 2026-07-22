@@ -37,6 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from agentic_ml.harness.timeseries_features import build_flight_feature_table_streaming
+from agentic_ml.paths import datasets_root
 
 NGAFID_SENSORS = [
     "volt1", "volt2", "amp1", "amp2", "FQtyL", "FQtyR", "E1 FFlow",
@@ -58,7 +59,7 @@ NGAFID_LABEL_MAP = {
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--csv", required=True, help="path to the raw long-format NGAFID CSV")
-    parser.add_argument("--out", default="datasets/processed/ngafid_flights.csv")
+    parser.add_argument("--out", default=str(datasets_root() / "processed" / "ngafid_flights.csv"))
     parser.add_argument("--id-column", default="id")
     parser.add_argument("--group-column", default="plane_id")
     parser.add_argument("--label-column", default="before_after")

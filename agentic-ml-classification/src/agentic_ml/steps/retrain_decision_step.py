@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from agentic_ml.agent_runtime import ToolCallingAgent
+from agentic_ml.events import emit_event
 from agentic_ml.model_client import ModelClient
 from agentic_ml.tools.retrain_decision_tool import make_monitoring_context_tool
 
@@ -85,7 +86,10 @@ def run_retrain_decision_step(
     model: Optional[str] = None,
     max_turns: int = 4,
     trace_fn: Optional[Callable[[dict], None]] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
 ) -> RetrainDecisionStepResult:
+    emit_event(on_event, "retrain_decision", "agent_started", {})
+
     tool = make_monitoring_context_tool(monitoring_context)
     agent = ToolCallingAgent(
         model_client=client, tools=[tool], system_prompt=SYSTEM_PROMPT,
@@ -95,8 +99,13 @@ def run_retrain_decision_step(
         "A new batch has arrived and been checked for drift. Decide the next action.",
         trace_fn=trace_fn,
     )
+    for entry in result.tool_call_log:
+        emit_event(on_event, "retrain_decision", "tool_called", {"tool": entry["tool"], "result": entry["result"]})
 
     def degraded(reason: str) -> RetrainDecisionStepResult:
+        emit_event(on_event, "retrain_decision", "retrain_decision", {
+            "action": "infer_only", "reasoning": reason, "unparseable": True,
+        })
         return RetrainDecisionStepResult(
             ok=False, action="infer_only", reasoning=reason,
             llm_raw_text=result.final_text,
@@ -116,6 +125,9 @@ def run_retrain_decision_step(
     if action not in VALID_ACTIONS:
         return degraded(f"retrain-decision agent returned an invalid action: {action!r}")
 
+    emit_event(on_event, "retrain_decision", "retrain_decision", {
+        "action": action, "reasoning": parsed.get("reasoning"), "unparseable": False,
+    })
     return RetrainDecisionStepResult(
         ok=True, action=action, reasoning=parsed.get("reasoning"),
         llm_raw_text=result.final_text,

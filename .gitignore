@@ -259,3 +259,17 @@ agentic-ml-classification/config/devices
 agentic-ml-classification/spec
 
 openclaw-ml-pipe
+
+agent-frontend/CLAUDE.md
+agentic-ml-classification/CLAUDE.md
+
+agent-frontend/runs/
+agent-frontend/artifacts/
+
+*.claude
+agent-frontend/.claude
+
+agentic-ml-classification/datasets
+agent-frontend/datasets
+agentic-ml-classification/artifacts
+agentic-ml-classification/runs

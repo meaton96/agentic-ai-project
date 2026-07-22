@@ -15,15 +15,16 @@ catalog entry, the same precondition-gating every other agent uses.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import joblib
 import pandas as pd
 from sklearn.base import clone
 
+from agentic_ml.events import emit_event
 from agentic_ml.harness.attribution import compute_background
 from agentic_ml.harness.metrics import compute_metrics
+from agentic_ml.paths import models_dir
 
 
 @dataclass
@@ -44,6 +45,7 @@ def run_finalize_step(
     metric_names: list[str],
     seed: int,
     run_id: str,
+    on_event: Optional[Callable[[dict], None]] = None,
 ) -> FinalizeStepResult:
     train_and_val_idx = sorted(manifest.train_idx + manifest.val_idx)
     final_pipeline = clone(candidate_pipeline)
@@ -65,7 +67,7 @@ def run_finalize_step(
             X.iloc[train_and_val_idx], list(X.columns),
             normal_mask=(y.iloc[train_and_val_idx] == 0),
         )
-        path = Path("artifacts/models") / f"{run_id}_model.joblib"
+        path = models_dir() / f"{run_id}_model.joblib"
         path.parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(
             {"model": final_pipeline, "feature_columns": list(X.columns), "background": background},
@@ -73,6 +75,9 @@ def run_finalize_step(
         )
         model_path = str(path)
 
+    emit_event(on_event, "finalize", "final_test_metrics", {
+        "test_metrics": test_metrics, "model_path": model_path,
+    })
     return FinalizeStepResult(
         ok=True, pipeline=final_pipeline, test_metrics=test_metrics,
         model_path=model_path, feature_columns=list(X.columns),

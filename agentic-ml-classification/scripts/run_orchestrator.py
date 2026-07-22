@@ -38,6 +38,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Callable, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -45,6 +46,7 @@ import joblib
 from sklearn.base import clone
 
 from agentic_ml.cli_common import make_run_dir, make_tracer, make_transcript_writer, resolve_model_endpoint
+from agentic_ml.events import emit_event, make_event_emitter, make_event_logger
 from agentic_ml.harness.attribution import compute_background
 from agentic_ml.harness.dataset import DatasetSpec, LoadedDataset, load_dataset, read_dataframe, write_dataset_spec
 from agentic_ml.harness.leaderboard import append_leaderboard_entry
@@ -53,6 +55,8 @@ from agentic_ml.harness.metrics import compute_metrics
 from agentic_ml.harness.splits import make_split, resolve_split_columns
 from agentic_ml.harness.verification import build_review_bundle
 from agentic_ml.model_client import ModelClient
+from agentic_ml.paths import leaderboard_path as resolve_leaderboard_path
+from agentic_ml.paths import models_dir
 from agentic_ml.steps.feature_engineering_step import run_feature_engineering_step
 from agentic_ml.steps.intake_step import run_intake_step
 from agentic_ml.steps.modeling_step import run_modeling_step
@@ -61,7 +65,7 @@ from agentic_ml.steps.verification_step import run_verification_step
 from agentic_ml.templates.registry import get_template
 
 
-def main():
+def main(on_event: Optional[Callable[[dict], None]] = None, prompt_override_dir: Optional[str] = None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True)
     parser.add_argument("--goal", default="", help="natural-language description of the "
@@ -90,11 +94,23 @@ def main():
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--skip-feature-engineering", action="store_true",
                          help="skip the feature-engineering step entirely")
+    parser.add_argument("--prompt-override-dir", default=None, help="directory of per-agent "
+                         "<agent_name>.md system-prompt overrides (falls back to the shipped "
+                         "default for any agent not present there); defaults to the "
+                         "AGENTIC_ML_PROMPT_OVERRIDE_DIR env var if not given")
     args = parser.parse_args()
+
+    # the function argument (e.g. a future server calling main() directly) wins
+    # over the CLI flag if both are given; either may still be None, in which
+    # case each step falls back to AGENTIC_ML_PROMPT_OVERRIDE_DIR itself.
+    effective_prompt_override_dir = (
+        prompt_override_dir if prompt_override_dir is not None else args.prompt_override_dir
+    )
 
     run_id, run_dir = make_run_dir(args.run_id)
     trace = make_tracer(run_dir / "trace.jsonl")
     write_transcript = make_transcript_writer(run_dir)
+    emit = make_event_emitter(run_id, external_on_event=on_event, persist_fn=make_event_logger(run_dir))
 
     base_url, api_key, default_model = resolve_model_endpoint(
         args.use_gateway, args.model, "qwen3-coder:30b", "rit-qwen3-coder-30b",
@@ -103,9 +119,17 @@ def main():
     client = ModelClient(base_url=base_url, api_key=api_key, default_model=default_model)
 
     report: dict = {"run_id": run_id, "model": default_model, "status": "in_progress"}
+    emit_event(emit, "run", "run_started", {"data": args.data, "goal": args.goal, "target": args.target})
 
     def write_report():
         (run_dir / "orchestrator_report.json").write_text(json.dumps(report, indent=2, default=str))
+
+    def fail(status: str, **extra):
+        report["status"] = status
+        report.update(extra)
+        emit_event(emit, "run", "run_failed", {"status": status, **extra})
+        write_report()
+        sys.exit(1)
 
     # --- 1. Intake: figure out the DatasetSpec, unless --target was given ---
     if args.target is None:
@@ -114,7 +138,8 @@ def main():
 
         intake_result = run_intake_step(
             raw_df, args.goal, client, model=default_model,
-            trace_fn=lambda record: trace(**record),
+            trace_fn=lambda record: trace(**record), on_event=emit,
+            prompt_override_dir=effective_prompt_override_dir,
         )
         intake_transcript_path = write_transcript("intake", intake_result.messages)
         (run_dir / "intake_report.json").write_text(json.dumps({
@@ -129,10 +154,7 @@ def main():
             print("FAILED: IntakeAgent's proposal did not validate:")
             for e in intake_result.validation_errors:
                 print(f"  - {e}")
-            report["status"] = "failed_intake"
-            report["errors"] = intake_result.validation_errors
-            write_report()
-            sys.exit(1)
+            fail("failed_intake", errors=intake_result.validation_errors)
 
         proposal = intake_result.dataset_spec_proposal
         target_column = proposal["target_column"]
@@ -181,7 +203,8 @@ def main():
         fe_result = run_feature_engineering_step(
             raw_loaded.df, target_column, client,
             group_column=group_column, time_column=time_column,
-            model=default_model, trace_fn=lambda record: trace(**record),
+            model=default_model, trace_fn=lambda record: trace(**record), on_event=emit,
+            prompt_override_dir=effective_prompt_override_dir,
         )
         fe_transcript_path = write_transcript("feature_engineering", fe_result.messages)
         (run_dir / "feature_engineering_report.json").write_text(json.dumps({
@@ -195,10 +218,7 @@ def main():
             print("FAILED: FeatureEngineeringAgent's proposal did not validate:")
             for e in fe_result.errors:
                 print(f"  - {e}")
-            report["status"] = "failed_feature_engineering"
-            report["errors"] = fe_result.errors
-            write_report()
-            sys.exit(1)
+            fail("failed_feature_engineering", errors=fe_result.errors)
 
         print(f"  drop_columns: {fe_result.drop_columns}")
         print(f"  new_columns: {fe_result.new_columns}")
@@ -231,7 +251,8 @@ def main():
     print("Running ProfilerAgent...")
     profiler_result = run_profiler_step(
         loaded.df, target_column, client, model=default_model,
-        trace_fn=lambda record: trace(**record),
+        trace_fn=lambda record: trace(**record), on_event=emit,
+        prompt_override_dir=effective_prompt_override_dir,
     )
     profiler_transcript_path = write_transcript("profiler", profiler_result.messages)
     (run_dir / "profiler_report.json").write_text(json.dumps({
@@ -243,9 +264,7 @@ def main():
 
     if not profiler_result.ok:
         print("FAILED: ProfilerAgent never called get_dataset_profile.")
-        report["status"] = "failed_profiler"
-        write_report()
-        sys.exit(1)
+        fail("failed_profiler")
 
     strategy = args.strategy or profiler_result.deterministic_report["recommended_split_strategy"]
     print(f"Split strategy: {strategy} "
@@ -292,11 +311,15 @@ def main():
     )
     for check in leakage_checks:
         print(f"  leakage check [{'PASS' if check.passed else 'FAIL'}] {check.check_name}: {check.detail}")
-    if not all(c.passed for c in leakage_checks):
+        emit_event(emit, "split_and_check_leakage", "leakage_gate_result", check.to_dict())
+    split_ok = all(c.passed for c in leakage_checks)
+    emit_event(emit, "split_and_check_leakage", "split_completed", {
+        "strategy_used": strategy, "ok": split_ok,
+        "n_train": len(manifest.train_idx), "n_val": len(manifest.val_idx), "n_test": len(manifest.test_idx),
+    })
+    if not split_ok:
         print("\nABORTING: split-level leakage check failed.")
-        report["status"] = "failed_split_leakage"
-        write_report()
-        sys.exit(1)
+        fail("failed_split_leakage")
 
     # --- 4. Modeling: try up to max_candidates, each independently gated by
     # the harness's two deterministic leakage checks (label-permutation +
@@ -315,7 +338,8 @@ def main():
             train_idx=manifest.train_idx, val_idx=manifest.val_idx,
             client=client, model=default_model, metric_names=metric_names, seed=args.seed,
             already_tried_template_ids=tried_template_ids,
-            trace_fn=lambda record: trace(**record),
+            trace_fn=lambda record: trace(**record), on_event=emit,
+            prompt_override_dir=effective_prompt_override_dir,
         )
         if step_result.template_id:
             tried_template_ids.append(step_result.template_id)
@@ -360,9 +384,7 @@ def main():
     if not passing_candidates:
         print("\nABORTING: no candidate passed the harness's deterministic leakage gates. "
               "Test set was never touched.")
-        report["status"] = "no_candidate_passed"
-        write_report()
-        sys.exit(1)
+        fail("no_candidate_passed")
 
     # --- 4.5. Select + verify, best-first. The VerificationAgent reviews each
     # gate-passing candidate in validation-metric order and can only veto
@@ -373,7 +395,7 @@ def main():
         use_local=args.use_local,
     )
     ranked = sorted(passing_candidates, key=lambda r: r.metrics[primary_metric]["value"], reverse=True)
-    leaderboard_path = Path("artifacts/reports/leaderboard.jsonl")
+    leaderboard_path = resolve_leaderboard_path()
 
     best = None
     selected_verification = None
@@ -391,6 +413,7 @@ def main():
         )
         v_result = run_verification_step(
             bundle, client, model=verification_model, trace_fn=lambda record: trace(**record),
+            on_event=emit, prompt_override_dir=effective_prompt_override_dir,
         )
         print(f"  verdict: {v_result.verdict}"
               + (f"  concerns: {v_result.concerns}" if v_result.concerns else ""))
@@ -422,9 +445,7 @@ def main():
     if best is None:
         print("\nABORTING: every gate-passing candidate was rejected by the VerificationAgent. "
               "Test set was never touched.")
-        report["status"] = "no_candidate_passed_verification"
-        write_report()
-        sys.exit(1)
+        fail("no_candidate_passed_verification")
 
     print(f"\nSelected candidate: {best.candidate_id} ({best.template_id}) "
           f"— {primary_metric}={best.metrics[primary_metric]['value']:.4f} on validation "
@@ -455,6 +476,7 @@ def main():
 
     report["final_test_metrics"] = test_metrics
     report["status"] = "success"
+    emit_event(emit, "finalize", "final_test_metrics", {"test_metrics": test_metrics})
 
     # --- 5.5. Persist the accepted model as a bundle the deep-dive agent
     # (scripts/run_deep_dive_agent.py) can load later, against a specific
@@ -469,7 +491,7 @@ def main():
             loaded.X.iloc[train_and_val_idx], list(loaded.X.columns),
             normal_mask=(loaded.y.iloc[train_and_val_idx] == 0),
         )
-        model_path = Path("artifacts/models") / f"{run_id}_model.joblib"
+        model_path = models_dir() / f"{run_id}_model.joblib"
         model_path.parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(
             {"model": final_pipeline, "feature_columns": list(loaded.X.columns), "background": background},
@@ -513,6 +535,7 @@ def main():
     ))
 
     write_report()
+    emit_event(emit, "run", "run_completed", {"status": "success"})
     print(f"\nOrchestrator report written to {run_dir / 'orchestrator_report.json'}")
     print("SUCCESS.")
 

@@ -45,6 +45,7 @@ from agentic_ml.harness.profiler import profile_dataset
 from agentic_ml.harness.splits import make_split
 from agentic_ml.harness.verification import build_review_bundle
 from agentic_ml.model_client import ModelClient
+from agentic_ml.paths import leaderboard_path as resolve_leaderboard_path
 from agentic_ml.steps.modeling_step import run_modeling_step
 from agentic_ml.steps.verification_step import run_verification_step
 from agentic_ml.templates.registry import get_template
@@ -221,7 +222,7 @@ def main():
         print("\nNOTE: VerificationAgent flagged this candidate. Promoting it anyway, but the "
               "concerns above are worth a human look.")
 
-    leaderboard_path = Path("artifacts/reports/leaderboard.jsonl")
+    leaderboard_path = resolve_leaderboard_path()
     entry = {
         "run_id": run_id,
         "candidate": step_result.candidate_id,

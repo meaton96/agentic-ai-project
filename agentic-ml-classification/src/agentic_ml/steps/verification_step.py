@@ -19,48 +19,12 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from agentic_ml.agent_runtime import ToolCallingAgent
+from agentic_ml.events import emit_event
 from agentic_ml.model_client import ModelClient
+from agentic_ml.prompt_loader import load_prompt, prompt_source, resolve_prompt_override_dir
 from agentic_ml.tools.verification_tool import make_review_bundle_tool
 
 VALID_VERDICTS = {"approved", "flagged", "rejected"}
-
-SYSTEM_PROMPT = """You are the Verification agent in a deterministic ML evaluation \
-pipeline. You review ONE candidate that has ALREADY passed the harness's automated \
-gates (a sandbox-built pipeline, a label-permutation leakage test, and a feature-\
-correlation leakage check scoped to its selected columns) — this is a second, \
-independent audit, not a first line of defense.
-
-You have exactly one tool: get_candidate_review_bundle. Call it once — it has \
-everything you need: the template used, the agent's config and explanation, \
-validation metrics with confidence intervals, both leakage check results, and \
-relevant dataset facts from the profiler. You cannot see anything else and must \
-not invent numbers.
-
-After calling the tool, respond with ONLY valid JSON (no prose, no markdown fences) \
-matching this schema:
-{
-  "verdict": "approved" | "flagged" | "rejected",
-  "concerns": ["<short bullet>", "..."],
-  "reasoning": "<2-4 sentences>"
-}
-
-What to check:
-- Does the stated explanation actually match the template and config chosen? \
-(e.g. the explanation gives a reason unrelated to what the config actually does)
-- Do the validation metrics look plausible for this dataset, given its imbalance \
-and leakage risk flags? A suspiciously perfect score (e.g. > 0.99 ROC-AUC with no \
-obvious reason the dataset would be that separable) is worth a "flagged" verdict \
-even though it already passed both automated leakage gates — those gates catch \
-specific known failure modes, not "this looks too good to be true."
-- Does the config use any column the profiler's leakage_risk_flags mention?
-
-Hard rules:
-- Use "rejected" only for a genuine, specific concern you can name — not vague \
-unease. A rejected candidate is blocked from promotion entirely.
-- Use "flagged" for a real but non-blocking concern worth a human's attention.
-- Use "approved" if you find nothing worth flagging.
-- You cannot approve or unblock a candidate that failed an automated gate — you \
-are never shown one, so this situation should not arise."""
 
 
 @dataclass
@@ -81,16 +45,26 @@ def run_verification_step(
     model: Optional[str] = None,
     max_turns: int = 4,
     trace_fn: Optional[Callable[[dict], None]] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
+    prompt_override_dir: Optional[str] = None,
 ) -> VerificationStepResult:
+    resolved_override_dir = resolve_prompt_override_dir(prompt_override_dir)
+    prompt_src, prompt_path = prompt_source("verification", resolved_override_dir)
+    system_prompt = load_prompt("verification", resolved_override_dir)
+    emit_event(on_event, "verification", "prompt_loaded", {"source": prompt_src, "path": str(prompt_path)})
+    emit_event(on_event, "verification", "agent_started", {"candidate_id": bundle.get("candidate_id")})
+
     tool = make_review_bundle_tool(bundle)
     agent = ToolCallingAgent(
-        model_client=client, tools=[tool], system_prompt=SYSTEM_PROMPT,
+        model_client=client, tools=[tool], system_prompt=system_prompt,
         model=model, max_turns=max_turns,
     )
     result = agent.run(
         f"Review candidate {bundle.get('candidate_id')!r} and give your verdict.",
         trace_fn=trace_fn,
     )
+    for entry in result.tool_call_log:
+        emit_event(on_event, "verification", "tool_called", {"tool": entry["tool"], "result": entry["result"]})
 
     def unparseable(reason: str) -> VerificationStepResult:
         # Defensive default: a formatting glitch from the LLM shouldn't silently
@@ -98,6 +72,10 @@ def run_verification_step(
         # nor should it hard-block a candidate that already passed two deterministic
         # gates over an LLM output-formatting issue. "flagged" is the conservative
         # middle ground — proceed, but make sure a human sees why.
+        emit_event(on_event, "verification", "verification_verdict", {
+            "candidate_id": bundle.get("candidate_id"), "verdict": "flagged", "concerns": [reason],
+            "reasoning": None, "unparseable": True,
+        })
         return VerificationStepResult(
             ok=False, verdict="flagged", concerns=[reason], reasoning=None,
             llm_raw_text=result.final_text,
@@ -117,6 +95,11 @@ def run_verification_step(
     if verdict not in VALID_VERDICTS:
         return unparseable(f"verification agent returned an invalid verdict: {verdict!r}")
 
+    emit_event(on_event, "verification", "verification_verdict", {
+        "candidate_id": bundle.get("candidate_id"), "verdict": verdict,
+        "concerns": parsed.get("concerns") or [], "reasoning": parsed.get("reasoning"),
+        "unparseable": False,
+    })
     return VerificationStepResult(
         ok=True,
         verdict=verdict,

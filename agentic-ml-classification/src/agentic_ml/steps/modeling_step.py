@@ -35,50 +35,15 @@ import pandas as pd
 from sklearn.base import clone
 
 from agentic_ml.agent_runtime import ToolCallingAgent
+from agentic_ml.events import emit_event
 from agentic_ml.harness.leakage import check_suspicious_feature_correlation, label_permutation_test
 from agentic_ml.harness.sandbox import run_candidate_build
 from agentic_ml.harness.metrics import compute_metrics, roc_auc_any
 from agentic_ml.model_client import ModelClient
+from agentic_ml.prompt_loader import load_prompt, prompt_source, resolve_prompt_override_dir
 from agentic_ml.templates.registry import get_template, validate_config
 from agentic_ml.tools.profiler_tool import make_profiler_tool
 from agentic_ml.tools.template_tool import make_list_templates_tool
-
-SYSTEM_PROMPT = """You are the Modeling agent in a deterministic ML evaluation \
-pipeline. You have two tools:
-
-  get_dataset_profile — factual column types, cardinality, missingness, \
-likely id/group/datetime columns, target imbalance, and leakage risk flags. \
-You cannot compute these facts yourself and must not guess or invent them.
-
-  list_templates — the available recipe templates, what each does, when to \
-use it, and its config contract.
-
-Call both tools exactly once, in either order. Then propose exactly ONE \
-candidate by responding with ONLY valid JSON (no prose, no markdown fences) \
-matching this schema:
-{
-  "candidate_id": "<short_snake_case_id>",
-  "template_id": "<copy exactly from list_templates>",
-  "config": {
-    "numeric_cols": ["<...>"],
-    "categorical_cols": ["<...>"],
-    "...": "<any other keys the chosen template's config contract lists>"
-  },
-  "explanation": "<2-4 sentences: why this template, why these columns, \
-why any non-default hyperparameters>"
-}
-
-Hard rules:
-- numeric_cols and categorical_cols must be built ONLY from columns the \
-profiler reported. Never invent a column name.
-- Never include the target column, or any column the profiler flagged as \
-is_likely_id, is_likely_datetime, or a declared group/time column.
-- A column may appear in at most one of numeric_cols / categorical_cols.
-- Pick the template whose when_to_use best matches what the profiler found \
-(cardinality, imbalance, categorical dtypes) — don't default to the same \
-template every time.
-- Do not include a metric, score, or fitted result. You do not compute those; \
-the harness does, after your proposal."""
 
 
 def _validate_candidate_spec_shape(obj) -> list[str]:
@@ -162,11 +127,18 @@ def run_modeling_step(
     seed: int = 42,
     already_tried_template_ids: Optional[list[str]] = None,
     trace_fn: Optional[Callable[[dict], None]] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
+    prompt_override_dir: Optional[str] = None,
 ) -> ModelingStepResult:
     if metric_names is None:
         metric_names = ["roc_auc", "pr_auc", "f1", "accuracy"]
 
-    system_prompt = SYSTEM_PROMPT
+    resolved_override_dir = resolve_prompt_override_dir(prompt_override_dir)
+    prompt_src, prompt_path = prompt_source("modeling", resolved_override_dir)
+    emit_event(on_event, "modeling", "prompt_loaded", {"source": prompt_src, "path": str(prompt_path)})
+    emit_event(on_event, "modeling", "agent_started", {"already_tried_template_ids": already_tried_template_ids or []})
+
+    system_prompt = load_prompt("modeling", resolved_override_dir)
     if already_tried_template_ids:
         system_prompt += (
             f"\n\nTemplates already tried in this run: {already_tried_template_ids}. "
@@ -184,8 +156,13 @@ def run_modeling_step(
     for entry in result.tool_call_log:
         if entry["tool"] == "get_dataset_profile":
             profile_report = entry["result"]
+        emit_event(on_event, "modeling", "tool_called", {"tool": entry["tool"], "result": entry["result"]})
 
     def fail(errors: list[str], **extra) -> ModelingStepResult:
+        emit_event(on_event, "modeling", "candidate_rejected", {
+            "candidate_id": extra.get("candidate_id"), "template_id": extra.get("template_id"),
+            "errors": errors,
+        })
         return ModelingStepResult(
             ok=False,
             candidate_id=extra.get("candidate_id"), template_id=extra.get("template_id"),
@@ -256,11 +233,15 @@ def run_modeling_step(
         fit_and_score, X.iloc[train_idx], y.iloc[train_idx], X.iloc[val_idx], y.iloc[val_idx],
         metric_name="roc_auc", seed=seed,
     )
+    emit_event(on_event, "modeling", "leakage_gate_result",
+                {"candidate_id": candidate_id, **permutation_check.to_dict()})
 
     selected_cols = [c for c in config.get("numeric_cols", []) + config.get("categorical_cols", []) if c in X.columns]
     correlation_check = check_suspicious_feature_correlation(
         X[selected_cols].iloc[train_idx], y.iloc[train_idx],
     )
+    emit_event(on_event, "modeling", "leakage_gate_result",
+                {"candidate_id": candidate_id, **correlation_check.to_dict()})
 
     passed_both_gates = permutation_check.passed and correlation_check.passed
     gate_errors = []
@@ -268,6 +249,11 @@ def run_modeling_step(
         gate_errors.append("failed label_permutation_test leakage gate")
     if not correlation_check.passed:
         gate_errors.append("failed feature-correlation leakage gate")
+
+    emit_event(on_event, "modeling", "candidate_scored", {
+        "candidate_id": candidate_id, "template_id": template_id, "metrics": metrics_dict,
+        "passed_gate": passed_both_gates,
+    })
 
     return ModelingStepResult(
         ok=passed_both_gates,
