@@ -19,6 +19,12 @@ each sub-project's own README/CLAUDE.md for the full design rationale.
 These steps get `agentic-ml-classification` and `agent-frontend`
 running locally. Do them in order.
 
+### 0. Clone the repo (agent-frontend branch)
+
+```bash
+git clone -b agent-frontend git@github.com:meaton96/agentic-ai-project.git
+```
+
 ### 1. Datasets
 
 Download the following from Kaggle and drop the files into
