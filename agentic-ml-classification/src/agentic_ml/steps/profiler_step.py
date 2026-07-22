@@ -15,25 +15,8 @@ import pandas as pd
 from agentic_ml.agent_runtime import ToolCallingAgent
 from agentic_ml.events import emit_event
 from agentic_ml.model_client import ModelClient
+from agentic_ml.prompt_loader import load_prompt, prompt_source, resolve_prompt_override_dir
 from agentic_ml.tools.profiler_tool import make_profiler_tool
-
-SYSTEM_PROMPT = """You are the Profiler agent in a deterministic ML evaluation \
-pipeline. You have exactly one tool: get_dataset_profile. Call it once to get \
-factual information about the dataset — you cannot compute these facts yourself \
-and must not guess or invent numbers.
-
-After calling the tool, respond with ONLY valid JSON (no prose, no markdown \
-fences) matching this schema:
-{
-  "summary": "<2-4 sentence plain-language summary of the dataset>",
-  "recommended_split_strategy": "<copy exactly from the tool output>",
-  "key_risks": ["<short bullet>", "..."],
-  "recommended_next_steps": ["<short bullet>", "..."]
-}
-
-Do not contradict the tool's recommended_split_strategy or leakage_risk_flags — \
-your job is to explain and contextualize them, not override them. If the tool \
-output already lists leakage_risk_flags, they must appear in key_risks."""
 
 
 @dataclass
@@ -55,12 +38,17 @@ def run_profiler_step(
     max_turns: int = 4,
     trace_fn: Optional[Callable[[dict], None]] = None,
     on_event: Optional[Callable[[dict], None]] = None,
+    prompt_override_dir: Optional[str] = None,
 ) -> ProfilerStepResult:
+    resolved_override_dir = resolve_prompt_override_dir(prompt_override_dir)
+    prompt_src, prompt_path = prompt_source("profiler", resolved_override_dir)
+    system_prompt = load_prompt("profiler", resolved_override_dir)
+    emit_event(on_event, "profiler", "prompt_loaded", {"source": prompt_src, "path": str(prompt_path)})
     emit_event(on_event, "profiler", "agent_started", {"target_column": target_column})
 
     tool = make_profiler_tool(df, target_column)
     agent = ToolCallingAgent(
-        model_client=client, tools=[tool], system_prompt=SYSTEM_PROMPT,
+        model_client=client, tools=[tool], system_prompt=system_prompt,
         model=model, max_turns=max_turns,
     )
     result = agent.run(

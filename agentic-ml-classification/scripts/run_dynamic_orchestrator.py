@@ -51,7 +51,7 @@ from agentic_ml.orchestrator.dynamic_loop import load_raw_hash, run_dynamic_loop
 from agentic_ml.orchestrator.run_state import DynamicRunContext, RunStateSummary
 
 
-def main(on_event: Optional[Callable[[dict], None]] = None):
+def main(on_event: Optional[Callable[[dict], None]] = None, prompt_override_dir: Optional[str] = None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True)
     parser.add_argument("--goal", default="")
@@ -80,7 +80,18 @@ def main(on_event: Optional[Callable[[dict], None]] = None):
                          "enables the deep_dive agent (needs --features-csv too)")
     parser.add_argument("--features-csv", default=None, help="engineered flight-level "
                          "table, enables the deep_dive agent (needs --raw-csv too)")
+    parser.add_argument("--prompt-override-dir", default=None, help="directory of per-agent "
+                         "<agent_name>.md system-prompt overrides (falls back to the shipped "
+                         "default for any agent not present there); defaults to the "
+                         "AGENTIC_ML_PROMPT_OVERRIDE_DIR env var if not given")
     args = parser.parse_args()
+
+    # the function argument (e.g. a future server calling main() directly) wins
+    # over the CLI flag if both are given; either may still be None, in which
+    # case each step falls back to AGENTIC_ML_PROMPT_OVERRIDE_DIR itself.
+    effective_prompt_override_dir = (
+        prompt_override_dir if prompt_override_dir is not None else args.prompt_override_dir
+    )
 
     run_id, run_dir = make_run_dir(args.run_id)
     trace = make_tracer(run_dir / "trace.jsonl")
@@ -144,7 +155,7 @@ def main(on_event: Optional[Callable[[dict], None]] = None):
         ctx, state, client, model=default_model, verification_model=verification_model,
         max_iterations=args.max_iterations,
         trace_fn=lambda record: trace(**record), write_transcript=write_transcript,
-        on_event=emit,
+        on_event=emit, prompt_override_dir=effective_prompt_override_dir,
     )
 
     for entry in result.history:

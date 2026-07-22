@@ -265,3 +265,9 @@ agentic-ml-classification/CLAUDE.md
 
 agent-frontend/runs/
 agent-frontend/artifacts/
+
+*.claude
+agent-frontend/.claude
+
+agentic-ml-classification/datasets
+agent-frontend/datasets

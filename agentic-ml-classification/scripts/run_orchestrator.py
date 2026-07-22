@@ -65,7 +65,7 @@ from agentic_ml.steps.verification_step import run_verification_step
 from agentic_ml.templates.registry import get_template
 
 
-def main(on_event: Optional[Callable[[dict], None]] = None):
+def main(on_event: Optional[Callable[[dict], None]] = None, prompt_override_dir: Optional[str] = None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True)
     parser.add_argument("--goal", default="", help="natural-language description of the "
@@ -94,7 +94,18 @@ def main(on_event: Optional[Callable[[dict], None]] = None):
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--skip-feature-engineering", action="store_true",
                          help="skip the feature-engineering step entirely")
+    parser.add_argument("--prompt-override-dir", default=None, help="directory of per-agent "
+                         "<agent_name>.md system-prompt overrides (falls back to the shipped "
+                         "default for any agent not present there); defaults to the "
+                         "AGENTIC_ML_PROMPT_OVERRIDE_DIR env var if not given")
     args = parser.parse_args()
+
+    # the function argument (e.g. a future server calling main() directly) wins
+    # over the CLI flag if both are given; either may still be None, in which
+    # case each step falls back to AGENTIC_ML_PROMPT_OVERRIDE_DIR itself.
+    effective_prompt_override_dir = (
+        prompt_override_dir if prompt_override_dir is not None else args.prompt_override_dir
+    )
 
     run_id, run_dir = make_run_dir(args.run_id)
     trace = make_tracer(run_dir / "trace.jsonl")
@@ -128,6 +139,7 @@ def main(on_event: Optional[Callable[[dict], None]] = None):
         intake_result = run_intake_step(
             raw_df, args.goal, client, model=default_model,
             trace_fn=lambda record: trace(**record), on_event=emit,
+            prompt_override_dir=effective_prompt_override_dir,
         )
         intake_transcript_path = write_transcript("intake", intake_result.messages)
         (run_dir / "intake_report.json").write_text(json.dumps({
@@ -192,6 +204,7 @@ def main(on_event: Optional[Callable[[dict], None]] = None):
             raw_loaded.df, target_column, client,
             group_column=group_column, time_column=time_column,
             model=default_model, trace_fn=lambda record: trace(**record), on_event=emit,
+            prompt_override_dir=effective_prompt_override_dir,
         )
         fe_transcript_path = write_transcript("feature_engineering", fe_result.messages)
         (run_dir / "feature_engineering_report.json").write_text(json.dumps({
@@ -239,6 +252,7 @@ def main(on_event: Optional[Callable[[dict], None]] = None):
     profiler_result = run_profiler_step(
         loaded.df, target_column, client, model=default_model,
         trace_fn=lambda record: trace(**record), on_event=emit,
+        prompt_override_dir=effective_prompt_override_dir,
     )
     profiler_transcript_path = write_transcript("profiler", profiler_result.messages)
     (run_dir / "profiler_report.json").write_text(json.dumps({
@@ -325,6 +339,7 @@ def main(on_event: Optional[Callable[[dict], None]] = None):
             client=client, model=default_model, metric_names=metric_names, seed=args.seed,
             already_tried_template_ids=tried_template_ids,
             trace_fn=lambda record: trace(**record), on_event=emit,
+            prompt_override_dir=effective_prompt_override_dir,
         )
         if step_result.template_id:
             tried_template_ids.append(step_result.template_id)
@@ -398,7 +413,7 @@ def main(on_event: Optional[Callable[[dict], None]] = None):
         )
         v_result = run_verification_step(
             bundle, client, model=verification_model, trace_fn=lambda record: trace(**record),
-            on_event=emit,
+            on_event=emit, prompt_override_dir=effective_prompt_override_dir,
         )
         print(f"  verdict: {v_result.verdict}"
               + (f"  concerns: {v_result.concerns}" if v_result.concerns else ""))
