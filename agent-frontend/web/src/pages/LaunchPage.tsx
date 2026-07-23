@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ApiError, launchRun, listDatasets } from '../api/client'
-import type { DatasetInfo, ModelEndpoint, Orchestrator, SplitStrategy } from '../api/types'
+import { ApiError, launchRun, listDatasets, listPrompts } from '../api/client'
+import type { DatasetInfo, ModelEndpoint, Orchestrator, PromptInfo, SplitStrategy } from '../api/types'
 
 const STRATEGIES: SplitStrategy[] = ['random', 'stratified', 'group', 'time', 'group_time']
 const MODEL_ENDPOINTS: ModelEndpoint[] = ['rit', 'gateway', 'local']
@@ -17,6 +17,8 @@ export function LaunchPage() {
   const [maxCandidates, setMaxCandidates] = useState('')
   const [modelEndpoint, setModelEndpoint] = useState<ModelEndpoint>('rit')
   const [skipFeatureEngineering, setSkipFeatureEngineering] = useState(false)
+  const [prompts, setPrompts] = useState<PromptInfo[]>([])
+  const [usePromptOverrides, setUsePromptOverrides] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -27,7 +29,10 @@ export function LaunchPage() {
         if (list.length > 0) setDataset(list[0].filename)
       })
       .catch((e: Error) => setError(e.message))
+    listPrompts().then(setPrompts).catch(() => undefined)
   }, [])
+
+  const anyOverridesConfigured = prompts.some((p) => p.has_override)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -43,6 +48,7 @@ export function LaunchPage() {
         max_candidates: orchestrator === 'static' && maxCandidates ? Number(maxCandidates) : undefined,
         model_endpoint: modelEndpoint,
         skip_feature_engineering: orchestrator === 'static' ? skipFeatureEngineering : false,
+        use_prompt_overrides: usePromptOverrides,
       })
       navigate(`/runs/${result.run_id}`)
     } catch (e) {
@@ -152,6 +158,21 @@ export function LaunchPage() {
               onChange={(e) => setSkipFeatureEngineering(e.target.checked)}
             />
             Skip feature engineering {orchestrator === 'dynamic' && <span className="hint">&nbsp;(static-orchestrator only)</span>}
+          </label>
+        </div>
+
+        <div className="field">
+          <label className="inline-label">
+            <input
+              type="checkbox"
+              checked={usePromptOverrides}
+              disabled={!anyOverridesConfigured}
+              onChange={(e) => setUsePromptOverrides(e.target.checked)}
+            />
+            Use prompt overrides
+            {!anyOverridesConfigured && (
+              <span className="hint">&nbsp;(no overrides saved yet — edit one on the Prompts page)</span>
+            )}
           </label>
         </div>
 

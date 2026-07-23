@@ -4,14 +4,14 @@ import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { LaunchPage } from './LaunchPage'
 import * as client from '../api/client'
-import type { DatasetInfo } from '../api/types'
+import type { DatasetInfo, PromptInfo } from '../api/types'
 
 // Partial mock: keeps the real ApiError class (LaunchPage's catch block does
 // `e instanceof ApiError`, which would never match an auto-mocked class),
-// only replacing the two functions this page actually calls.
+// only replacing the functions this page actually calls.
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>()
-  return { ...actual, listDatasets: vi.fn(), launchRun: vi.fn() }
+  return { ...actual, listDatasets: vi.fn(), listPrompts: vi.fn(), launchRun: vi.fn() }
 })
 
 const mockNavigate = vi.fn()
@@ -21,11 +21,16 @@ vi.mock('react-router-dom', async () => {
 })
 
 const DATASETS: DatasetInfo[] = [{ filename: 'churn.csv', size: 100, modified: 0 }]
+const NO_OVERRIDES: PromptInfo[] = [
+  { agent: 'profiler', default_content: 'default text', override_content: null, has_override: false },
+]
 
 describe('LaunchPage', () => {
   beforeEach(() => {
     mockNavigate.mockReset()
+    vi.mocked(client.launchRun).mockReset()
     vi.mocked(client.listDatasets).mockResolvedValue(DATASETS)
+    vi.mocked(client.listPrompts).mockResolvedValue(NO_OVERRIDES)
   })
 
   it('disables goal once target is filled in, and vice versa', async () => {
@@ -76,8 +81,42 @@ describe('LaunchPage', () => {
       max_candidates: undefined,
       model_endpoint: 'rit',
       skip_feature_engineering: false,
+      use_prompt_overrides: false,
     })
     expect(mockNavigate).toHaveBeenCalledWith('/runs/run_new123')
+  })
+
+  it('disables the prompt-overrides toggle when no agent has one configured, enables it when one does', async () => {
+    render(
+      <MemoryRouter>
+        <LaunchPage />
+      </MemoryRouter>,
+    )
+    await screen.findByDisplayValue('churn.csv')
+    expect(screen.getByLabelText(/Use prompt overrides/)).toBeDisabled()
+  })
+
+  it('enables the prompt-overrides toggle and includes it in the payload when an override exists', async () => {
+    vi.mocked(client.listPrompts).mockResolvedValue([
+      { agent: 'modeling', default_content: 'default', override_content: 'custom', has_override: true },
+    ])
+    vi.mocked(client.launchRun).mockResolvedValue({ run_id: 'run_new456', status: 'running' })
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter>
+        <LaunchPage />
+      </MemoryRouter>,
+    )
+    await screen.findByDisplayValue('churn.csv')
+    const toggle = await screen.findByLabelText(/Use prompt overrides/)
+    await waitFor(() => expect(toggle).toBeEnabled())
+
+    await user.type(screen.getByLabelText(/Target column/), 'churned')
+    await user.click(toggle)
+    await user.click(screen.getByRole('button', { name: /Launch run/ }))
+
+    await waitFor(() => expect(client.launchRun).toHaveBeenCalledTimes(1))
+    expect(client.launchRun).toHaveBeenCalledWith(expect.objectContaining({ use_prompt_overrides: true }))
   })
 
   it('shows an error and does not navigate if launching fails', async () => {

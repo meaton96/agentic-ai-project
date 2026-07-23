@@ -26,6 +26,7 @@ export interface LaunchRunRequest {
   max_candidates?: number | null
   model_endpoint?: ModelEndpoint
   skip_feature_engineering?: boolean
+  use_prompt_overrides?: boolean
 }
 
 export interface LaunchRunResponse {
@@ -78,6 +79,17 @@ export interface RunSummary {
   last_event: RunEvent | null
   report: RunReport | null
   leaderboard_entries: LeaderboardEntry[]
+}
+
+// GET /api/prompts / PUT/DELETE /api/prompts/{agent} — default_content is
+// always the pipeline's shipped prompts/<agent>.md, read-only from here;
+// override_content is this app's own override file for that agent, or
+// null if none has been saved.
+export interface PromptInfo {
+  agent: string
+  default_content: string
+  override_content: string | null
+  has_override: boolean
 }
 
 // make_transcript_writer (cli_common.py) always writes a JSON array of

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { getTranscript } from '../../api/client'
 import type { TranscriptMessage } from '../../api/types'
 import type { GraphNode } from '../../domain/graphTypes'
-import { summarizeNodeEvents } from '../../domain/eventClassification'
+import { promptSourceForEvents, summarizeNodeEvents } from '../../domain/eventClassification'
 import { STATE_COLOR } from '../../domain/stateColors'
 import { StatusBadge } from '../StatusBadge'
 
@@ -46,6 +46,7 @@ export function StepCard({ runId, node, indent }: StepCardProps) {
 
   const dark = node.data.kind === 'harness'
   const summary = summarizeNodeEvents(node.data.events)
+  const promptSource = promptSourceForEvents(node.data.events)
 
   useEffect(() => {
     if (!expanded || !node.data.transcriptName || transcript) return
@@ -93,6 +94,14 @@ export function StepCard({ runId, node, indent }: StepCardProps) {
             </div>
           )}
         </div>
+        {promptSource && (
+          <span
+            className={`badge ${promptSource.source === 'override' ? 'badge-override' : 'badge-pending'}`}
+            title={promptSource.path}
+          >
+            prompt: {promptSource.source}
+          </span>
+        )}
         <StatusBadge status={node.data.state} />
       </button>
 

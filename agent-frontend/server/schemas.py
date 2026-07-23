@@ -24,6 +24,7 @@ class LaunchRunRequest(BaseModel):
     max_candidates: Optional[int] = Field(default=None, gt=0)
     model_endpoint: ModelEndpoint = "rit"
     skip_feature_engineering: bool = False
+    use_prompt_overrides: bool = False
 
 
 class LaunchRunResponse(BaseModel):
@@ -35,3 +36,14 @@ class DatasetInfo(BaseModel):
     filename: str
     size: int
     modified: float
+
+
+class PromptInfo(BaseModel):
+    agent: str
+    default_content: str
+    override_content: Optional[str] = None
+    has_override: bool
+
+
+class PromptOverrideRequest(BaseModel):
+    content: str = Field(..., description="Full replacement text for this agent's override prompt file")

@@ -20,20 +20,27 @@ function summaryFor(status: RunSummary['status']): RunSummary {
 
 // Mirrors the real event shapes confirmed by hitting a live server (see M2
 // summary) for a --target-given, --skip-feature-engineering, one-candidate
-// static-orchestrator run.
+// static-orchestrator run. prompt_loaded fires before agent_started for
+// every agent step (steps/*_step.py loads the prompt before calling the
+// model at all) — included here for profiler/modeling/verification since
+// that ordering is exactly what earlier broke segmentByAgentStarted's
+// per-candidate grouping (see domain/staticGraph.ts).
 const SCRIPTED_EVENTS: RunEvent[] = [
   { ts: 1, run_id: RUN_ID, phase: 'run', type: 'run_started', payload: { data: '/x/churn.csv', goal: '', target: 'churned' } },
-  { ts: 2, run_id: RUN_ID, phase: 'profiler', type: 'agent_started', payload: { target_column: 'churned' } },
-  { ts: 3, run_id: RUN_ID, phase: 'profiler', type: 'profiler_report', payload: { ok: true, recommended_split_strategy: 'stratified', is_imbalanced: false, leakage_risk_flags: [] } },
-  { ts: 4, run_id: RUN_ID, phase: 'split_and_check_leakage', type: 'leakage_gate_result', payload: { check: 'duplicate_rows_across_splits', passed: true, detail: 'ok' } },
-  { ts: 5, run_id: RUN_ID, phase: 'split_and_check_leakage', type: 'split_completed', payload: { strategy_used: 'stratified', ok: true, n_train: 142, n_val: 29, n_test: 29 } },
-  { ts: 6, run_id: RUN_ID, phase: 'modeling', type: 'agent_started', payload: { already_tried_template_ids: [] } },
-  { ts: 7, run_id: RUN_ID, phase: 'modeling', type: 'leakage_gate_result', payload: { candidate_id: 'candidate_a', check: 'label_permutation_test', passed: true, detail: 'ok' } },
-  { ts: 8, run_id: RUN_ID, phase: 'modeling', type: 'candidate_scored', payload: { candidate_id: 'candidate_a', template_id: 'sklearn_mixed_pipeline', metrics: {}, passed_gate: true } },
-  { ts: 9, run_id: RUN_ID, phase: 'verification', type: 'agent_started', payload: { candidate_id: 'candidate_a' } },
-  { ts: 10, run_id: RUN_ID, phase: 'verification', type: 'verification_verdict', payload: { candidate_id: 'candidate_a', verdict: 'approved', concerns: [], reasoning: 'fine', unparseable: false } },
-  { ts: 11, run_id: RUN_ID, phase: 'finalize', type: 'final_test_metrics', payload: { test_metrics: {} } },
-  { ts: 12, run_id: RUN_ID, phase: 'run', type: 'run_completed', payload: { status: 'success' } },
+  { ts: 2, run_id: RUN_ID, phase: 'profiler', type: 'prompt_loaded', payload: { source: 'override', path: '/overrides/profiler.md' } },
+  { ts: 3, run_id: RUN_ID, phase: 'profiler', type: 'agent_started', payload: { target_column: 'churned' } },
+  { ts: 4, run_id: RUN_ID, phase: 'profiler', type: 'profiler_report', payload: { ok: true, recommended_split_strategy: 'stratified', is_imbalanced: false, leakage_risk_flags: [] } },
+  { ts: 5, run_id: RUN_ID, phase: 'split_and_check_leakage', type: 'leakage_gate_result', payload: { check: 'duplicate_rows_across_splits', passed: true, detail: 'ok' } },
+  { ts: 6, run_id: RUN_ID, phase: 'split_and_check_leakage', type: 'split_completed', payload: { strategy_used: 'stratified', ok: true, n_train: 142, n_val: 29, n_test: 29 } },
+  { ts: 7, run_id: RUN_ID, phase: 'modeling', type: 'prompt_loaded', payload: { source: 'default', path: '/pipeline/prompts/modeling.md' } },
+  { ts: 8, run_id: RUN_ID, phase: 'modeling', type: 'agent_started', payload: { already_tried_template_ids: [] } },
+  { ts: 9, run_id: RUN_ID, phase: 'modeling', type: 'leakage_gate_result', payload: { candidate_id: 'candidate_a', check: 'label_permutation_test', passed: true, detail: 'ok' } },
+  { ts: 10, run_id: RUN_ID, phase: 'modeling', type: 'candidate_scored', payload: { candidate_id: 'candidate_a', template_id: 'sklearn_mixed_pipeline', metrics: {}, passed_gate: true } },
+  { ts: 11, run_id: RUN_ID, phase: 'verification', type: 'prompt_loaded', payload: { source: 'default', path: '/pipeline/prompts/verification.md' } },
+  { ts: 12, run_id: RUN_ID, phase: 'verification', type: 'agent_started', payload: { candidate_id: 'candidate_a' } },
+  { ts: 13, run_id: RUN_ID, phase: 'verification', type: 'verification_verdict', payload: { candidate_id: 'candidate_a', verdict: 'approved', concerns: [], reasoning: 'fine', unparseable: false } },
+  { ts: 14, run_id: RUN_ID, phase: 'finalize', type: 'final_test_metrics', payload: { test_metrics: {} } },
+  { ts: 15, run_id: RUN_ID, phase: 'run', type: 'run_completed', payload: { status: 'success' } },
 ]
 
 function renderDetail() {
@@ -126,5 +133,29 @@ describe('RunDetailPage — static orchestrator graph', () => {
     await user.click(screen.getByText('Profiler Agent'))
     expect(await screen.findByText('you are the profiler')).toBeInTheDocument()
     expect(client.getTranscript).toHaveBeenCalledWith(RUN_ID, 'profiler_01.json')
+  })
+
+  it('shows which prompt (default vs. override) each step actually used, from prompt_loaded events', async () => {
+    renderDetail()
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1))
+    const source = FakeEventSource.latest()
+    await act(async () => {
+      for (const event of SCRIPTED_EVENTS) source.emit(event)
+    })
+
+    // profiler's prompt_loaded said "override" — surfaced distinctly
+    const profilerCard = await screen.findByTestId('node-profiler')
+    expect(profilerCard).toHaveTextContent('prompt: override')
+
+    // modeling and verification both used their shipped defaults
+    expect(screen.getByTestId('node-modeling_candidate_a')).toHaveTextContent('prompt: default')
+    expect(screen.getByTestId('node-verification_candidate_a')).toHaveTextContent('prompt: default')
+
+    // a step with no prompt_loaded event at all (deterministic, no LLM) shows no indicator
+    expect(screen.getByTestId('node-split_harness')).not.toHaveTextContent('prompt:')
+
+    // and proves the fix: prompt_loaded firing before agent_started must not
+    // fragment one candidate into a phantom extra "modeling" step
+    expect(screen.queryByText(/Modeling Agent \(#0\)/)).not.toBeInTheDocument()
   })
 })

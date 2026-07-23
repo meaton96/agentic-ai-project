@@ -7,11 +7,12 @@ import type {
   LaunchRunRequest,
   LaunchRunResponse,
   LeaderboardEntry,
+  PromptInfo,
   RunSummary,
   TranscriptMessage,
 } from './types'
 
-export const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? 'http://127.0.0.1:8000'
+export const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? 'http://127.0.0.1:8001'
 
 export class ApiError extends Error {
   status: number
@@ -70,6 +71,20 @@ export function getTranscript(runId: string, name: string): Promise<TranscriptMe
 export function getLeaderboard(runId?: string): Promise<LeaderboardEntry[]> {
   const qs = runId ? `?run_id=${encodeURIComponent(runId)}` : ''
   return request(`/api/leaderboard${qs}`)
+}
+
+export function listPrompts(): Promise<PromptInfo[]> {
+  return request('/api/prompts')
+}
+
+export function putPromptOverride(agent: string, content: string): Promise<PromptInfo> {
+  return request(`/api/prompts/${encodeURIComponent(agent)}`, {
+    method: 'PUT', body: JSON.stringify({ content }),
+  })
+}
+
+export function deletePromptOverride(agent: string): Promise<PromptInfo> {
+  return request(`/api/prompts/${encodeURIComponent(agent)}`, { method: 'DELETE' })
 }
 
 // Not fetched via `request` — this is handed to `new EventSource(...)` by

@@ -20,8 +20,9 @@ from agentic_ml.paths import leaderboard_path as resolve_leaderboard_path
 from agentic_ml.paths import run_dir as resolve_run_dir
 
 from server.events_io import stream_event_lines
+from server.prompts import delete_override, get_prompt_info, list_known_agents, write_override
 from server.run_manager import RunAlreadyActiveError, RunConfig, RunManager
-from server.schemas import DatasetInfo, LaunchRunRequest, LaunchRunResponse
+from server.schemas import DatasetInfo, LaunchRunRequest, LaunchRunResponse, PromptInfo, PromptOverrideRequest
 from server.summaries import assemble_run_summary, list_all_run_ids
 
 router = APIRouter()
@@ -78,6 +79,7 @@ def launch_run(body: LaunchRunRequest, request: Request) -> LaunchRunResponse:
         max_candidates=body.max_candidates,
         model_endpoint=body.model_endpoint,
         skip_feature_engineering=body.skip_feature_engineering,
+        use_prompt_overrides=body.use_prompt_overrides,
     )
     try:
         tracked = run_manager.start_run(config)
@@ -155,3 +157,32 @@ def get_leaderboard(run_id: Optional[str] = None) -> list[dict]:
     if run_id is not None:
         entries = [e for e in entries if e.get("run_id") == run_id]
     return entries
+
+
+# --- prompts ------------------------------------------------------------
+# Read-only against the pipeline's shipped prompts/*.md; writes only ever
+# touch this app's own override directory (server/prompts.py), never
+# ../agentic-ml-classification.
+
+
+def _require_known_agent(agent: str) -> None:
+    if agent not in list_known_agents():
+        raise HTTPException(404, f"unknown agent {agent!r}")
+
+
+@router.get("/api/prompts", response_model=list[PromptInfo])
+def list_prompts() -> list[PromptInfo]:
+    return [PromptInfo(**get_prompt_info(agent)) for agent in list_known_agents()]
+
+
+@router.put("/api/prompts/{agent}", response_model=PromptInfo)
+def put_prompt_override(agent: str, body: PromptOverrideRequest) -> PromptInfo:
+    _require_known_agent(agent)
+    return PromptInfo(**write_override(agent, body.content))
+
+
+@router.delete("/api/prompts/{agent}", response_model=PromptInfo)
+def delete_prompt_override(agent: str) -> PromptInfo:
+    _require_known_agent(agent)
+    delete_override(agent)
+    return PromptInfo(**get_prompt_info(agent))
