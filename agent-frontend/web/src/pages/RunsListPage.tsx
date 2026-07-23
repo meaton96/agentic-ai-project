@@ -10,9 +10,8 @@ function fmtTime(ts: number | null): string {
 }
 
 function datasetOf(run: RunSummary): string {
-  const data = run.first_event?.payload.data as string | undefined
-  if (data) return data.split('/').pop() ?? data
-  return '—'
+  if (!run.dataset) return '—'
+  return run.dataset.split('/').pop() ?? run.dataset
 }
 
 function startedAtOf(run: RunSummary): number | null {

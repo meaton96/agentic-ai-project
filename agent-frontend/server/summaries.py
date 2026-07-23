@@ -7,10 +7,20 @@ for it, which just changes where status/started_at/finished_at come
 from (RunManager's bookkeeping vs. events.jsonl's own terminal event).
 
 first_event is exposed alongside last_event because it's the only place
-the run's launch parameters (dataset path, target/goal) live — neither
-orchestrator's report.json records them, and the run-summary shape has
-no room to duplicate that as separate top-level fields without
-reinventing what's already in run_started's payload.
+the run's launch parameters (target/goal) live — neither orchestrator's
+report.json records them, and the run-summary shape has no room to
+duplicate that as separate top-level fields without reinventing what's
+already in run_started's payload.
+
+`dataset` IS pulled out as its own top-level field, though, because it
+can't reliably be read back out of first_event: run_orchestrator.py's
+run_started payload includes "data", but run_dynamic_orchestrator.py's
+does not (confirmed against real events.jsonl — a real gap in that
+script, not something to fix from here; see ../CLAUDE.md's boundary on
+../agentic-ml-classification). For a run this RunManager launched, the
+dataset path is already known directly from RunConfig regardless of
+orchestrator type, so that's preferred; first_event is only a fallback
+for a historical/CLI-launched static run.
 """
 from __future__ import annotations
 
@@ -57,11 +67,13 @@ def assemble_run_summary(run_id: str, run_manager: RunManager) -> Optional[dict]
         finished_at = tracked.finished_at
         error = tracked.error
         orchestrator = orchestrator or tracked.config.orchestrator
+        dataset = tracked.config.dataset
     else:
         status = terminal_status_from_events(events) or "unknown"
         started_at = None
         finished_at = None
         error = None
+        dataset = events[0]["payload"].get("data") if events else None
 
     leaderboard_entries = [
         entry for entry in read_leaderboard(resolve_leaderboard_path()) if entry.get("run_id") == run_id
@@ -71,6 +83,7 @@ def assemble_run_summary(run_id: str, run_manager: RunManager) -> Optional[dict]
         "run_id": run_id,
         "orchestrator": orchestrator,
         "status": status,
+        "dataset": dataset,
         "started_at": started_at,
         "finished_at": finished_at,
         "error": error,

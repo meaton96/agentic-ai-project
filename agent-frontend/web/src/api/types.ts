@@ -71,6 +71,13 @@ export interface RunSummary {
   run_id: string
   orchestrator: Orchestrator | null
   status: RunStatus
+  // Preferred over first_event.payload.data: the dynamic orchestrator's
+  // run_started event doesn't record the dataset path at all (a real
+  // pipeline gap, confirmed on real data) — the server falls back to
+  // RunManager's own launch config when it tracked this run, so this is
+  // populated for any orchestrator type as long as this server launched
+  // it, even though the event itself may have nothing.
+  dataset: string | null
   started_at: number | null
   finished_at: number | null
   error: string | null
