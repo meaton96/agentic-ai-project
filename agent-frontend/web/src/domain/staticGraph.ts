@@ -36,14 +36,25 @@ function simpleNode(
 
 /** Splits a phase's flat event list into per-candidate/per-attempt groups,
  * one group per agent_started event (each candidate/attempt starts with
- * its own agent_started — see steps/modeling_step.py, verification_step.py). */
+ * its own agent_started — see steps/modeling_step.py, verification_step.py).
+ * prompt_loaded fires *before* agent_started (steps load the prompt before
+ * they call the model at all) — events seen before the first agent_started
+ * are folded into that first segment rather than becoming a phantom
+ * candidate of their own. */
 function segmentByAgentStarted(events: RunEvent[]): RunEvent[][] {
   const segments: RunEvent[][] = []
+  let pending: RunEvent[] = []
   for (const e of events) {
-    if (isAgentStartedEvent(e.type)) segments.push([e])
-    else if (segments.length > 0) segments[segments.length - 1].push(e)
-    else segments.push([e]) // defensive: events before any agent_started (shouldn't happen)
+    if (isAgentStartedEvent(e.type)) {
+      segments.push([...pending, e])
+      pending = []
+    } else if (segments.length > 0) {
+      segments[segments.length - 1].push(e)
+    } else {
+      pending.push(e)
+    }
   }
+  if (pending.length > 0) segments.push(pending) // agent_started hasn't arrived yet (mid-stream live run)
   return segments
 }
 

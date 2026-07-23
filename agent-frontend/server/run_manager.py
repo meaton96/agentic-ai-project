@@ -65,6 +65,9 @@ from threading import Lock
 from typing import Callable, Literal, Optional
 
 from agentic_ml.paths import run_dir as resolve_run_dir
+from agentic_ml.prompt_loader import PROMPT_OVERRIDE_DIR_ENV_VAR
+
+from server.prompts import resolve_override_dir
 
 Orchestrator = Literal["static", "dynamic"]
 ModelEndpoint = Literal["rit", "gateway", "local"]
@@ -88,6 +91,7 @@ class RunConfig:
     max_candidates: Optional[int] = None
     model_endpoint: ModelEndpoint = "rit"
     skip_feature_engineering: bool = False
+    use_prompt_overrides: bool = False
 
 
 class RunAlreadyActiveError(Exception):
@@ -141,6 +145,12 @@ def build_argv(run_id: str, config: RunConfig) -> list[str]:
         if config.skip_feature_engineering:
             argv += ["--skip-feature-engineering"]
 
+    if config.use_prompt_overrides:
+        # Explicit path, always — see _run_with_env's PROMPT_OVERRIDE_DIR_ENV_VAR
+        # stripping below for why this must never rely on the child
+        # inheriting the env var instead.
+        argv += ["--prompt-override-dir", str(resolve_override_dir())]
+
     return argv
 
 
@@ -186,7 +196,20 @@ def _run_with_env(env: dict[str, str], launch_fn: LaunchFn, run_id: str, config:
     snapshot taken in the parent at start_run() time (see module
     docstring — forkserver children otherwise inherit whatever env the
     forkserver controller process happened to have when *it* started),
-    then delegates to launch_fn."""
+    then delegates to launch_fn.
+
+    PROMPT_OVERRIDE_DIR_ENV_VAR is dropped unconditionally, even though
+    the snapshot is otherwise passed through as-is: agentic_ml.prompt_
+    loader.resolve_prompt_override_dir() falls back to that env var
+    whenever no explicit override_dir is passed, which would silently
+    turn use_prompt_overrides=False into "whatever this server process's
+    own environment happens to have" if it were ever set there (e.g.
+    because this server also serves /api/prompts from that same
+    directory). build_argv() above passes the directory explicitly via
+    --prompt-override-dir when a run opts in — that's the only channel;
+    the env var is never a valid way for a launched run to pick one up."""
+    env = dict(env)
+    env.pop(PROMPT_OVERRIDE_DIR_ENV_VAR, None)
     os.environ.clear()
     os.environ.update(env)
     launch_fn(run_id, config)

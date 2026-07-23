@@ -12,7 +12,7 @@ const RUN_ID = 'run_dynamic1'
 
 function summaryFor(status: RunSummary['status']): RunSummary {
   return {
-    run_id: RUN_ID, orchestrator: 'dynamic', status, started_at: null, finished_at: null,
+    run_id: RUN_ID, orchestrator: 'dynamic', status, dataset: null, started_at: null, finished_at: null,
     error: null, n_events: 0, first_event: null, last_event: null, report: null, leaderboard_entries: [],
   }
 }

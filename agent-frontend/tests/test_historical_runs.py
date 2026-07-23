@@ -62,6 +62,7 @@ def test_historical_run_parity_with_live_run_shape(client):
     assert summary["run_id"] == run_id
     assert summary["orchestrator"] == "static"
     assert summary["status"] == "completed"
+    assert summary["dataset"] == "/some/path.csv"  # recovered from first_event, untracked run
     assert summary["started_at"] is None  # never tracked by this RunManager
     assert summary["finished_at"] is None
     assert summary["error"] is None
@@ -75,7 +76,7 @@ def test_historical_run_parity_with_live_run_shape(client):
     # same key set GET /api/runs/{id} returns for a server-launched run
     # (see test_run_lifecycle.test_launch_run_end_to_end)
     assert set(summary) == {
-        "run_id", "orchestrator", "status", "started_at", "finished_at",
+        "run_id", "orchestrator", "status", "dataset", "started_at", "finished_at",
         "error", "n_events", "first_event", "last_event", "report", "leaderboard_entries",
     }
 

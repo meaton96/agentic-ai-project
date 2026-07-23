@@ -26,6 +26,7 @@ export interface LaunchRunRequest {
   max_candidates?: number | null
   model_endpoint?: ModelEndpoint
   skip_feature_engineering?: boolean
+  use_prompt_overrides?: boolean
 }
 
 export interface LaunchRunResponse {
@@ -70,6 +71,13 @@ export interface RunSummary {
   run_id: string
   orchestrator: Orchestrator | null
   status: RunStatus
+  // Preferred over first_event.payload.data: the dynamic orchestrator's
+  // run_started event doesn't record the dataset path at all (a real
+  // pipeline gap, confirmed on real data) — the server falls back to
+  // RunManager's own launch config when it tracked this run, so this is
+  // populated for any orchestrator type as long as this server launched
+  // it, even though the event itself may have nothing.
+  dataset: string | null
   started_at: number | null
   finished_at: number | null
   error: string | null
@@ -78,6 +86,17 @@ export interface RunSummary {
   last_event: RunEvent | null
   report: RunReport | null
   leaderboard_entries: LeaderboardEntry[]
+}
+
+// GET /api/prompts / PUT/DELETE /api/prompts/{agent} — default_content is
+// always the pipeline's shipped prompts/<agent>.md, read-only from here;
+// override_content is this app's own override file for that agent, or
+// null if none has been saved.
+export interface PromptInfo {
+  agent: string
+  default_content: string
+  override_content: string | null
+  has_override: boolean
 }
 
 // make_transcript_writer (cli_common.py) always writes a JSON array of

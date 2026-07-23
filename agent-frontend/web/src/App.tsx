@@ -3,6 +3,7 @@ import { RunsListPage } from './pages/RunsListPage'
 import { RunDetailPage } from './pages/RunDetailPage'
 import { LaunchPage } from './pages/LaunchPage'
 import { LeaderboardPage } from './pages/LeaderboardPage'
+import { PromptsPage } from './pages/PromptsPage'
 
 function Nav() {
   return (
@@ -16,6 +17,9 @@ function Nav() {
       </NavLink>
       <NavLink to="/leaderboard" className={({ isActive }) => (isActive ? 'active' : '')}>
         Leaderboard
+      </NavLink>
+      <NavLink to="/prompts" className={({ isActive }) => (isActive ? 'active' : '')}>
+        Prompts
       </NavLink>
     </nav>
   )
@@ -32,6 +36,7 @@ export function App() {
             <Route path="/runs/:runId" element={<RunDetailPage />} />
             <Route path="/launch" element={<LaunchPage />} />
             <Route path="/leaderboard" element={<LeaderboardPage />} />
+            <Route path="/prompts" element={<PromptsPage />} />
           </Routes>
         </main>
       </div>

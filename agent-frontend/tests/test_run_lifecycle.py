@@ -61,6 +61,39 @@ def test_get_unknown_run_is_404(client):
     assert resp.status_code == 404
 
 
+def _dynamic_like_launch_fn(run_id, config: RunConfig) -> None:
+    """Mirrors run_dynamic_orchestrator.py's real run_started payload
+    shape exactly — {"goal": ..., "max_iterations": ...}, no "data" key
+    at all (confirmed against real events.jsonl; the static orchestrator's
+    run_started does include "data", the dynamic one doesn't). This is
+    what makes the dataset column blank for a dynamic run read from disk
+    alone — assemble_run_summary()'s tracked.config.dataset fallback is
+    what has to cover it instead."""
+    from agentic_ml.events import emit_event, make_event_emitter, make_event_logger
+    from agentic_ml.paths import run_dir as resolve_run_dir
+
+    run_dir = resolve_run_dir(run_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    emit = make_event_emitter(run_id, persist_fn=make_event_logger(run_dir))
+    emit_event(emit, "run", "run_started", {"goal": "", "max_iterations": 15})
+    emit_event(emit, "run", "run_completed", {"status": "success"})
+
+
+def test_dataset_is_recovered_for_a_tracked_run_even_when_the_orchestrator_never_records_it(dataset_csv):
+    app = create_app(launch_fn=_dynamic_like_launch_fn)
+    with TestClient(app) as client:
+        resp = client.post("/api/runs", json={"dataset": dataset_csv, "orchestrator": "dynamic", "goal": "x"})
+        assert resp.status_code == 202
+        run_id = resp.json()["run_id"]
+
+        final = wait_for_status(client, run_id)
+        assert final["status"] == "completed"
+        # confirms the event itself really has no "data" key, same as the real pipeline
+        assert "data" not in final["first_event"]["payload"]
+        # ...yet the dataset still shows up, from RunConfig rather than the event
+        assert final["dataset"].endswith(dataset_csv)
+
+
 def _slow_launch_fn(run_id, config: RunConfig) -> None:
     from agentic_ml.events import emit_event, make_event_emitter, make_event_logger
     from agentic_ml.paths import run_dir as resolve_run_dir

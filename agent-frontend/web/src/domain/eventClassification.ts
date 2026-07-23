@@ -132,3 +132,21 @@ export function summarizeNodeEvents(events: RunEvent[]): string | null {
   }
   return null
 }
+
+export interface PromptSourceInfo {
+  source: 'default' | 'override'
+  path: string
+}
+
+/** Reads the phase's own prompt_loaded event (emitted by every
+ * steps/*_step.py before it calls the model at all — see
+ * agentic_ml.prompt_loader) — this is the audit trail for which prompt
+ * text an agent step actually used, not a guess based on whether
+ * use_prompt_overrides was requested for the run (a requested override
+ * silently falls back to default per-agent if no override file exists
+ * for that specific agent, so the request alone doesn't say what ran). */
+export function promptSourceForEvents(events: RunEvent[]): PromptSourceInfo | null {
+  const event = events.find((e) => e.type === 'prompt_loaded')
+  if (!event) return null
+  return { source: event.payload.source as 'default' | 'override', path: event.payload.path as string }
+}

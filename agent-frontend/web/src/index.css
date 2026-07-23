@@ -17,6 +17,8 @@
   --color-vetoed-bg: #f3e8ff;
   --color-pending: #64748b;
   --color-pending-bg: #f1f5f9;
+  --color-override: #b45309;
+  --color-override-bg: #fef3c7;
 
   --radius: 8px;
   --radius-sm: 5px;
@@ -295,6 +297,12 @@ code {
 .badge-unknown {
   background: var(--color-pending-bg);
   color: var(--color-pending);
+}
+
+.badge-override-active,
+.badge-override {
+  background: var(--color-override-bg);
+  color: var(--color-override);
 }
 
 .radio-group {
