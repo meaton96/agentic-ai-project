@@ -12,6 +12,9 @@ import time
 import uuid
 from pathlib import Path
 from typing import Callable, Optional
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from agentic_ml.paths import run_dir as resolve_run_dir
 
@@ -45,8 +48,14 @@ def resolve_model_endpoint(
         api_key = os.environ.get("LITELLM_MASTER_KEY", "")
         default_model = model or default_gateway_model
     else:
-        base_url = os.environ["RIT_BASE_URL"]
-        api_key = os.environ["RIT_API_KEY"]
+        base_url = os.environ.get("RIT_BASE_URL")
+        api_key = os.environ.get("RIT_API_KEY")
+        
+        if not base_url or not api_key:
+            raise ValueError(
+                "Missing RIT configuration! Ensure RIT_BASE_URL and RIT_API_KEY "
+                "are set in your .env file or system environment."
+            )
         default_model = model or os.environ.get("RIT_DEFAULT_MODEL", default_direct_model)
     return base_url, api_key, default_model
 
