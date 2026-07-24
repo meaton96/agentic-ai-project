@@ -4,6 +4,7 @@ import { RunDetailPage } from './pages/RunDetailPage'
 import { LaunchPage } from './pages/LaunchPage'
 import { LeaderboardPage } from './pages/LeaderboardPage'
 import { PromptsPage } from './pages/PromptsPage'
+import { BuilderPage } from './pages/BuilderPage'
 
 function Nav() {
   return (
@@ -21,6 +22,9 @@ function Nav() {
       <NavLink to="/prompts" className={({ isActive }) => (isActive ? 'active' : '')}>
         Prompts
       </NavLink>
+      <NavLink to="/builder" className={({ isActive }) => (isActive ? 'active' : '')}>
+        Builder
+      </NavLink>
     </nav>
   )
 }
@@ -37,6 +41,7 @@ export function App() {
             <Route path="/launch" element={<LaunchPage />} />
             <Route path="/leaderboard" element={<LeaderboardPage />} />
             <Route path="/prompts" element={<PromptsPage />} />
+            <Route path="/builder" element={<BuilderPage />} />
           </Routes>
         </main>
       </div>

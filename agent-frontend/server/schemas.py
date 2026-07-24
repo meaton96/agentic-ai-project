@@ -47,3 +47,26 @@ class PromptInfo(BaseModel):
 
 class PromptOverrideRequest(BaseModel):
     content: str = Field(..., description="Full replacement text for this agent's override prompt file")
+
+
+WorkflowNodeKind = Literal["agent", "gate"]
+
+
+class WorkflowNode(BaseModel):
+    id: str
+    label: str
+    kind: WorkflowNodeKind
+    description: str
+    data: dict = Field(default_factory=dict)
+
+
+class WorkflowEdge(BaseModel):
+    id: str
+    source: str
+    target: str
+    label: Optional[str] = None
+
+
+class WorkflowCatalogResponse(BaseModel):
+    nodes: list[WorkflowNode]
+    edges: list[WorkflowEdge]

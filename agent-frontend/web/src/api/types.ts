@@ -112,3 +112,32 @@ export interface TranscriptMessage {
   }>
   tool_call_id?: string
 }
+
+// GET /api/workflow-catalog?type=static|dynamic — read-only topology for the
+// Builder screen. "gate" = deterministic/no-LLM (dark, per PROJECT_OVERVIEW.md
+// §3), "agent" = an LLM call. `data` carries type-specific extras: the
+// dynamic catalog puts `when_to_use`/`required_state` there (straight off
+// agentic_ml.orchestrator.agent_registry.AgentSpec), the static topology
+// leaves it mostly empty.
+export type WorkflowCatalogType = 'static' | 'dynamic'
+export type WorkflowNodeKind = 'agent' | 'gate'
+
+export interface WorkflowNode {
+  id: string
+  label: string
+  kind: WorkflowNodeKind
+  description: string
+  data: Record<string, unknown>
+}
+
+export interface WorkflowEdge {
+  id: string
+  source: string
+  target: string
+  label?: string | null
+}
+
+export interface WorkflowCatalog {
+  nodes: WorkflowNode[]
+  edges: WorkflowEdge[]
+}
