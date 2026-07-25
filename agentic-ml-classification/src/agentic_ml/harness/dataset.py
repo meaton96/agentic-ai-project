@@ -9,11 +9,30 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+
+# read_dataframe() is the single entry point every script/notebook/step
+# uses to load a dataset — a raw long-format time-series file (one row
+# per timestep, not per example) pointed at this pipeline directly
+# will silently try to load the whole thing into one DataFrame, which
+# is exactly what happened running datasets/raw/C28.csv (4GB, 28.7M
+# rows) through it: a real OOM that took the machine down, not just a
+# slow load. This is a cheap stat()-based guard, checked before any
+# read is attempted, so a too-large file fails fast with a clear
+# message instead of silently exhausting memory. Overridable per-call
+# or via AGENTIC_ML_MAX_DATASET_BYTES for a dataset that's legitimately
+# this large (e.g. a real production-scale engineered table).
+DEFAULT_MAX_DATASET_BYTES = 500_000_000  # 500 MB
+
+
+def _max_dataset_bytes() -> int:
+    override = os.environ.get("AGENTIC_ML_MAX_DATASET_BYTES")
+    return int(override) if override else DEFAULT_MAX_DATASET_BYTES
 
 
 @dataclass
@@ -71,14 +90,33 @@ def _hash_dataframe(df: pd.DataFrame) -> str:
     return hasher.hexdigest()
 
 
-def read_dataframe(path: str | Path) -> pd.DataFrame:
+def read_dataframe(path: str | Path, max_bytes: Optional[int] = None) -> pd.DataFrame:
     """CSV/parquet reading, split out of load_dataset() so callers that
     need to look at a dataframe before a target_column/DatasetSpec exists
     yet (e.g. the intake step, which has to propose the target column in
-    the first place) don't duplicate the format-branching logic."""
+    the first place) don't duplicate the format-branching logic.
+
+    max_bytes=None uses AGENTIC_ML_MAX_DATASET_BYTES / the 500MB default
+    (see _max_dataset_bytes) — pass an explicit value to override just
+    this call."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Dataset not found: {path}")
+
+    limit = max_bytes if max_bytes is not None else _max_dataset_bytes()
+    size = path.stat().st_size
+    if size > limit:
+        raise ValueError(
+            f"Dataset {path} is {size / 1e6:.0f}MB, over the {limit / 1e6:.0f}MB limit "
+            "for a single in-memory load — refusing to read it (this pipeline has no "
+            "chunked/streaming path for general tabular data, so attempting this can "
+            "exhaust memory rather than just being slow). If this is raw long-format "
+            "time-series/sensor data (many rows per example, not one), roll it up into "
+            "one row per example first — see scripts/featurize_ngafid_flights.py for a "
+            "worked example — before handing it to this pipeline. If this file is "
+            "legitimately meant to be loaded whole, raise the limit via the "
+            "AGENTIC_ML_MAX_DATASET_BYTES env var or read_dataframe's max_bytes arg."
+        )
 
     if path.suffix.lower() == ".csv":
         return pd.read_csv(path)

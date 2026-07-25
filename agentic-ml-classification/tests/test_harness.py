@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from agentic_ml.harness.dataset import DatasetSpec, load_dataset
+from agentic_ml.harness.dataset import DatasetSpec, load_dataset, read_dataframe
 from agentic_ml.harness.splits import make_split, resolve_split_columns
 from agentic_ml.harness.leakage import (
     check_duplicate_rows_across_splits,
@@ -299,3 +299,38 @@ def test_resolve_split_columns_partial_override_only_fills_missing_one():
     assert time_column == "signup_day"
     assert len(notes) == 1
     assert "time_column" in notes[0]
+
+
+# --- read_dataframe's size guard ---
+#
+# Regression coverage for a real incident: pointing a raw, long-format
+# time-series CSV (28.7M rows, 4GB) directly at this pipeline caused an
+# out-of-memory crash, because read_dataframe() — the only code path
+# that reads a dataset file — had no guard and attempted a single
+# pd.read_csv() over the whole file. These tests use tiny files with an
+# explicit max_bytes override rather than an actual multi-GB fixture;
+# the file content is deliberately NOT valid CSV, so a passing test
+# proves the size check happens before any parse attempt, not just
+# that parsing eventually fails.
+
+def test_read_dataframe_rejects_a_file_over_the_size_limit(tmp_path):
+    path = tmp_path / "too_big.csv"
+    path.write_bytes(b"not,even,valid,csv,content" * 10)  # ~270 bytes
+    with pytest.raises(ValueError, match="over the"):
+        read_dataframe(path, max_bytes=100)  # smaller than the file
+
+
+def test_read_dataframe_accepts_a_file_within_the_size_limit(tmp_path):
+    path = tmp_path / "fine.csv"
+    path.write_text("a,b,target\n1,2,0\n3,4,1\n")
+    df = read_dataframe(path, max_bytes=1_000_000)
+    assert list(df.columns) == ["a", "b", "target"]
+    assert len(df) == 2
+
+
+def test_read_dataframe_size_limit_overridable_via_env_var(tmp_path, monkeypatch):
+    path = tmp_path / "too_big.csv"
+    path.write_bytes(b"not,even,valid,csv,content" * 10)
+    monkeypatch.setenv("AGENTIC_ML_MAX_DATASET_BYTES", "100")
+    with pytest.raises(ValueError, match="over the"):
+        read_dataframe(path)  # no explicit max_bytes -> falls back to the env var
