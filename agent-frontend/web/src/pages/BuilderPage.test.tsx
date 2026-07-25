@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { BuilderPage } from './BuilderPage'
 import * as client from '../api/client'
@@ -14,7 +14,7 @@ const STATIC_CATALOG: WorkflowCatalog = {
   ],
   edges: [
     { id: 'intake->validate_intake', source: 'intake', target: 'validate_intake' },
-    { id: 'validate_intake->finalize', source: 'validate_intake', target: 'finalize' },
+    { id: 'validate_intake->finalize', source: 'validate_intake', target: 'finalize', label: 'approved / flagged' },
   ],
 }
 
@@ -35,27 +35,31 @@ const DYNAMIC_CATALOG: WorkflowCatalog = {
 }
 
 describe('BuilderPage', () => {
-  it('renders the static topology (agent + gate node kinds) and shows a node description on click', async () => {
+  it('renders the static topology as a numbered list and shows a step description + transition on click', async () => {
     vi.mocked(client.getWorkflowCatalog).mockResolvedValue(STATIC_CATALOG)
     render(<BuilderPage />)
 
     expect(await screen.findByText('Intake Agent')).toBeInTheDocument()
     expect(screen.getByText('Harness validates')).toBeInTheDocument()
     expect(screen.getByText('Harness: refit + evaluate once')).toBeInTheDocument()
-    expect(document.querySelectorAll('.react-flow__node')).toHaveLength(STATIC_CATALOG.nodes.length)
+    expect(screen.getAllByTestId(/^step-row-/)).toHaveLength(STATIC_CATALOG.nodes.length)
 
-    fireEvent.click(screen.getByText('Intake Agent'))
-    expect(await screen.findByText('Proposes the target column and identifiers.')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Harness validates'))
+    const sidePanel = (await screen.findByText('Leads to')).closest('.card') as HTMLElement
+    expect(within(sidePanel).getByText('Deterministic check of the proposed DatasetSpec.')).toBeInTheDocument()
+    // branching/transition text: step 2 leads to step 3, labeled "approved / flagged"
+    expect(within(sidePanel).getByText(/approved \/ flagged/)).toBeInTheDocument()
+    expect(within(sidePanel).getByText(/Step 3:/)).toBeInTheDocument()
   })
 
-  it('renders the dynamic catalog (unordered) and shows when_to_use + required_state on click', async () => {
+  it('renders the dynamic catalog (unordered, unnumbered) and shows when_to_use + required_state on click', async () => {
     vi.mocked(client.getWorkflowCatalog).mockResolvedValue(DYNAMIC_CATALOG)
     render(<BuilderPage />)
 
     fireEvent.click(screen.getByRole('radio', { name: 'dynamic' }))
 
     expect(await screen.findByText('Modeling')).toBeInTheDocument()
-    expect(document.querySelectorAll('.react-flow__node')).toHaveLength(DYNAMIC_CATALOG.nodes.length)
+    expect(screen.getAllByTestId(/^step-row-/)).toHaveLength(DYNAMIC_CATALOG.nodes.length)
 
     fireEvent.click(screen.getByText('Modeling'))
     expect(await screen.findByText('Proposes one modeling candidate.')).toBeInTheDocument()

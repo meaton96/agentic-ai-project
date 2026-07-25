@@ -1,4 +1,5 @@
 import type { WorkflowNode } from '../../api/types'
+import type { StepTransition } from '../../domain/workflowSteps'
 
 function formatRequiredState(requiredState: Record<string, unknown>): string {
   return Object.entries(requiredState)
@@ -8,31 +9,32 @@ function formatRequiredState(requiredState: Record<string, unknown>): string {
 
 export interface WorkflowSidePanelProps {
   node: WorkflowNode
+  step: number | null
+  transitions: StepTransition[]
   onClose: () => void
 }
 
-/** Side panel opened by clicking a node — modeled on the run detail
- * timeline's expandable-detail pattern (StepCard), but rendered as a fixed
- * panel since a canvas of draggable nodes doesn't have the vertical list's
- * "expand in place" affordance. Shows exactly what the catalog gave us:
- * full description plus, for the dynamic catalog, `when_to_use` and the
+/** Side panel opened by clicking a step in WorkflowStepList — full
+ * description plus, for the dynamic catalog, `when_to_use` and the
  * `required_state` precondition gate straight from agent_registry.py; for
- * the static topology, its role in the fixed sequence (and the
- * verification node's reject-loopback target, if present). */
-export function WorkflowSidePanel({ node, onClose }: WorkflowSidePanelProps) {
+ * the static topology's steps, every outgoing transition (including
+ * verification's branch: approved/flagged forward vs. rejected looping
+ * back to modeling), derived from the catalog's own edges rather than a
+ * single hand-picked `on_reject` field, so a branch with any number of
+ * outcomes reads the same way. */
+export function WorkflowSidePanel({ node, step, transitions, onClose }: WorkflowSidePanelProps) {
   const whenToUse = typeof node.data.when_to_use === 'string' ? node.data.when_to_use : undefined
   const requiredState =
     node.data.required_state && typeof node.data.required_state === 'object'
       ? (node.data.required_state as Record<string, unknown>)
       : undefined
-  const onReject = typeof node.data.on_reject === 'string' ? node.data.on_reject : undefined
 
   return (
-    <div className="card" style={{ width: 320, position: 'sticky', top: 16 }}>
+    <div className="card">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
         <div>
           <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--color-text-muted)' }}>
-            {node.kind}
+            {step !== null ? `Step ${step} · ${node.kind}` : node.kind}
           </div>
           <h3 style={{ margin: '2px 0 0 0' }}>{node.label}</h3>
         </div>
@@ -65,12 +67,15 @@ export function WorkflowSidePanel({ node, onClose }: WorkflowSidePanelProps) {
         </>
       )}
 
-      {onReject && (
+      {transitions.length > 0 && (
         <>
-          <h4>On reject</h4>
-          <p className="muted" style={{ fontSize: 13, margin: 0 }}>
-            Falls back to the next-best candidate, looping back to <strong>{onReject}</strong>.
-          </p>
+          <h4>Leads to</h4>
+          {transitions.map((t) => (
+            <p key={`${t.targetId}-${t.label ?? ''}`} style={{ fontSize: 13, margin: '0 0 6px 0' }}>
+              {t.label ? `${t.label} → ` : '→ '}
+              <strong>{t.targetStep !== null ? `Step ${t.targetStep}: ` : ''}{t.targetLabel}</strong>
+            </p>
+          ))}
         </>
       )}
     </div>
