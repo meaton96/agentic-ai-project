@@ -26,6 +26,7 @@ from agentic_ml.harness.leaderboard import append_leaderboard_entry
 from agentic_ml.harness.metrics import compute_metrics
 from agentic_ml.harness.timeseries_features import extract_single_flight_raw
 from agentic_ml.harness.verification import build_review_bundle
+from agentic_ml.mcp_facts.provider import ToolProvider
 from agentic_ml.model_client import ModelClient
 from agentic_ml.orchestrator.agent_registry import AGENTS, get_agent, list_agent_summaries
 from agentic_ml.orchestrator.run_state import CandidateSummary, DynamicRunContext, RunStateSummary
@@ -151,6 +152,7 @@ def execute_agent_step(
     trace_fn: Optional[Callable[[dict], None]], write_transcript: Callable[[str, list[dict]], object],
     on_event: Optional[Callable[[dict], None]] = None,
     prompt_override_dir: Optional[str] = None,
+    tool_provider: Optional[ToolProvider] = None,
 ) -> tuple[bool, list[str]]:
     """Executes one already-validated agent step, mutating ctx/state in
     place. Returns (ok, errors). ok=False means this attempt didn't
@@ -162,7 +164,8 @@ def execute_agent_step(
     try:
         if agent_id == "intake":
             result = run_intake_step(ctx.raw_df, ctx.goal, client, model=model, trace_fn=trace_fn,
-                                      on_event=on_event, prompt_override_dir=prompt_override_dir)
+                                      on_event=on_event, prompt_override_dir=prompt_override_dir,
+                                      tool_provider=tool_provider)
             write_transcript("intake", result.messages)
             if not result.ok:
                 return False, result.validation_errors or ["intake agent failed"]
@@ -181,7 +184,7 @@ def execute_agent_step(
                 ctx.engineered_df, ctx.target_column, client,
                 group_column=ctx.group_column, time_column=ctx.time_column,
                 model=model, trace_fn=trace_fn, on_event=on_event,
-                prompt_override_dir=prompt_override_dir,
+                prompt_override_dir=prompt_override_dir, tool_provider=tool_provider,
             )
             write_transcript("feature_engineering", result.messages)
             if not result.ok:
@@ -194,7 +197,7 @@ def execute_agent_step(
         if agent_id == "profiler":
             result = run_profiler_step(ctx.engineered_df, ctx.target_column, client,
                                        model=model, trace_fn=trace_fn, on_event=on_event,
-                                       prompt_override_dir=prompt_override_dir)
+                                       prompt_override_dir=prompt_override_dir, tool_provider=tool_provider)
             write_transcript("profiler", result.messages)
             if not result.ok:
                 return False, ["profiler agent never called get_dataset_profile"]
@@ -233,7 +236,7 @@ def execute_agent_step(
                 train_idx=ctx.manifest.train_idx, val_idx=ctx.manifest.val_idx,
                 client=client, model=model, metric_names=ctx.metric_names, seed=ctx.seed,
                 already_tried_template_ids=ctx.tried_template_ids, trace_fn=trace_fn, on_event=on_event,
-                prompt_override_dir=prompt_override_dir,
+                prompt_override_dir=prompt_override_dir, tool_provider=tool_provider,
             )
             write_transcript("modeling", result.messages)
             if result.template_id:
@@ -265,7 +268,8 @@ def execute_agent_step(
                 profiler_report=ctx.profiler_report,
             )
             result = run_verification_step(bundle, client, model=verification_model, trace_fn=trace_fn,
-                                            on_event=on_event, prompt_override_dir=prompt_override_dir)
+                                            on_event=on_event, prompt_override_dir=prompt_override_dir,
+                                            tool_provider=tool_provider)
             write_transcript("verification", result.messages)
             for c in state.candidates:
                 if c.candidate_id == candidate_id:
@@ -355,7 +359,7 @@ def execute_agent_step(
                 "n_examples_accumulated_since_last_retrain": n_examples_since_last_train,
             }
             result = run_retrain_decision_step(monitoring_context, client, model=model, trace_fn=trace_fn,
-                                                on_event=on_event)
+                                                on_event=on_event, tool_provider=tool_provider)
             write_transcript("retrain_decision", result.messages)
             state.pending_retrain_action = result.action
             state.last_action = f"retrain_decision: {result.action} ({result.reasoning or 'n/a'})"
@@ -461,7 +465,8 @@ def execute_agent_step(
             result = run_deep_dive_step(
                 flight_df, feature_row, pipeline, feature_columns, background, client,
                 model=model, trace_fn=trace_fn, on_event=on_event,
-                prompt_override_dir=prompt_override_dir,
+                prompt_override_dir=prompt_override_dir, tool_provider=tool_provider,
+                flight_id=str(flight_id),
             )
             write_transcript("deep_dive", result.messages)
             ctx.deep_dive_results[str(flight_id)] = result
@@ -516,6 +521,7 @@ def run_dynamic_loop(
     write_transcript: Optional[Callable[[str, list[dict]], object]] = None,
     on_event: Optional[Callable[[dict], None]] = None,
     prompt_override_dir: Optional[str] = None,
+    tool_provider: Optional[ToolProvider] = None,
 ) -> DynamicLoopResult:
     write_transcript = write_transcript or (lambda name, messages: None)
     history: list[dict] = []
@@ -535,7 +541,7 @@ def run_dynamic_loop(
             planner_result = run_planner_step(
                 ctx.goal, state_dict, available_agents, iteration, max_iterations,
                 client, model=model, previous_error=previous_error, trace_fn=trace_fn, on_event=on_event,
-                prompt_override_dir=prompt_override_dir,
+                prompt_override_dir=prompt_override_dir, tool_provider=tool_provider,
             )
             write_transcript("planner", planner_result.messages)
             if not planner_result.ok:
@@ -577,6 +583,7 @@ def run_dynamic_loop(
         ok, errors = execute_agent_step(
             agent_id, step_args, ctx, state, client, model, verification_model,
             trace_fn, write_transcript, on_event=on_event, prompt_override_dir=prompt_override_dir,
+            tool_provider=tool_provider,
         )
         state.last_action = f"{agent_id}: {'OK' if ok else 'FAILED - ' + '; '.join(errors)}"
         history.append({

@@ -20,9 +20,9 @@ from typing import Callable, Optional
 
 from agentic_ml.agent_runtime import ToolCallingAgent
 from agentic_ml.events import emit_event
+from agentic_ml.mcp_facts.provider import LocalToolProvider, ToolProvider
 from agentic_ml.model_client import ModelClient
 from agentic_ml.prompt_loader import load_prompt, prompt_source, resolve_prompt_override_dir
-from agentic_ml.tools.verification_tool import make_review_bundle_tool
 
 VALID_VERDICTS = {"approved", "flagged", "rejected"}
 
@@ -47,6 +47,7 @@ def run_verification_step(
     trace_fn: Optional[Callable[[dict], None]] = None,
     on_event: Optional[Callable[[dict], None]] = None,
     prompt_override_dir: Optional[str] = None,
+    tool_provider: Optional[ToolProvider] = None,
 ) -> VerificationStepResult:
     resolved_override_dir = resolve_prompt_override_dir(prompt_override_dir)
     prompt_src, prompt_path = prompt_source("verification", resolved_override_dir)
@@ -54,7 +55,8 @@ def run_verification_step(
     emit_event(on_event, "verification", "prompt_loaded", {"source": prompt_src, "path": str(prompt_path)})
     emit_event(on_event, "verification", "agent_started", {"candidate_id": bundle.get("candidate_id")})
 
-    tool = make_review_bundle_tool(bundle)
+    provider = tool_provider or LocalToolProvider()
+    tool = provider.make_review_bundle_tool(bundle)
     agent = ToolCallingAgent(
         model_client=client, tools=[tool], system_prompt=system_prompt,
         model=model, max_turns=max_turns,

@@ -23,10 +23,9 @@ import pandas as pd
 from agentic_ml.agent_runtime import ToolCallingAgent
 from agentic_ml.events import emit_event
 from agentic_ml.harness.feature_engineering import apply_feature_op, validate_feature_proposal
+from agentic_ml.mcp_facts.provider import LocalToolProvider, ToolProvider
 from agentic_ml.model_client import ModelClient
 from agentic_ml.prompt_loader import load_prompt, prompt_source, resolve_prompt_override_dir
-from agentic_ml.tools.feature_tool import make_list_feature_ops_tool
-from agentic_ml.tools.profiler_tool import make_profiler_tool
 
 
 @dataclass
@@ -54,6 +53,7 @@ def run_feature_engineering_step(
     trace_fn: Optional[Callable[[dict], None]] = None,
     on_event: Optional[Callable[[dict], None]] = None,
     prompt_override_dir: Optional[str] = None,
+    tool_provider: Optional[ToolProvider] = None,
 ) -> FeatureEngineeringStepResult:
     resolved_override_dir = resolve_prompt_override_dir(prompt_override_dir)
     prompt_src, prompt_path = prompt_source("feature_engineering", resolved_override_dir)
@@ -61,7 +61,8 @@ def run_feature_engineering_step(
     emit_event(on_event, "feature_engineering", "prompt_loaded", {"source": prompt_src, "path": str(prompt_path)})
     emit_event(on_event, "feature_engineering", "agent_started", {"target_column": target_column})
 
-    tools = [make_profiler_tool(df, target_column), make_list_feature_ops_tool()]
+    provider = tool_provider or LocalToolProvider()
+    tools = [provider.make_profiler_tool(df, target_column), provider.make_list_feature_ops_tool()]
     agent = ToolCallingAgent(
         model_client=client, tools=tools, system_prompt=system_prompt,
         model=model, max_turns=max_turns,

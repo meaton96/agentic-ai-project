@@ -46,6 +46,8 @@ import joblib
 from agentic_ml.cli_common import make_run_dir, make_tracer, make_transcript_writer, resolve_model_endpoint
 from agentic_ml.events import make_event_emitter, make_event_logger
 from agentic_ml.harness.dataset import read_dataframe
+from agentic_ml.mcp_facts.provider import McpToolProvider
+from agentic_ml.mcp_facts.transport import HttpMcpTransport
 from agentic_ml.model_client import ModelClient
 from agentic_ml.orchestrator.dynamic_loop import load_raw_hash, run_dynamic_loop
 from agentic_ml.orchestrator.run_state import DynamicRunContext, RunStateSummary
@@ -84,6 +86,12 @@ def main(on_event: Optional[Callable[[dict], None]] = None, prompt_override_dir:
                          "<agent_name>.md system-prompt overrides (falls back to the shipped "
                          "default for any agent not present there); defaults to the "
                          "AGENTIC_ML_PROMPT_OVERRIDE_DIR env var if not given")
+    parser.add_argument("--use-mcp", action="store_true", help="fetch agent tool facts "
+                         "through the MCP fact server (mcp_facts/server.py) instead of "
+                         "in-process closures — requires scripts/run_mcp_server.py to "
+                         "already be running at --mcp-url")
+    parser.add_argument("--mcp-url", default="http://127.0.0.1:8765/mcp", help="MCP "
+                         "server URL, only used when --use-mcp is given")
     args = parser.parse_args()
 
     # the function argument (e.g. a future server calling main() directly) wins
@@ -94,6 +102,7 @@ def main(on_event: Optional[Callable[[dict], None]] = None, prompt_override_dir:
     )
 
     run_id, run_dir = make_run_dir(args.run_id)
+    tool_provider = McpToolProvider(run_id, HttpMcpTransport(args.mcp_url)) if args.use_mcp else None
     trace = make_tracer(run_dir / "trace.jsonl")
     write_transcript = make_transcript_writer(run_dir)
     emit = make_event_emitter(run_id, external_on_event=on_event, persist_fn=make_event_logger(run_dir))
@@ -150,12 +159,15 @@ def main(on_event: Optional[Callable[[dict], None]] = None, prompt_override_dir:
     print(f"Starting dynamic orchestrator (model={default_model}, "
           f"verification_model={verification_model}, max_iterations={args.max_iterations})")
     print(f"Goal: {args.goal or '(none given)'}")
+    if args.use_mcp:
+        print(f"Tool facts served over MCP at {args.mcp_url}")
 
     result = run_dynamic_loop(
         ctx, state, client, model=default_model, verification_model=verification_model,
         max_iterations=args.max_iterations,
         trace_fn=lambda record: trace(**record), write_transcript=write_transcript,
         on_event=emit, prompt_override_dir=effective_prompt_override_dir,
+        tool_provider=tool_provider,
     )
 
     for entry in result.history:

@@ -527,6 +527,51 @@ this is evaluated against.
   moving on, the "try again" behavior discussed as a future sandbox
   search loop showing up unprompted.
 
+**MCP fact server (opt-in; separates the agent-tool channel from the
+in-process runtime without touching the trust boundary):**
+- `src/agentic_ml/mcp_facts/` — an MCP (Model Context Protocol) server
+  exposing the same facts `tools/*.py` already hands agents, over a
+  real standard instead of Python closures. Built as a strict *fact
+  server*, not a compute server: the harness computes every fact with
+  the exact same calls the in-process handlers already make
+  (`fact_store.py` persists the result as JSON under
+  `runs/<run_id>/facts/` — filesystem-first, like everything else in
+  `runs/`); `server.py` (FastMCP) only ever reads that directory back,
+  plus two static registries (`list_templates`, `list_feature_ops`)
+  computed live. No dataframe, fitted pipeline, or raw file path ever
+  crosses the process boundary.
+- `provider.py`'s `ToolProvider` seam: every `steps/*_step.py` function
+  gained an optional `tool_provider` parameter (default `None` ->
+  `LocalToolProvider`, today's exact in-process behavior — every
+  existing script and test is untouched). `McpToolProvider` builds its
+  `Tool`s by constructing the local one and rebinding only its
+  handler, so name/description/schema parity between the two providers
+  is structural, not just tested — see
+  `tests/test_mcp_facts.py::test_provider_parity_*`, which would fail
+  if the MCP path ever served a different fact than agents see today.
+- `transport.py` — a sync facade over the MCP client session, since
+  everything upstream (`ToolCallingAgent`, `steps/*.py`) is plain
+  synchronous code: `HttpMcpTransport` for a real server
+  (`scripts/run_mcp_server.py`), `InMemoryMcpTransport` (built on the
+  `mcp` SDK's in-process session helper) for tests — no network, no
+  real model, same hermetic-test discipline as everywhere else.
+- `scripts/run_dynamic_orchestrator.py --use-mcp [--mcp-url ...]`
+  wires an `McpToolProvider` through `run_dynamic_loop` end to end;
+  every other entry point is unaffected until it opts in the same way.
+- `tests/test_mcp_facts.py` — fact-store round-trips and a typed
+  missing-fact error, the server serving a persisted fact over a real
+  (in-memory) MCP session, an unknown `run_id` producing a structured
+  MCP error rather than a crash, `enabled_tools` config actually
+  removing a tool from what's registered, registry parity for the two
+  static tools, and the provider-parity design-claim test above for
+  all 8 tool factories.
+- `tests/test_mcp_dynamic_orchestrator.py` — the same scripted
+  intake -> ... -> summarize run as `test_dynamic_orchestrator.py`'s
+  parity test, driven through `McpToolProvider` (in-memory transport)
+  instead of the default provider, producing the identical executed-
+  agent sequence and final metrics, with the facts persisted along the
+  way readable back off disk afterward.
+
 **Not yet built:** priors/evidence reuse (Phase 6), parallelization
 (Phase 7). The streaming/drift scenario discussed for a later phase
 (simulate incoming data, a monitoring agent decides when to trigger a
@@ -623,6 +668,18 @@ python scripts/run_dynamic_orchestrator.py \
 #      -> straight to deep_dive, classification never runs):
 jupyter notebook notebooks/dynamic_orchestrator.ipynb
 
+# 8.2. Or route the dynamic orchestrator's agent-tool facts over MCP
+#      instead of in-process closures (opt-in; --use-mcp needs the
+#      server below already running):
+python scripts/run_mcp_server.py &   # terminal 1
+python scripts/run_dynamic_orchestrator.py \
+    --data datasets/raw/your_dataset.csv \
+    --goal "predict your_target_column" \
+    --use-mcp                          # terminal 2
+
+#      ...or inspect the exposed tools interactively:
+npx @modelcontextprotocol/inspector
+
 # 8.5. (aviation/time-series datasets only, binary target) explain why
 #      one already-flagged flight was flagged — needs the model bundle
 #      step 7 just saved to artifacts/models/<run_id>_model.joblib:
@@ -646,6 +703,7 @@ agentic-ml/
 
   configs/
     litellm.yaml           # model routing + fallback chains
+    mcp_server.json         # mcp_facts server: host/port/enabled_tools
     schemas/                # JSON schemas for dataset/candidate specs
 
   priors/
@@ -685,6 +743,14 @@ agentic-ml/
                                # deep_dive_tool.py, planner_tool.py — thin
                                # bindings exposing harness facts/registry data
                                # to agents as tool calls
+    mcp_facts/                 # opt-in MCP fact server, see build log above:
+                               # fact_store.py (JSON persistence under
+                               # runs/<run_id>/facts/), server.py (FastMCP,
+                               # reads that dir back + the two static
+                               # registries), provider.py (LocalToolProvider
+                               # default / McpToolProvider), transport.py
+                               # (sync facade: HttpMcpTransport,
+                               # InMemoryMcpTransport for tests)
     templates/                # Phase 3 recipe templates + registry.py
       sources/                 # verified build_pipeline(config) .py files
     steps/                    # intake_step.py, profiler_step.py, modeling_step.py,
@@ -720,6 +786,9 @@ agentic-ml/
                                # remains the evaluation baseline
     evaluate_dynamic_orchestrator.py  # real-LLM parity/task-routing/adversarial
                                # evaluation, writes runs/dynamic_eval_report.md
+    run_mcp_server.py          # runs mcp_facts/server.py (FastMCP, streamable
+                               # HTTP); pair with run_dynamic_orchestrator.py
+                               # --use-mcp, config at configs/mcp_server.json
 
   notebooks/
     end_to_end_pipeline.ipynb # same steps/* functions as the scripts, one

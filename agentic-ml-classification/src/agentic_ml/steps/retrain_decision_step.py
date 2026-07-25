@@ -27,8 +27,8 @@ from typing import Callable, Optional
 
 from agentic_ml.agent_runtime import ToolCallingAgent
 from agentic_ml.events import emit_event
+from agentic_ml.mcp_facts.provider import LocalToolProvider, ToolProvider
 from agentic_ml.model_client import ModelClient
-from agentic_ml.tools.retrain_decision_tool import make_monitoring_context_tool
 
 VALID_ACTIONS = {"no_action", "infer_only", "retrain"}
 
@@ -87,10 +87,12 @@ def run_retrain_decision_step(
     max_turns: int = 4,
     trace_fn: Optional[Callable[[dict], None]] = None,
     on_event: Optional[Callable[[dict], None]] = None,
+    tool_provider: Optional[ToolProvider] = None,
 ) -> RetrainDecisionStepResult:
     emit_event(on_event, "retrain_decision", "agent_started", {})
 
-    tool = make_monitoring_context_tool(monitoring_context)
+    provider = tool_provider or LocalToolProvider()
+    tool = provider.make_monitoring_context_tool(monitoring_context)
     agent = ToolCallingAgent(
         model_client=client, tools=[tool], system_prompt=SYSTEM_PROMPT,
         model=model, max_turns=max_turns,

@@ -24,9 +24,10 @@ import pandas as pd
 
 from agentic_ml.agent_runtime import ToolCallingAgent
 from agentic_ml.events import emit_event
+from agentic_ml.mcp_facts.provider import LocalToolProvider, ToolProvider
 from agentic_ml.model_client import ModelClient
 from agentic_ml.prompt_loader import load_prompt, prompt_source, resolve_prompt_override_dir
-from agentic_ml.tools.deep_dive_tool import gather_deep_dive_evidence, make_deep_dive_evidence_tool
+from agentic_ml.tools.deep_dive_tool import gather_deep_dive_evidence
 
 VALID_CONFIDENCE = {"high", "medium", "low"}
 
@@ -93,6 +94,8 @@ def run_deep_dive_step(
     trace_fn: Optional[Callable[[dict], None]] = None,
     on_event: Optional[Callable[[dict], None]] = None,
     prompt_override_dir: Optional[str] = None,
+    tool_provider: Optional[ToolProvider] = None,
+    flight_id: Optional[str] = None,
 ) -> DeepDiveStepResult:
     resolved_override_dir = resolve_prompt_override_dir(prompt_override_dir)
     prompt_src, prompt_path = prompt_source("deep_dive", resolved_override_dir)
@@ -100,9 +103,10 @@ def run_deep_dive_step(
     emit_event(on_event, "deep_dive", "prompt_loaded", {"source": prompt_src, "path": str(prompt_path)})
     emit_event(on_event, "deep_dive", "agent_started", {})
 
-    tool = make_deep_dive_evidence_tool(
+    provider = tool_provider or LocalToolProvider()
+    tool = provider.make_deep_dive_evidence_tool(
         flight_df, feature_row, pipeline, feature_columns, background,
-        sample_hz=sample_hz, loc_thresholds=loc_thresholds,
+        sample_hz=sample_hz, loc_thresholds=loc_thresholds, flight_id=flight_id,
     )
     agent = ToolCallingAgent(
         model_client=client, tools=[tool], system_prompt=system_prompt,

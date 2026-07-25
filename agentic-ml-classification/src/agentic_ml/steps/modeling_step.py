@@ -39,11 +39,10 @@ from agentic_ml.events import emit_event
 from agentic_ml.harness.leakage import check_suspicious_feature_correlation, label_permutation_test
 from agentic_ml.harness.sandbox import run_candidate_build
 from agentic_ml.harness.metrics import compute_metrics, roc_auc_any
+from agentic_ml.mcp_facts.provider import LocalToolProvider, ToolProvider
 from agentic_ml.model_client import ModelClient
 from agentic_ml.prompt_loader import load_prompt, prompt_source, resolve_prompt_override_dir
 from agentic_ml.templates.registry import get_template, validate_config
-from agentic_ml.tools.profiler_tool import make_profiler_tool
-from agentic_ml.tools.template_tool import make_list_templates_tool
 
 
 def _validate_candidate_spec_shape(obj) -> list[str]:
@@ -129,6 +128,7 @@ def run_modeling_step(
     trace_fn: Optional[Callable[[dict], None]] = None,
     on_event: Optional[Callable[[dict], None]] = None,
     prompt_override_dir: Optional[str] = None,
+    tool_provider: Optional[ToolProvider] = None,
 ) -> ModelingStepResult:
     if metric_names is None:
         metric_names = ["roc_auc", "pr_auc", "f1", "accuracy"]
@@ -145,7 +145,8 @@ def run_modeling_step(
             "Prefer proposing a different template_id unless you have a strong reason not to."
         )
 
-    tools = [make_profiler_tool(full_df, target_column), make_list_templates_tool()]
+    provider = tool_provider or LocalToolProvider()
+    tools = [provider.make_profiler_tool(full_df, target_column), provider.make_list_templates_tool()]
     agent = ToolCallingAgent(
         model_client=client, tools=tools, system_prompt=system_prompt,
         model=model, max_turns=max_turns,
