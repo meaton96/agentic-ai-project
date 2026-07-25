@@ -27,6 +27,11 @@ export interface LaunchRunRequest {
   model_endpoint?: ModelEndpoint
   skip_feature_engineering?: boolean
   use_prompt_overrides?: boolean
+  // Dynamic-orchestrator only (run_orchestrator.py/static has no --use-mcp
+  // flag at all) — fetches agent tool facts through the MCP fact server
+  // instead of in-process closures. See GET /api/mcp/config for what that
+  // server is currently configured to serve.
+  use_mcp?: boolean
 }
 
 export interface LaunchRunResponse {
@@ -140,4 +145,28 @@ export interface WorkflowEdge {
 export interface WorkflowCatalog {
   nodes: WorkflowNode[]
   edges: WorkflowEdge[]
+}
+
+// GET /api/mcp/config — read-only view of the pipeline's MCP fact server
+// (agentic_ml.mcp_facts.server): configs/mcp_server.json plus the tool
+// catalog that config would register, straight off the real FastMCP tool
+// registry. `reachable` is a best-effort TCP check only (no MCP handshake) —
+// this app never starts/stops that server process itself.
+export interface McpToolInfo {
+  name: string
+  description: string
+  input_schema: Record<string, unknown>
+  enabled: boolean
+}
+
+export interface McpConfigResponse {
+  config_path: string
+  config_exists: boolean
+  name: string
+  host: string
+  port: number
+  url: string
+  enabled_tools: string[]
+  reachable: boolean
+  tools: McpToolInfo[]
 }

@@ -82,6 +82,7 @@ describe('LaunchPage', () => {
       model_endpoint: 'rit',
       skip_feature_engineering: false,
       use_prompt_overrides: false,
+      use_mcp: false,
     })
     expect(mockNavigate).toHaveBeenCalledWith('/runs/run_new123')
   })
@@ -117,6 +118,41 @@ describe('LaunchPage', () => {
 
     await waitFor(() => expect(client.launchRun).toHaveBeenCalledTimes(1))
     expect(client.launchRun).toHaveBeenCalledWith(expect.objectContaining({ use_prompt_overrides: true }))
+  })
+
+  it('disables the MCP toggle for the static orchestrator and enables it for dynamic', async () => {
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter>
+        <LaunchPage />
+      </MemoryRouter>,
+    )
+    await screen.findByDisplayValue('churn.csv')
+
+    const mcpToggle = screen.getByLabelText(/Fetch tool facts via MCP/)
+    expect(mcpToggle).toBeDisabled()
+
+    await user.click(screen.getByLabelText('dynamic'))
+    expect(mcpToggle).toBeEnabled()
+  })
+
+  it('includes use_mcp: true in the payload when checked on a dynamic run', async () => {
+    vi.mocked(client.launchRun).mockResolvedValue({ run_id: 'run_new789', status: 'running' })
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter>
+        <LaunchPage />
+      </MemoryRouter>,
+    )
+    await screen.findByDisplayValue('churn.csv')
+
+    await user.click(screen.getByLabelText('dynamic'))
+    await user.click(screen.getByLabelText(/Fetch tool facts via MCP/))
+    await user.type(screen.getByLabelText(/Goal/), 'predict churn')
+    await user.click(screen.getByRole('button', { name: /Launch run/ }))
+
+    await waitFor(() => expect(client.launchRun).toHaveBeenCalledTimes(1))
+    expect(client.launchRun).toHaveBeenCalledWith(expect.objectContaining({ use_mcp: true }))
   })
 
   it('shows an error and does not navigate if launching fails', async () => {

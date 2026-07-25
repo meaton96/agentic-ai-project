@@ -5,6 +5,7 @@ import { LaunchPage } from './pages/LaunchPage'
 import { LeaderboardPage } from './pages/LeaderboardPage'
 import { PromptsPage } from './pages/PromptsPage'
 import { BuilderPage } from './pages/BuilderPage'
+import { McpPage } from './pages/McpPage'
 
 function Nav() {
   return (
@@ -25,6 +26,9 @@ function Nav() {
       <NavLink to="/builder" className={({ isActive }) => (isActive ? 'active' : '')}>
         Builder
       </NavLink>
+      <NavLink to="/mcp" className={({ isActive }) => (isActive ? 'active' : '')}>
+        MCP
+      </NavLink>
     </nav>
   )
 }
@@ -42,6 +46,7 @@ export function App() {
             <Route path="/leaderboard" element={<LeaderboardPage />} />
             <Route path="/prompts" element={<PromptsPage />} />
             <Route path="/builder" element={<BuilderPage />} />
+            <Route path="/mcp" element={<McpPage />} />
           </Routes>
         </main>
       </div>

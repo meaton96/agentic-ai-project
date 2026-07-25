@@ -67,6 +67,7 @@ from typing import Callable, Literal, Optional
 from agentic_ml.paths import run_dir as resolve_run_dir
 from agentic_ml.prompt_loader import PROMPT_OVERRIDE_DIR_ENV_VAR
 
+from server.mcp_config import mcp_server_url, resolve_mcp_settings
 from server.prompts import resolve_override_dir
 
 Orchestrator = Literal["static", "dynamic"]
@@ -92,6 +93,7 @@ class RunConfig:
     model_endpoint: ModelEndpoint = "rit"
     skip_feature_engineering: bool = False
     use_prompt_overrides: bool = False
+    use_mcp: bool = False
 
 
 class RunAlreadyActiveError(Exception):
@@ -110,18 +112,6 @@ class TrackedRun:
     exit_code: Optional[int] = None
     error: Optional[str] = None
     process: Optional[multiprocessing.Process] = field(default=None, repr=False)
-
-
-def _pipeline_repo_root() -> Path:
-    """Locates the agentic-ml-classification checkout via the installed
-    `agentic_ml` package itself, rather than assuming a relative path from
-    this repo's cwd (../agentic-ml-classification only holds if the server
-    happens to run from this repo's directory, which CLAUDE.md says not to
-    assume)."""
-    import agentic_ml
-
-    # src/agentic_ml/__init__.py -> parents[0]=agentic_ml, [1]=src, [2]=repo root
-    return Path(agentic_ml.__file__).resolve().parents[2]
 
 
 def build_argv(run_id: str, config: RunConfig) -> list[str]:
@@ -144,6 +134,17 @@ def build_argv(run_id: str, config: RunConfig) -> list[str]:
             argv += ["--max-candidates", str(config.max_candidates)]
         if config.skip_feature_engineering:
             argv += ["--skip-feature-engineering"]
+
+    if config.orchestrator == "dynamic" and config.use_mcp:
+        # run_orchestrator.py (static) has no --use-mcp flag at all — this
+        # is deliberately gated on orchestrator, not just the checkbox, so
+        # a stray use_mcp=True on a static launch is silently a no-op rather
+        # than a CLI argparse error inside the launched child. The URL is
+        # resolved from this app's own configs/mcp_server.json read (see
+        # mcp_config.py) rather than relying on run_dynamic_orchestrator.
+        # py's own --mcp-url default, so a deployment that points that
+        # config file at a different host/port is honored automatically.
+        argv += ["--use-mcp", "--mcp-url", mcp_server_url(resolve_mcp_settings())]
 
     if config.use_prompt_overrides:
         # Explicit path, always — see _run_with_env's PROMPT_OVERRIDE_DIR_ENV_VAR
@@ -170,7 +171,9 @@ def default_launch_run(
     inherit the parent's memory (see module docstring). Must be a
     module-level (picklable-by-reference) function; a closure or lambda
     can't cross the forkserver boundary."""
-    scripts_dir = str(_pipeline_repo_root() / "scripts")
+    from server.pipeline_paths import pipeline_repo_root
+
+    scripts_dir = str(pipeline_repo_root() / "scripts")
     if scripts_dir not in sys.path:
         sys.path.insert(0, scripts_dir)
 

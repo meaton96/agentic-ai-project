@@ -25,6 +25,11 @@ class LaunchRunRequest(BaseModel):
     model_endpoint: ModelEndpoint = "rit"
     skip_feature_engineering: bool = False
     use_prompt_overrides: bool = False
+    use_mcp: bool = Field(
+        default=False,
+        description="Fetch agent tool facts through the MCP fact server instead of "
+        "in-process closures (dynamic orchestrator only — a no-op for static).",
+    )
 
 
 class LaunchRunResponse(BaseModel):
@@ -70,3 +75,22 @@ class WorkflowEdge(BaseModel):
 class WorkflowCatalogResponse(BaseModel):
     nodes: list[WorkflowNode]
     edges: list[WorkflowEdge]
+
+
+class McpToolInfo(BaseModel):
+    name: str
+    description: str
+    input_schema: dict
+    enabled: bool
+
+
+class McpConfigResponse(BaseModel):
+    config_path: str
+    config_exists: bool
+    name: str
+    host: str
+    port: int
+    url: str
+    enabled_tools: list[str]
+    reachable: bool
+    tools: list[McpToolInfo]

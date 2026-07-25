@@ -21,12 +21,14 @@ from agentic_ml.paths import leaderboard_path as resolve_leaderboard_path
 from agentic_ml.paths import run_dir as resolve_run_dir
 
 from server.events_io import stream_event_lines
+from server.mcp_config import get_mcp_overview
 from server.prompts import delete_override, get_prompt_info, list_known_agents, write_override
 from server.run_manager import RunAlreadyActiveError, RunConfig, RunManager
 from server.schemas import (
     DatasetInfo,
     LaunchRunRequest,
     LaunchRunResponse,
+    McpConfigResponse,
     PromptInfo,
     PromptOverrideRequest,
     WorkflowCatalogResponse,
@@ -89,6 +91,7 @@ def launch_run(body: LaunchRunRequest, request: Request) -> LaunchRunResponse:
         model_endpoint=body.model_endpoint,
         skip_feature_engineering=body.skip_feature_engineering,
         use_prompt_overrides=body.use_prompt_overrides,
+        use_mcp=body.use_mcp,
     )
     try:
         tracked = run_manager.start_run(config)
@@ -232,3 +235,15 @@ def delete_prompt_override(agent: str) -> PromptInfo:
     _require_known_agent(agent)
     delete_override(agent)
     return PromptInfo(**get_prompt_info(agent))
+
+
+# --- mcp ------------------------------------------------------------------
+# Read-only: configs/mcp_server.json and the tool catalog it would serve,
+# per agentic_ml.mcp_facts.server. This never starts or stops that server
+# process (see scripts/run_mcp_server.py) — `reachable` only reports
+# whether something is already listening at the configured host/port.
+
+
+@router.get("/api/mcp/config", response_model=McpConfigResponse)
+def get_mcp_config() -> McpConfigResponse:
+    return McpConfigResponse(**get_mcp_overview())

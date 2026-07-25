@@ -7,6 +7,7 @@ import type {
   LaunchRunRequest,
   LaunchRunResponse,
   LeaderboardEntry,
+  McpConfigResponse,
   PromptInfo,
   RunSummary,
   TranscriptMessage,
@@ -91,6 +92,10 @@ export function deletePromptOverride(agent: string): Promise<PromptInfo> {
 
 export function getWorkflowCatalog(type: WorkflowCatalogType): Promise<WorkflowCatalog> {
   return request(`/api/workflow-catalog?type=${encodeURIComponent(type)}`)
+}
+
+export function getMcpConfig(): Promise<McpConfigResponse> {
+  return request('/api/mcp/config')
 }
 
 // Not fetched via `request` — this is handed to `new EventSource(...)` by
