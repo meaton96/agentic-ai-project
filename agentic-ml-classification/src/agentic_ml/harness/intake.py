@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass
 
 import pandas as pd
 
+from .column_grouping import group_columns_by_pattern
 from .profiler import DATETIME_NAME_HINTS, GROUP_NAME_HINTS, ID_NAME_HINTS, _looks_like_datetime, _name_hints
 
 # Upper bound on distinct target values accepted as classification labels.
@@ -59,7 +60,7 @@ def raw_schema_summary(df: pd.DataFrame) -> dict:
             name_suggests_group=_name_hints(col, GROUP_NAME_HINTS),
             looks_like_datetime=_looks_like_datetime(series) or _name_hints(col, DATETIME_NAME_HINTS),
         ).to_dict())
-    return {"n_rows": n_rows, "n_columns": len(df.columns), "columns": columns}
+    return {"n_rows": n_rows, "n_columns": len(df.columns), "columns": group_columns_by_pattern(columns)}
 
 
 def validate_dataset_spec_proposal(df: pd.DataFrame, proposal: dict) -> list[str]:

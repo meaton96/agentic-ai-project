@@ -47,13 +47,26 @@ AGENTS: dict[str, AgentSpec] = {
     spec.agent_id: spec
     for spec in [
         AgentSpec(
+            agent_id="featurize_timeseries",
+            title="Featurize Time-Series",
+            description="Deterministic (no LLM): rolls up a raw long-format time-series "
+                        "CSV (many rows per example, e.g. one row per sensor reading per "
+                        "timestep) into one row per example, using this run's configured "
+                        "rollup engine. Neither intake nor any other agent can see this "
+                        "dataset's schema until this has run.",
+            when_to_use="Whenever the harness has detected this dataset is long-format "
+                        "time-series data that hasn't been rolled up yet — always the "
+                        "very first step for such a dataset, before intake.",
+            required_state={"looks_long_format": True, "featurization_done": False},
+        ),
+        AgentSpec(
             agent_id="intake",
             title="Intake",
             description="Proposes which column is the prediction target and which are "
                         "identifiers/group/time columns, from raw schema facts alone.",
             when_to_use="First step, whenever the target column isn't already known "
                         "(no --target was given).",
-            required_state={"target_known": False},
+            required_state={"target_known": False, "data_ready": True},
         ),
         AgentSpec(
             agent_id="feature_engineering",
@@ -65,7 +78,7 @@ AGENTS: dict[str, AgentSpec] = {
             when_to_use="Immediately after the target is known, exactly once, even if it "
                         "ends up proposing no changes — profiler and everything downstream "
                         "need a settled column set to work from.",
-            required_state={"target_known": True, "feature_engineering_done": False},
+            required_state={"target_known": True, "feature_engineering_done": False, "data_ready": True},
         ),
         AgentSpec(
             agent_id="profiler",

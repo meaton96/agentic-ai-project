@@ -168,7 +168,33 @@ def test_provider_parity_dataset_profile(sample_df):
     mcp = McpToolProvider("run_parity", _server_transport()).make_profiler_tool(sample_df, "churned")
     assert (local.name, local.description, local.parameters) == (mcp.name, mcp.description, mcp.parameters)
     assert local.handler() == mcp.handler()
-    assert local.handler() == profile_dataset(sample_df, target_column="churned").to_dict()
+    # the served fact is build_profile_fact — profile_dataset's report plus
+    # the declared-role annotations (declared_group_column /
+    # declared_time_column / excluded_columns); everything the profiler
+    # computed must still be present verbatim underneath.
+    payload = local.handler()
+    expected_report = profile_dataset(sample_df, target_column="churned").to_dict()
+    assert {k: v for k, v in payload.items() if k in expected_report} == expected_report
+    assert payload["declared_group_column"] is None
+    assert payload["declared_time_column"] is None
+    assert "churned" in payload["excluded_columns"]
+
+
+def test_provider_parity_dataset_profile_with_declared_columns(sample_df):
+    """Both providers must serve identical declared-role annotations —
+    parity breaking exactly on the do-not-use column list is the failure
+    mode that burned 8 modeling iterations on a real NGAFID run (the
+    agent could not see 'date_diff' was the declared time column and
+    proposed it over and over, each time correctly rejected)."""
+    df = sample_df.assign(customer_id=["C1", "C1", "C2", "C2", "C3"], day=[1, 2, 1, 2, 1])
+    args = (df, "churned", "customer_id", "day")
+    local = LocalToolProvider().make_profiler_tool(*args)
+    mcp = McpToolProvider("run_parity_declared", _server_transport()).make_profiler_tool(*args)
+    payload = local.handler()
+    assert payload == mcp.handler()
+    assert payload["declared_group_column"] == "customer_id"
+    assert payload["declared_time_column"] == "day"
+    assert {"churned", "customer_id", "day"} <= set(payload["excluded_columns"])
 
 
 def test_provider_parity_list_templates():

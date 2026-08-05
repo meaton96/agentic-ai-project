@@ -34,7 +34,6 @@ import pandas as pd
 
 from agentic_ml.agent_runtime import Tool
 from agentic_ml.harness.intake import raw_schema_summary
-from agentic_ml.harness.profiler import profile_dataset
 from agentic_ml.mcp_facts.fact_store import write_fact
 from agentic_ml.mcp_facts.transport import McpTransport
 from agentic_ml.tools import (
@@ -47,7 +46,10 @@ from agentic_ml.tools.deep_dive_tool import gather_deep_dive_evidence
 class ToolProvider(Protocol):
     def make_raw_schema_tool(self, df: pd.DataFrame) -> Tool: ...
 
-    def make_profiler_tool(self, df: pd.DataFrame, target_column: str) -> Tool: ...
+    def make_profiler_tool(
+        self, df: pd.DataFrame, target_column: str,
+        group_column: Optional[str] = None, time_column: Optional[str] = None,
+    ) -> Tool: ...
 
     def make_list_templates_tool(self) -> Tool: ...
 
@@ -79,8 +81,11 @@ class LocalToolProvider:
     def make_raw_schema_tool(self, df: pd.DataFrame) -> Tool:
         return intake_tool.make_raw_schema_tool(df)
 
-    def make_profiler_tool(self, df: pd.DataFrame, target_column: str) -> Tool:
-        return profiler_tool.make_profiler_tool(df, target_column)
+    def make_profiler_tool(
+        self, df: pd.DataFrame, target_column: str,
+        group_column: Optional[str] = None, time_column: Optional[str] = None,
+    ) -> Tool:
+        return profiler_tool.make_profiler_tool(df, target_column, group_column, time_column)
 
     def make_list_templates_tool(self) -> Tool:
         return template_tool.make_list_templates_tool()
@@ -135,10 +140,17 @@ class McpToolProvider:
         local = intake_tool.make_raw_schema_tool(df)
         return self._rebind(local, {"run_id": self.run_id})
 
-    def make_profiler_tool(self, df: pd.DataFrame, target_column: str) -> Tool:
-        fact = profile_dataset(df, target_column=target_column).to_dict()
+    def make_profiler_tool(
+        self, df: pd.DataFrame, target_column: str,
+        group_column: Optional[str] = None, time_column: Optional[str] = None,
+    ) -> Tool:
+        # build_profile_fact, not bare profile_dataset().to_dict() — the
+        # persisted fact must carry the same declared-column annotations
+        # the local handler serves, or provider parity breaks exactly
+        # where it matters most (the do-not-use column list).
+        fact = profiler_tool.build_profile_fact(df, target_column, group_column, time_column)
         write_fact(self.run_id, "dataset_profile", fact)
-        local = profiler_tool.make_profiler_tool(df, target_column)
+        local = profiler_tool.make_profiler_tool(df, target_column, group_column, time_column)
         return self._rebind(local, {"run_id": self.run_id})
 
     def make_list_templates_tool(self) -> Tool:

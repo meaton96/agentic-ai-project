@@ -20,6 +20,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .column_grouping import expand_grouped_columns
+
 FEATURE_OPS: dict[str, dict] = {
     "ratio": {
         "description": "Adds col_a / col_b as a new numeric column (division by zero yields NaN, not an error).",
@@ -151,7 +153,11 @@ def validate_feature_proposal(
         return ["top-level response is not a JSON object"]
 
     errors: list[str] = []
-    known_cols = {c["name"]: c for c in profile_report["columns"]}
+    # expand_grouped_columns(), not a flat {c["name"]: c} comprehension —
+    # profile_report["columns"] may contain compacted group entries (see
+    # harness/column_grouping.py) for a wide rolled-up table, and a
+    # proposed column name needs to resolve correctly either way.
+    known_cols = expand_grouped_columns(profile_report["columns"])
     existing_names = set(known_cols)
 
     protected_from_drop = {target_column}

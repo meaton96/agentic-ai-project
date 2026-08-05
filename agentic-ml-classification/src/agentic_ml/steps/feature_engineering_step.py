@@ -54,23 +54,45 @@ def run_feature_engineering_step(
     on_event: Optional[Callable[[dict], None]] = None,
     prompt_override_dir: Optional[str] = None,
     tool_provider: Optional[ToolProvider] = None,
+    previous_error: Optional[str] = None,
 ) -> FeatureEngineeringStepResult:
     resolved_override_dir = resolve_prompt_override_dir(prompt_override_dir)
     prompt_src, prompt_path = prompt_source("feature_engineering", resolved_override_dir)
     system_prompt = load_prompt("feature_engineering", resolved_override_dir)
     emit_event(on_event, "feature_engineering", "prompt_loaded", {"source": prompt_src, "path": str(prompt_path)})
-    emit_event(on_event, "feature_engineering", "agent_started", {"target_column": target_column})
+    emit_event(on_event, "feature_engineering", "agent_started",
+               {"target_column": target_column, "previous_error": previous_error})
 
     provider = tool_provider or LocalToolProvider()
-    tools = [provider.make_profiler_tool(df, target_column), provider.make_list_feature_ops_tool()]
+    tools = [
+        provider.make_profiler_tool(df, target_column, group_column, time_column),
+        provider.make_list_feature_ops_tool(),
+    ]
+    # Every call here is otherwise a fresh conversation with no memory of a
+    # prior rejected proposal — at temperature=0.0 (ModelClient's default)
+    # a rejected-but-plausible proposal can repeat identically forever
+    # (real incident: 13 identical rejections). previous_error alone isn't
+    # enough to fix that: if the rejection reason is the same every time
+    # (as it was here), the whole prompt is byte-identical to the prior
+    # attempt, and temperature=0.0 GUARANTEES the same output again
+    # regardless of what the feedback says. A nonzero temperature on retry
+    # gives the same feedback an actual chance to land differently — this
+    # is a mitigation, not a guarantee; dynamic_loop.py's bounded-retry
+    # fallback to a deterministic zero-changes result is what actually
+    # guarantees this step can't get the run stuck.
     agent = ToolCallingAgent(
         model_client=client, tools=tools, system_prompt=system_prompt,
-        model=model, max_turns=max_turns,
+        model=model, max_turns=max_turns, temperature=0.4 if previous_error else 0.0,
     )
-    result = agent.run(
-        "Propose drop_columns and derived_features for this dataset.",
-        trace_fn=trace_fn,
+    user_message = (
+        f"Your previous proposal was rejected: {previous_error}\n\n"
+        "Propose a corrected drop_columns/derived_features for this dataset. "
+        "If you don't have a clear alternative, it is valid and expected to "
+        "propose no changes at all: drop_columns: [] and derived_features: []."
+        if previous_error else
+        "Propose drop_columns and derived_features for this dataset."
     )
+    result = agent.run(user_message, trace_fn=trace_fn)
 
     profile_report = None
     for entry in result.tool_call_log:

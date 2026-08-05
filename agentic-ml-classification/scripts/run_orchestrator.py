@@ -250,7 +250,8 @@ def main(on_event: Optional[Callable[[dict], None]] = None, prompt_override_dir:
 
     print("Running ProfilerAgent...")
     profiler_result = run_profiler_step(
-        loaded.df, target_column, client, model=default_model,
+        loaded.df, target_column, client,
+        group_column=group_column, time_column=time_column, model=default_model,
         trace_fn=lambda record: trace(**record), on_event=emit,
         prompt_override_dir=effective_prompt_override_dir,
     )
@@ -302,7 +303,7 @@ def main(on_event: Optional[Callable[[dict], None]] = None, prompt_override_dir:
           f"val={len(manifest.val_idx)} test={len(manifest.test_idx)}")
 
     leakage_checks = run_all_split_leakage_checks(
-        df=loaded.df, group_column=group_column, time_column=time_column,
+        df=loaded.df, target_column=target_column, group_column=group_column, time_column=time_column,
         train_idx=manifest.train_idx, val_idx=manifest.val_idx, test_idx=manifest.test_idx,
         strategy=strategy,
     )

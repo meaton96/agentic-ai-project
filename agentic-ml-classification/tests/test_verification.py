@@ -114,13 +114,15 @@ def test_run_verification_step_invalid_verdict_value_defaults_to_flagged():
 
 # --- modeling_step's new feature-correlation gate ---
 
-def _fake_modeling_client(candidate_json):
+def _fake_modeling_client(candidate_json, max_tokens_seen=None):
     call_count = {"n": 0}
 
     class FakeClient:
         def call(self, messages, model=None, tools=None, temperature=0.0, max_tokens=1024):
             call_count["n"] += 1
             n = call_count["n"]
+            if max_tokens_seen is not None:
+                max_tokens_seen.append(max_tokens)
             if n == 1:
                 return _resp(tool_calls=[{"id": "1", "name": "get_dataset_profile", "arguments": "{}"}])
             if n == 2:
@@ -160,7 +162,15 @@ def test_modeling_step_rejects_candidate_selecting_a_leaky_column(leaky_df):
     assert result.feature_correlation_check["passed"] is False
     assert "leak" in result.feature_correlation_check["detail"]
     assert result.ok is False
-    assert "failed feature-correlation leakage gate" in result.errors
+    # errors now carries the check's numeric detail appended, not just the
+    # bare gate name (see modeling_step.py) — a real diagnosability gap
+    # this closes: state.last_action / history[i]["errors"] are the only
+    # place a failure's specifics reach a caller that doesn't wire
+    # on_event (e.g. a notebook), and the bare name alone wasn't enough to
+    # tell a genuine leak apart from small-sample noise.
+    matching_errors = [e for e in result.errors if e.startswith("failed feature-correlation leakage gate")]
+    assert matching_errors
+    assert "leak" in matching_errors[0]
 
 
 def test_modeling_step_accepts_candidate_without_leaky_column(leaky_df):
@@ -180,3 +190,29 @@ def test_modeling_step_accepts_candidate_without_leaky_column(leaky_df):
     assert result.feature_correlation_check is not None
     assert result.feature_correlation_check["passed"] is True
     assert result.ok is True
+
+
+def test_modeling_step_requests_a_larger_token_budget_than_the_default(leaky_df):
+    """Real incident: a candidate enumerating many individual derived-stat
+    columns for a wide rolled-up table got cut off mid-column-name at
+    exactly 1024 output tokens (ModelClient.call's own default) — modeling
+    is uniquely at risk of this among the agents here (numeric_cols/
+    categorical_cols can legitimately need to list many names), so it now
+    requests a much larger budget than ToolCallingAgent's own default."""
+    candidate_json = json.dumps({
+        "candidate_id": "candidate_clean", "template_id": "logistic_numeric",
+        "config": {"numeric_cols": ["noise"]},
+        "explanation": "Uses only the non-leaky numeric column.",
+    })
+    train_idx, val_idx = list(range(0, 200)), list(range(200, 300))
+    max_tokens_seen = []
+
+    run_modeling_step(
+        full_df=leaky_df, X=leaky_df[["noise", "leak"]], y=leaky_df["target"],
+        target_column="target", group_column=None, time_column=None,
+        train_idx=train_idx, val_idx=val_idx,
+        client=_fake_modeling_client(candidate_json, max_tokens_seen=max_tokens_seen),
+    )
+
+    assert max_tokens_seen  # the fake client was actually called
+    assert all(mt > 1024 for mt in max_tokens_seen)

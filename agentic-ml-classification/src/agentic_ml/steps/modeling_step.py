@@ -36,6 +36,7 @@ from sklearn.base import clone
 
 from agentic_ml.agent_runtime import ToolCallingAgent
 from agentic_ml.events import emit_event
+from agentic_ml.harness.column_grouping import expand_grouped_columns
 from agentic_ml.harness.leakage import check_suspicious_feature_correlation, label_permutation_test
 from agentic_ml.harness.sandbox import run_candidate_build
 from agentic_ml.harness.metrics import compute_metrics, roc_auc_any
@@ -66,7 +67,11 @@ def _validate_candidate_columns(
     time_column: Optional[str], config: dict,
 ) -> list[str]:
     errors = []
-    known_cols = {c["name"]: c for c in profile_report["columns"]}
+    # expand_grouped_columns(), not a flat {c["name"]: c} comprehension —
+    # profile_report["columns"] may contain compacted group entries (see
+    # harness/column_grouping.py) for a wide rolled-up table, and a
+    # proposed column name needs to resolve correctly either way.
+    known_cols = expand_grouped_columns(profile_report["columns"])
     disallowed = {target_column}
     if group_column:
         disallowed.add(group_column)
@@ -129,6 +134,7 @@ def run_modeling_step(
     on_event: Optional[Callable[[dict], None]] = None,
     prompt_override_dir: Optional[str] = None,
     tool_provider: Optional[ToolProvider] = None,
+    previous_error: Optional[str] = None,
 ) -> ModelingStepResult:
     if metric_names is None:
         metric_names = ["roc_auc", "pr_auc", "f1", "accuracy"]
@@ -136,7 +142,8 @@ def run_modeling_step(
     resolved_override_dir = resolve_prompt_override_dir(prompt_override_dir)
     prompt_src, prompt_path = prompt_source("modeling", resolved_override_dir)
     emit_event(on_event, "modeling", "prompt_loaded", {"source": prompt_src, "path": str(prompt_path)})
-    emit_event(on_event, "modeling", "agent_started", {"already_tried_template_ids": already_tried_template_ids or []})
+    emit_event(on_event, "modeling", "agent_started",
+               {"already_tried_template_ids": already_tried_template_ids or [], "previous_error": previous_error})
 
     system_prompt = load_prompt("modeling", resolved_override_dir)
     if already_tried_template_ids:
@@ -146,12 +153,42 @@ def run_modeling_step(
         )
 
     provider = tool_provider or LocalToolProvider()
-    tools = [provider.make_profiler_tool(full_df, target_column), provider.make_list_templates_tool()]
+    tools = [
+        provider.make_profiler_tool(full_df, target_column, group_column, time_column),
+        provider.make_list_templates_tool(),
+    ]
+    # Every call here is otherwise a fresh conversation with no memory of a
+    # prior rejected candidate — at temperature=0.0 (ModelClient's default)
+    # that means a rejected-but-plausible candidate can repeat identically
+    # forever until max_iterations, since nothing ever tells the agent WHY
+    # it was rejected. already_tried_template_ids (above) only nudges away
+    # from a template already tried; this covers everything else (a bad
+    # column choice, a failed leakage gate). Same fix as planner_step.py's
+    # previous_error — plus a nonzero retry temperature (see
+    # feature_engineering_step.py's identical fix for why previous_error
+    # alone isn't enough: an unchanged rejection reason makes the whole
+    # prompt byte-identical to the prior attempt, and temperature=0.0
+    # guarantees the same output again regardless of what the feedback says).
+    # A candidate's numeric_cols/categorical_cols can legitimately need to
+    # enumerate many individual column names — a wide rolled-up table (many
+    # derived-stat columns per underlying signal) makes this the one step
+    # most likely to need real room, unlike the other agents' shorter
+    # narrations/decisions. ModelClient.call's own default (1024) truncated
+    # a real candidate's JSON mid-column-name; well above what any
+    # observed candidate has needed, with headroom under this model's
+    # 32K-token context even added to a full profile+templates prompt.
     agent = ToolCallingAgent(
         model_client=client, tools=tools, system_prompt=system_prompt,
-        model=model, max_turns=max_turns,
+        model=model, max_turns=max_turns, temperature=0.4 if previous_error else 0.0,
+        max_tokens=8192,
     )
-    result = agent.run("Propose one modeling candidate for this dataset.", trace_fn=trace_fn)
+    user_message = (
+        f"Your previous candidate was rejected: {previous_error}\n\n"
+        "Propose a corrected modeling candidate for this dataset."
+        if previous_error else
+        "Propose one modeling candidate for this dataset."
+    )
+    result = agent.run(user_message, trace_fn=trace_fn)
 
     profile_report = None
     for entry in result.tool_call_log:
@@ -245,11 +282,20 @@ def run_modeling_step(
                 {"candidate_id": candidate_id, **correlation_check.to_dict()})
 
     passed_both_gates = permutation_check.passed and correlation_check.passed
+    # The numeric detail (e.g. "mean roc_auc on shuffled labels = 0.6234
+    # (chance ~= 0.5, tolerance = 0.08)") already exists on the check
+    # result — appending it here, not just the generic gate name, is what
+    # makes a failure diagnosable from state.last_action / history[i]["errors"]
+    # alone. Previously that detail only reached anywhere durable via
+    # emit_event's "leakage_gate_result" event, which is silently dropped
+    # whenever a caller (e.g. a notebook) doesn't wire on_event — a real
+    # gap that made a real leakage-gate failure impossible to diagnose
+    # without reconstructing it by hand from transcripts and raw data.
     gate_errors = []
     if not permutation_check.passed:
-        gate_errors.append("failed label_permutation_test leakage gate")
+        gate_errors.append(f"failed label_permutation_test leakage gate ({permutation_check.detail})")
     if not correlation_check.passed:
-        gate_errors.append("failed feature-correlation leakage gate")
+        gate_errors.append(f"failed feature-correlation leakage gate ({correlation_check.detail})")
 
     emit_event(on_event, "modeling", "candidate_scored", {
         "candidate_id": candidate_id, "template_id": template_id, "metrics": metrics_dict,

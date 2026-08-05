@@ -12,9 +12,18 @@ from dataclasses import dataclass, field, asdict
 import numpy as np
 import pandas as pd
 
+from .column_grouping import group_columns_by_pattern
 from .leakage import check_suspicious_feature_correlation
 
 DATETIME_NAME_HINTS = ("date", "time", "timestamp", "day", "created", "updated", "dob")
+# A column named e.g. "date_diff" or "time_since_signup" contains a
+# datetime-name token but holds a relative OFFSET (an int/float delta,
+# often negative), not an absolute point in time — sorting groups by it
+# (group_time strategy) sorts by that delta, not by calendar time, which
+# can accidentally sort by whatever the delta correlates with (e.g. the
+# label itself). These hints veto the name-hint match below; they don't
+# affect _looks_like_datetime's content-based detection.
+RELATIVE_OFFSET_NAME_HINTS = ("diff", "delta", "elapsed", "duration", "since", "until", "ago")
 ID_NAME_HINTS = ("id", "uuid", "guid", "key", "index", "idx")
 GROUP_NAME_HINTS = ("customer", "user", "patient", "machine", "session", "account", "entity", "device")
 
@@ -58,7 +67,13 @@ class ProfileReport:
 
     def to_dict(self) -> dict:
         d = asdict(self)
-        d["columns"] = [c.to_dict() if isinstance(c, ColumnProfileEntry) else c for c in self.columns]
+        full_columns = [c.to_dict() if isinstance(c, ColumnProfileEntry) else c for c in self.columns]
+        # Grouping happens ONLY here, at serialization — every computation
+        # above (leakage_risk_flags, likely_group_columns, imbalance, ...)
+        # already ran over the full per-column list; this can't affect any
+        # of that, only what an agent (or a validator reading this dict —
+        # see column_grouping.py's docstring) sees afterward.
+        d["columns"] = group_columns_by_pattern(full_columns)
         return d
 
 
@@ -116,7 +131,10 @@ def profile_dataset(
 
         is_numeric = pd.api.types.is_numeric_dtype(series)
         is_float_dtype = pd.api.types.is_float_dtype(series)
-        is_datetime = _looks_like_datetime(series) or _name_hints(col, DATETIME_NAME_HINTS)
+        is_datetime = _looks_like_datetime(series) or (
+            _name_hints(col, DATETIME_NAME_HINTS)
+            and not _name_hints(col, RELATIVE_OFFSET_NAME_HINTS)
+        )
 
         # High cardinality alone only implies "ID" for integer/string columns.
         # Continuous float measurements (Fare, Age, temperature, ...) are

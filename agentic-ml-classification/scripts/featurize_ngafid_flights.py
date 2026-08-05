@@ -5,10 +5,14 @@ sensor CSV (one row per timestep, many timesteps per flight, flights
 concatenated and identified by an `id` column) into one row per flight —
 the shape the rest of this pipeline already knows how to classify.
 
-This is the only file that knows NGAFID-specific vocabulary (the 22
-sensor column names, the `before_after` label strings). The actual
-rollup logic is dataset-agnostic and lives in
-agentic_ml.harness.timeseries_features.
+NGAFID-specific vocabulary (the sensor column names, the `before_after`
+label strings) lives in agentic_ml.domain.aviation.ngafid_config — this
+script is just a thin CLI wrapper around it. The actual rollup logic is
+dataset-agnostic and lives in agentic_ml.harness.timeseries_features.
+(orchestrator/dynamic_loop.py's featurize_timeseries agent uses the same
+config + rollup engine to do this automatically as part of the dynamic
+orchestrator's planner loop — this script remains useful standalone, or
+for run_orchestrator.py's static pipeline, which has no such agent.)
 
 Zero LLM/agent involvement — pure deterministic pre-processing, same as
 scripts/run_baseline_ladder.py. Run this once to produce a tabular CSV,
@@ -36,34 +40,22 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from agentic_ml.domain.aviation.ngafid_config import (
+    NGAFID_EXTRA_COLUMNS, NGAFID_GROUP_COLUMN, NGAFID_ID_COLUMN, NGAFID_LABEL_COLUMN,
+    NGAFID_LABEL_MAP, NGAFID_SENSORS,
+)
 from agentic_ml.harness.timeseries_features import build_flight_feature_table_streaming
 from agentic_ml.paths import datasets_root
-
-NGAFID_SENSORS = [
-    "volt1", "volt2", "amp1", "amp2", "FQtyL", "FQtyR", "E1 FFlow",
-    "E1 OilT", "E1 OilP", "E1 RPM", "E1 CHT1", "E1 CHT2", "E1 CHT3",
-    "E1 CHT4", "E1 EGT1", "E1 EGT2", "E1 EGT3", "E1 EGT4", "OAT",
-    "IAS", "VSpd", "NormAc", "AltMSL",
-]
-
-# before_after: 1 = flight occurred before the recorded maintenance event
-# (the flight the label is trying to flag), 0 = after. Accepts a few
-# variant spellings since the raw dataset's exact casing/string form
-# isn't guaranteed across exports.
-NGAFID_LABEL_MAP = {
-    "before": 1, "pre": 1, "pre-maintenance": 1, "1": 1, "true": 1,
-    "after": 0, "post": 0, "post-maintenance": 0, "0": 0, "false": 0,
-}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--csv", required=True, help="path to the raw long-format NGAFID CSV")
     parser.add_argument("--out", default=str(datasets_root() / "processed" / "ngafid_flights.csv"))
-    parser.add_argument("--id-column", default="id")
-    parser.add_argument("--group-column", default="plane_id")
-    parser.add_argument("--label-column", default="before_after")
-    parser.add_argument("--extra-columns", default="date_diff,split",
+    parser.add_argument("--id-column", default=NGAFID_ID_COLUMN)
+    parser.add_argument("--group-column", default=NGAFID_GROUP_COLUMN)
+    parser.add_argument("--label-column", default=NGAFID_LABEL_COLUMN)
+    parser.add_argument("--extra-columns", default=",".join(NGAFID_EXTRA_COLUMNS),
                          help="comma-separated columns to carry through unchanged "
                               "(not used as features)")
     parser.add_argument("--chunksize", type=int, default=500_000)

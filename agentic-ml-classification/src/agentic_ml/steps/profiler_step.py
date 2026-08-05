@@ -34,6 +34,8 @@ def run_profiler_step(
     df: pd.DataFrame,
     target_column: str,
     client: ModelClient,
+    group_column: Optional[str] = None,
+    time_column: Optional[str] = None,
     model: Optional[str] = None,
     max_turns: int = 4,
     trace_fn: Optional[Callable[[dict], None]] = None,
@@ -48,7 +50,7 @@ def run_profiler_step(
     emit_event(on_event, "profiler", "agent_started", {"target_column": target_column})
 
     provider = tool_provider or LocalToolProvider()
-    tool = provider.make_profiler_tool(df, target_column)
+    tool = provider.make_profiler_tool(df, target_column, group_column, time_column)
     agent = ToolCallingAgent(
         model_client=client, tools=[tool], system_prompt=system_prompt,
         model=model, max_turns=max_turns,

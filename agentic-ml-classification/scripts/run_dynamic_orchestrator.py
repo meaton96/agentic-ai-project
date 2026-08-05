@@ -45,7 +45,7 @@ import joblib
 
 from agentic_ml.cli_common import make_run_dir, make_tracer, make_transcript_writer, resolve_model_endpoint
 from agentic_ml.events import make_event_emitter, make_event_logger
-from agentic_ml.harness.dataset import read_dataframe
+from agentic_ml.harness.dataset import detect_dataset_shape, read_dataframe
 from agentic_ml.mcp_facts.provider import McpToolProvider
 from agentic_ml.mcp_facts.transport import HttpMcpTransport
 from agentic_ml.model_client import ModelClient
@@ -92,6 +92,11 @@ def main(on_event: Optional[Callable[[dict], None]] = None, prompt_override_dir:
                          "already be running at --mcp-url")
     parser.add_argument("--mcp-url", default="http://127.0.0.1:8765/mcp", help="MCP "
                          "server URL, only used when --use-mcp is given")
+    parser.add_argument("--max-flights", type=int, default=None, help="only used if "
+                         "--data is detected as raw long-format time-series data — caps "
+                         "how many examples the featurize_timeseries agent rolls up "
+                         "before stopping, for a bounded run against a huge raw file. "
+                         "Omit for the full file.")
     args = parser.parse_args()
 
     # the function argument (e.g. a future server calling main() directly) wins
@@ -127,15 +132,47 @@ def main(on_event: Optional[Callable[[dict], None]] = None, prompt_override_dir:
         target_column=args.target, group_column=args.group_column, time_column=args.time_column,
         id_columns=id_columns, strategy_override=args.strategy, metric_names=metric_names,
         raw_csv=args.raw_csv, features_csv=args.features_csv, run_id=run_id,
+        featurize_max_flights=args.max_flights,
     )
-    ctx.raw_df = read_dataframe(args.data)
 
+    # Cheap, streaming-safe peek (never a full load) at whether --data is
+    # already-tabular or raw long-format time-series data — must happen
+    # BEFORE read_dataframe() is ever called on it, since that's the
+    # unguarded-full-load path this whole check exists to route around
+    # for a multi-GB raw file. See harness/dataset.py::detect_dataset_shape.
+    shape = detect_dataset_shape(args.data)
     state = RunStateSummary(goal=goal_text)
+    state.looks_long_format = shape["looks_long_format"]
 
-    if args.target:
-        state.target_known = True
-        state.target_column = args.target
-        load_raw_hash(ctx)
+    if state.data_ready:
+        # ordinary path, unchanged: an already-tabular dataset (or a
+        # dataset too small to have triggered the long-format check)
+        # loads exactly as it always has.
+        ctx.raw_df = read_dataframe(args.data)
+        if args.target:
+            state.target_known = True
+            state.target_column = args.target
+            load_raw_hash(ctx)
+    else:
+        # Long-format detected: DON'T touch read_dataframe() on the raw
+        # file at all. ctx.raw_df stays unset — the featurize_timeseries
+        # agent (always the planner's only valid first move here, since
+        # intake/feature_engineering's required_state now both include
+        # data_ready=True) populates it via the chunked streaming rollup
+        # engine instead, the only path actually safe for this file size.
+        print(f"Detected long-format time-series data ({shape['file_size_bytes'] / 1e6:.0f}MB, "
+              f"avg run length {shape['avg_run_length']:.1f} on column "
+              f"{shape['repeated_run_column']!r}) — routing through featurize_timeseries "
+              f"before classification.")
+        if args.target:
+            # target_known can still be set directly (it's just a column
+            # name, not something that requires the data to be loaded) —
+            # featurize_timeseries's own branch populates raw_df/
+            # engineered_df/raw_data_hash directly from its in-memory
+            # rolled-up table, making a separate load_raw_hash() call
+            # here both impossible (nothing to load yet) and unnecessary.
+            state.target_known = True
+            state.target_column = args.target
 
     if args.existing_model:
         bundle = joblib.load(args.existing_model)

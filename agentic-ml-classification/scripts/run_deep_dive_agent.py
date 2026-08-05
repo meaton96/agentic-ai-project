@@ -38,16 +38,10 @@ import joblib
 import pandas as pd
 
 from agentic_ml.cli_common import make_run_dir, make_tracer, make_transcript_writer, resolve_model_endpoint
+from agentic_ml.domain.aviation.ngafid_config import NGAFID_SENSORS
 from agentic_ml.harness.timeseries_features import extract_single_flight_raw
 from agentic_ml.model_client import ModelClient
 from agentic_ml.steps.deep_dive_step import run_deep_dive_step
-
-NGAFID_SENSORS = [
-    "volt1", "volt2", "amp1", "amp2", "FQtyL", "FQtyR", "E1 FFlow",
-    "E1 OilT", "E1 OilP", "E1 RPM", "E1 CHT1", "E1 CHT2", "E1 CHT3",
-    "E1 CHT4", "E1 EGT1", "E1 EGT2", "E1 EGT3", "E1 EGT4", "OAT",
-    "IAS", "VSpd", "NormAc", "AltMSL",
-]
 
 
 def main():

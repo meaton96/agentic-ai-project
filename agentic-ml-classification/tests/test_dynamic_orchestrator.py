@@ -29,6 +29,12 @@ Six things worth proving, not just exercising:
    in 'action', e.g. {"action": "finalize"}) WITHOUT relaxing what's
    actually allowed to execute — a proposal naming a non-agent action
    string is left alone and still rejected downstream.
+8. Long-format time-series auto-routing: a dataset detected as raw
+   long-format (harness/dataset.py::detect_dataset_shape) blocks
+   intake/feature_engineering until featurize_timeseries has run, and
+   a full scripted run — featurize_timeseries -> intake -> ... ->
+   finalize — completes successfully end to end, proving the routing
+   mechanism itself, not just its precondition gate in isolation.
 """
 import json
 import os
@@ -446,6 +452,102 @@ def test_precondition_violation_is_rejected_without_executing(dataset_csv, tmp_p
     assert "split_leakage_passed" in rejected_attempts[0]["errors"][0]
 
 
+# --- failed split must not dead-end the run ---
+
+def _degenerate_group_time_dataset(tmp_path):
+    """A dataset whose profile recommends group_time and whose group_time
+    split puts only one target class in the test fold — the exact shape
+    of the real NGAFID run run_260805_142454_8721: customers 15-19 have
+    only churned=0 rows AND the latest earliest-timestamps, so group_time
+    assigns them wholesale to the test fold and fold_class_presence fails."""
+    rng = np.random.RandomState(0)
+    rows = []
+    for cust in range(20):
+        if cust < 15:
+            rows.append({"customer_id": f"C{cust}", "day": 0, "x": rng.normal(), "churned": 1})
+            rows.append({"customer_id": f"C{cust}", "day": 1, "x": rng.normal(), "churned": 0})
+        else:
+            rows.append({"customer_id": f"C{cust}", "day": 5, "x": rng.normal(), "churned": 0})
+            rows.append({"customer_id": f"C{cust}", "day": 6, "x": rng.normal(), "churned": 0})
+    path = tmp_path / "degenerate.csv"
+    pd.DataFrame(rows).to_csv(path, index=False)
+    return path
+
+
+def _failed_split_fake_call(self, messages, model=None, tools=None, temperature=0.0, max_tokens=1024):
+    system_content = messages[0]["content"]
+    n = len(messages)
+
+    if "planning agent" in system_content:
+        if n == 2:
+            return _resp(tool_calls=[{"id": "p1", "name": "get_planning_context", "arguments": "{}"}])
+        actions = [
+            {"action": "run_agent", "agent_id": "feature_engineering", "args": {}, "reasoning": "check features"},
+            {"action": "run_agent", "agent_id": "profiler", "args": {}, "reasoning": "characterize"},
+            {"action": "run_agent", "agent_id": "split_and_check_leakage", "args": {}, "reasoning": "split"},
+            {"action": "run_agent", "agent_id": "split_and_check_leakage", "args": {},
+             "reasoning": "split failed its gates; retry"},
+            {"action": "finish", "agent_id": None, "args": {},
+             "reasoning": "split cannot pass its gates on this data; stopping honestly"},
+        ]
+        idx = min(_state["planner_call_index"], len(actions) - 1)
+        _state["planner_call_index"] += 1
+        return _resp(text=json.dumps(actions[idx]))
+
+    if "Feature Engineering agent" in system_content:
+        if n == 2:
+            return _resp(tool_calls=[{"id": "f1", "name": "get_dataset_profile", "arguments": "{}"}])
+        if n == 4:
+            return _resp(tool_calls=[{"id": "f2", "name": "list_feature_ops", "arguments": "{}"}])
+        return _resp(text=FEATURE_ENGINEERING_PROPOSAL)
+
+    if "Profiler agent" in system_content:
+        if n == 2:
+            return _resp(tool_calls=[{"id": "t2", "name": "get_dataset_profile", "arguments": "{}"}])
+        return _resp(text=PROFILER_NARRATIVE)
+
+    raise AssertionError(f"unexpected system prompt in failed-split test: {system_content[:120]!r}")
+
+
+def test_failed_split_stays_retryable_and_run_can_finish_instead_of_dead_ending(tmp_path, monkeypatch):
+    """Regression for the real NGAFID run that ended planner_failed: the
+    split failed a leakage gate but was still marked split_done=True, so
+    split_and_check_leakage (requires split_done=False) could never
+    re-run AND modeling (requires split_leakage_passed=True) could never
+    start — no catalog agent was proposable and the planner burned its
+    retries. A failed split must leave split_done=False so the planner
+    can retry it or finish gracefully. The gates themselves are
+    untouched: both split attempts here still FAIL."""
+    monkeypatch.setattr(ModelClient, "call", _failed_split_fake_call)
+    data_csv = _degenerate_group_time_dataset(tmp_path)
+    _run_dynamic_in(tmp_path, [
+        "run_dynamic_orchestrator.py", "--data", str(data_csv), "--target", "churned",
+        "--run-id", "test_failed_split", "--max-iterations", "8",
+    ])
+    report = json.loads(
+        (tmp_path / "runs" / "test_failed_split" / "dynamic_orchestrator_report.json").read_text()
+    )
+
+    # the run ends by the planner's own choice, not planner_failed
+    assert report["status"] == "success"
+
+    executed = [h["agent_id"] for h in report["history"] if h.get("executed")]
+    assert executed == [
+        "feature_engineering", "profiler",
+        "split_and_check_leakage", "split_and_check_leakage",
+    ]
+    # the second split proposal EXECUTED (was not rejected as a
+    # precondition violation) — the dead-end regression itself
+    split_entries = [h for h in report["history"] if h.get("agent_id") == "split_and_check_leakage"]
+    assert all(not h.get("attempts") for h in split_entries)
+    # ...and both attempts genuinely failed their gate: no gate weakened
+    assert all(h["ok"] is False for h in split_entries)
+    assert any("fold_class_presence" in e for h in split_entries for e in h["errors"])
+
+    assert report["final_state"]["split_done"] is False
+    assert report["final_state"]["split_leakage_passed"] is False
+
+
 # --- 5. Finalize one-shot guard (direct validate_plan unit test) ---
 
 def test_finalize_cannot_run_twice():
@@ -529,3 +631,354 @@ def test_loop_stops_at_max_iterations_when_planner_never_finishes(monkeypatch):
 
     assert result.status == "max_iterations_reached"
     assert len([h for h in result.history if h.get("executed")]) == 4
+
+
+# --- 8. Long-format time-series auto-routing ---
+
+def test_long_format_precondition_blocks_intake_and_feature_engineering():
+    """Direct validate_plan unit test — the state-gating mechanism in
+    isolation. A real end-to-end proof follows below."""
+    state = RunStateSummary(goal="classify which flights need maintenance")
+    state.looks_long_format = True  # featurization_done defaults False -> data_ready False
+
+    intake_errors = validate_plan(
+        {"action": "run_agent", "agent_id": "intake", "args": {}}, state, capabilities=set(),
+    )
+    assert any("data_ready" in e for e in intake_errors)
+
+    # target_known=True simulates the --target-given entry point, which
+    # bypasses intake entirely — feature_engineering needs its own gate.
+    state.target_known = True
+    fe_errors = validate_plan(
+        {"action": "run_agent", "agent_id": "feature_engineering", "args": {}}, state, capabilities=set(),
+    )
+    assert any("data_ready" in e for e in fe_errors)
+
+    # featurize_timeseries itself is unaffected — that's the one agent this
+    # state is supposed to allow.
+    featurize_errors = validate_plan(
+        {"action": "run_agent", "agent_id": "featurize_timeseries", "args": {}}, state, capabilities=set(),
+    )
+    assert featurize_errors == []
+
+    # once featurization has run, both gates lift with no other change.
+    state.featurization_done = True
+    assert validate_plan(
+        {"action": "run_agent", "agent_id": "feature_engineering", "args": {}}, state, capabilities=set(),
+    ) == []
+
+
+NGAFID_SENSORS_TEST = [
+    "volt1", "volt2", "amp1", "amp2", "FQtyL", "FQtyR", "E1 FFlow",
+    "E1 OilT", "E1 OilP", "E1 RPM", "E1 CHT1", "E1 CHT2", "E1 CHT3",
+    "E1 CHT4", "E1 EGT1", "E1 EGT2", "E1 EGT3", "E1 EGT4", "OAT",
+    "IAS", "VSpd", "NormAc", "AltMSL",
+]
+
+
+@pytest.fixture
+def long_format_dataset_csv(tmp_path):
+    """A small raw long-format CSV shaped exactly like NGAFID's real
+    columns (agentic_ml.domain.aviation.ngafid_config) — small enough to
+    be fast, but structurally identical to what build_flight_feature_table_streaming
+    expects, so featurize_timeseries's real (non-stubbed) execution runs
+    against it unmodified. before_after is independent random noise
+    (matching dataset_csv's churned column above) — the leakage gates
+    check for suspiciously-too-good validation behavior, not for the
+    presence of a real learnable signal, so this is deliberately the
+    same proven-safe pattern already used for the Titanic parity test
+    above rather than a hand-tuned planted effect size."""
+    rng = np.random.RandomState(0)
+    n_flights, steps_per_flight = 24, 15
+    rows = []
+    for fid in range(n_flights):
+        plane = f"plane_{fid % 8}"
+        label = "before" if rng.random() < 0.5 else "post"
+        for _ in range(steps_per_flight):
+            row = {c: rng.normal(100.0, 5.0) for c in NGAFID_SENSORS_TEST}
+            row.update({"id": fid, "plane_id": plane, "before_after": label,
+                       "date_diff": fid, "split": "train"})
+            rows.append(row)
+    path = tmp_path / "long_format.csv"
+    pd.DataFrame(rows).to_csv(path, index=False)
+    return path
+
+
+LONG_FORMAT_INTAKE_PROPOSAL = json.dumps({
+    "target_column": "before_after", "task": "binary_classification",
+    "id_columns": ["id", "date_diff", "split"], "group_column": "plane_id", "time_column": None,
+    "positive_label": "1", "reasoning": "before_after is the binary outcome; plane_id repeats per flight.",
+})
+LONG_FORMAT_CANDIDATE = json.dumps({
+    "candidate_id": "candidate_a", "template_id": "logistic_numeric",
+    "config": {"numeric_cols": ["volt1__mean", "OAT__mean"]},
+    "explanation": "Cheap numeric-only baseline.",
+})
+
+LONG_FORMAT_PLANNER_ACTIONS = [
+    {"action": "run_agent", "agent_id": "featurize_timeseries", "args": {},
+     "reasoning": "raw data is long-format — must roll up before anything else can see it"},
+    {"action": "run_agent", "agent_id": "intake", "args": {}, "reasoning": "need a target"},
+    {"action": "run_agent", "agent_id": "feature_engineering", "args": {}, "reasoning": "check for useful features"},
+    {"action": "run_agent", "agent_id": "profiler", "args": {}, "reasoning": "characterize the dataset"},
+    {"action": "run_agent", "agent_id": "split_and_check_leakage", "args": {}, "reasoning": "split the data"},
+    {"action": "run_agent", "agent_id": "modeling", "args": {}, "reasoning": "try a candidate"},
+    {"action": "run_agent", "agent_id": "verification", "args": {}, "reasoning": "get a second opinion"},
+    {"action": "run_agent", "agent_id": "finalize", "args": {}, "reasoning": "lock in the result"},
+    {"action": "run_agent", "agent_id": "summarize", "args": {}, "reasoning": "narrate the outcome"},
+    {"action": "finish", "agent_id": None, "args": {}, "reasoning": "goal satisfied"},
+]
+
+
+def long_format_fake_call(self, messages, model=None, tools=None, temperature=0.0, max_tokens=1024):
+    system_content = messages[0]["content"]
+    n = len(messages)
+
+    if "planning agent" in system_content:
+        if n == 2:
+            return _resp(tool_calls=[{"id": "p1", "name": "get_planning_context", "arguments": "{}"}])
+        idx = min(_state["planner_call_index"], len(LONG_FORMAT_PLANNER_ACTIONS) - 1)
+        _state["planner_call_index"] += 1
+        return _resp(text=json.dumps(LONG_FORMAT_PLANNER_ACTIONS[idx]))
+
+    if "Intake agent" in system_content:
+        if n == 2:
+            return _resp(tool_calls=[{"id": "t1", "name": "get_raw_schema", "arguments": "{}"}])
+        return _resp(text=LONG_FORMAT_INTAKE_PROPOSAL)
+
+    if "Feature Engineering agent" in system_content:
+        if n == 2:
+            return _resp(tool_calls=[{"id": "f1", "name": "get_dataset_profile", "arguments": "{}"}])
+        if n == 4:
+            return _resp(tool_calls=[{"id": "f2", "name": "list_feature_ops", "arguments": "{}"}])
+        return _resp(text=FEATURE_ENGINEERING_PROPOSAL)
+
+    if "Profiler agent" in system_content:
+        if n == 2:
+            return _resp(tool_calls=[{"id": "t2", "name": "get_dataset_profile", "arguments": "{}"}])
+        return _resp(text=PROFILER_NARRATIVE)
+
+    if "Modeling agent" in system_content:
+        if n == 2:
+            return _resp(tool_calls=[{"id": "t3", "name": "get_dataset_profile", "arguments": "{}"}])
+        if n == 4:
+            return _resp(tool_calls=[{"id": "t4", "name": "list_templates", "arguments": "{}"}])
+        return _resp(text=LONG_FORMAT_CANDIDATE)
+
+    if "Verification agent" in system_content:
+        if n == 2:
+            return _resp(tool_calls=[{"id": "v1", "name": "get_candidate_review_bundle", "arguments": "{}"}])
+        return _resp(text=VERIFICATION_APPROVED)
+
+    return _resp(text="This is a plain-language summary of the long-format run.")
+
+
+def test_dynamic_loop_routes_long_format_dataset_through_featurize_timeseries(
+    long_format_dataset_csv, tmp_path, monkeypatch,
+):
+    # featurize_timeseries writes its rolled-up output under
+    # datasets_root()/processed/ (cwd-relative by default, paths.py) —
+    # isolate that from the real repo the same way every other test
+    # touching runs/datasets does (see test_events.py, test_mcp_facts.py).
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ModelClient, "call", long_format_fake_call)
+    client = ModelClient(base_url="http://example.invalid/v1", api_key="dummy", default_model="fake-model")
+
+    ctx = DynamicRunContext(
+        data_path=str(long_format_dataset_csv), goal="classify which flights need maintenance",
+        run_id="test_long_format_routing",
+    )
+    state = RunStateSummary(goal=ctx.goal)
+    # Set directly rather than via detect_dataset_shape — that function has
+    # its own dedicated tests (tests/test_harness.py); this test is about
+    # what happens once long-format is known, not about detecting it.
+    state.looks_long_format = True
+    assert ctx.raw_df is None  # never loaded — the whole point
+
+    result = run_dynamic_loop(ctx, state, client, model="fake-model", verification_model="fake-model", max_iterations=15)
+
+    assert result.status == "success"
+    executed_agent_ids = [h["agent_id"] for h in result.history if h.get("executed")]
+    assert executed_agent_ids == [
+        "featurize_timeseries", "intake", "feature_engineering", "profiler",
+        "split_and_check_leakage", "modeling", "verification", "finalize", "summarize",
+    ]
+    assert all(h["ok"] for h in result.history if h.get("executed"))
+
+    # featurize_timeseries actually populated ctx from the raw file — not
+    # a no-op, not stubbed.
+    assert state.featurization_done is True
+    assert state.featurization_summary["n_examples"] == 24
+    assert ctx.raw_csv == str(long_format_dataset_csv)
+    assert ctx.features_csv is not None and Path(ctx.features_csv).exists()
+    assert "volt1__mean" in ctx.raw_df.columns
+
+    assert state.target_column == "before_after"
+    assert state.final_test_metrics_present is True
+    assert 0.0 <= ctx.final_test_metrics["roc_auc"]["value"] <= 1.0
+
+
+# --- 9. Retry-with-feedback: a rejected proposal doesn't repeat forever ---
+#
+# Real incident: feature_engineering proposed dropping a column intake
+# had misclassified as the (protected) time_column, got rejected, and —
+# because every call was a fresh conversation with no memory of the
+# rejection, at ModelClient's default temperature=0.0 — proposed the
+# EXACT SAME thing again on every subsequent iteration, 14 times, until
+# max_iterations. This reproduces that shape hermetically: a stubbed
+# feature_engineering agent that only stops repeating the bad proposal
+# once it actually sees the rejection reason in its own prompt — proving
+# dynamic_loop.py's previous_error wiring works end to end, not just
+# that the parameter exists.
+
+def _fe_retry_dataset_csv(tmp_path):
+    rng = np.random.RandomState(0)
+    n = 100
+    df = pd.DataFrame({
+        "customer_id": [f"C{i}" for i in range(n)],
+        "signup_day": [f"day_{i}" for i in range(n)],  # stands in for the misclassified time_column
+        "age": rng.randint(18, 80, size=n),
+        "churned": rng.binomial(1, 0.35, size=n),
+    })
+    path = tmp_path / "fe_retry.csv"
+    df.to_csv(path, index=False)
+    return path
+
+
+def test_feature_engineering_retry_sees_previous_rejection_reason_and_recovers(tmp_path, monkeypatch):
+    dataset_csv = _fe_retry_dataset_csv(tmp_path)
+    call_count = {"feature_engineering_final": 0}
+
+    def fake_call(self, messages, model=None, tools=None, temperature=0.0, max_tokens=1024):
+        system_content = messages[0]["content"]
+        n = len(messages)
+
+        if "planning agent" in system_content:
+            if n == 2:
+                return _resp(tool_calls=[{"id": "p1", "name": "get_planning_context", "arguments": "{}"}])
+            idx = min(_state["planner_call_index"], 2)
+            _state["planner_call_index"] += 1
+            actions = [
+                {"action": "run_agent", "agent_id": "feature_engineering", "args": {}, "reasoning": "check features"},
+                {"action": "run_agent", "agent_id": "feature_engineering", "args": {}, "reasoning": "retry"},
+                {"action": "finish", "agent_id": None, "args": {}, "reasoning": "done"},
+            ]
+            return _resp(text=json.dumps(actions[idx]))
+
+        if "Feature Engineering agent" in system_content:
+            if n == 2:
+                return _resp(tool_calls=[{"id": "f1", "name": "get_dataset_profile", "arguments": "{}"}])
+            if n == 4:
+                return _resp(tool_calls=[{"id": "f2", "name": "list_feature_ops", "arguments": "{}"}])
+            # Final text-response turn: only stop proposing the rejected
+            # drop once the retry feedback is actually present in the
+            # conversation — a stand-in for a real model reacting to it.
+            call_count["feature_engineering_final"] += 1
+            user_message = messages[1]["content"]
+            if "Your previous proposal was rejected" in user_message:
+                return _resp(text=json.dumps(
+                    {"drop_columns": [], "derived_features": [], "explanation": "leaving signup_day alone now"},
+                ))
+            return _resp(text=json.dumps({
+                "drop_columns": ["signup_day"], "derived_features": [],
+                "explanation": "looks uninformative",
+            }))
+
+        raise AssertionError(f"unexpected system prompt: {system_content[:120]!r}")
+
+    monkeypatch.setattr(ModelClient, "call", fake_call)
+    client = ModelClient(base_url="http://example.invalid/v1", api_key="dummy", default_model="fake-model")
+
+    ctx = DynamicRunContext(
+        data_path=str(dataset_csv), goal="predict churn", seed=42,
+        target_column="churned", time_column="signup_day",  # mirrors intake's real misclassification
+        run_id="test_fe_retry",
+    )
+    ctx.raw_df = pd.read_csv(dataset_csv)
+    ctx.engineered_df = ctx.raw_df  # what a real run has by the time feature_engineering runs
+    state = RunStateSummary(goal=ctx.goal)
+    state.target_known = True
+    state.target_column = "churned"
+
+    result = run_dynamic_loop(ctx, state, client, model="fake-model", max_iterations=6)
+
+    assert result.status == "success"
+    executed = [h["agent_id"] for h in result.history if h.get("executed")]
+    assert executed.count("feature_engineering") == 2  # one rejection, one recovery — not stuck
+    assert state.feature_engineering_done is True
+    # the rejection really was surfaced back to the agent, not just
+    # coincidentally succeeding a second time
+    assert call_count["feature_engineering_final"] == 2
+
+
+def test_feature_engineering_degrades_to_zero_changes_if_model_never_self_corrects(tmp_path, monkeypatch):
+    """The stronger guarantee retry-with-feedback alone can't provide: even
+    a model that NEVER reacts to previous_error — proposing the exact same
+    rejected drop every single time, exactly what the real incident showed
+    — cannot leave the run stuck. dynamic_loop.py's
+    MAX_FEATURE_ENGINEERING_ATTEMPTS bound takes over and deterministically
+    finishes feature_engineering with no changes, the same "legitimate
+    outcome" this agent is already allowed to propose itself."""
+    dataset_csv = _fe_retry_dataset_csv(tmp_path)
+    call_count = {"feature_engineering_final": 0}
+
+    def fake_call(self, messages, model=None, tools=None, temperature=0.0, max_tokens=1024):
+        system_content = messages[0]["content"]
+        n = len(messages)
+
+        if "planning agent" in system_content:
+            if n == 2:
+                return _resp(tool_calls=[{"id": "p1", "name": "get_planning_context", "arguments": "{}"}])
+            # always propose feature_engineering again — a real planner
+            # would too, since nothing in state changes until it succeeds
+            return _resp(text=json.dumps(
+                {"action": "run_agent", "agent_id": "feature_engineering", "args": {}, "reasoning": "retry"},
+            ))
+
+        if "Feature Engineering agent" in system_content:
+            if n == 2:
+                return _resp(tool_calls=[{"id": "f1", "name": "get_dataset_profile", "arguments": "{}"}])
+            if n == 4:
+                return _resp(tool_calls=[{"id": "f2", "name": "list_feature_ops", "arguments": "{}"}])
+            call_count["feature_engineering_final"] += 1
+            # NEVER reacts to previous_error — always the same rejected proposal.
+            return _resp(text=json.dumps({
+                "drop_columns": ["signup_day"], "derived_features": [],
+                "explanation": "looks uninformative",
+            }))
+
+        raise AssertionError(f"unexpected system prompt: {system_content[:120]!r}")
+
+    monkeypatch.setattr(ModelClient, "call", fake_call)
+    client = ModelClient(base_url="http://example.invalid/v1", api_key="dummy", default_model="fake-model")
+
+    ctx = DynamicRunContext(
+        data_path=str(dataset_csv), goal="predict churn", seed=42,
+        target_column="churned", time_column="signup_day",
+        run_id="test_fe_degrade",
+    )
+    ctx.raw_df = pd.read_csv(dataset_csv)
+    ctx.engineered_df = ctx.raw_df
+    state = RunStateSummary(goal=ctx.goal)
+    state.target_known = True
+    state.target_column = "churned"
+
+    # max_iterations well above what degradation needs, so a status of
+    # "max_iterations_reached" would mean degradation DIDN'T kick in, not
+    # that the test under-budgeted iterations.
+    result = run_dynamic_loop(ctx, state, client, model="fake-model", max_iterations=10)
+
+    executed = [h["agent_id"] for h in result.history if h.get("executed")]
+    # MAX_FEATURE_ENGINEERING_ATTEMPTS real (rejected) LLM attempts, plus
+    # one more execution that's the deterministic degraded success — no
+    # LLM call for that last one, which is exactly what the separate
+    # call_count assertion below confirms.
+    assert executed.count("feature_engineering") == dynamic_loop_module.MAX_FEATURE_ENGINEERING_ATTEMPTS + 1
+    assert state.feature_engineering_done is True
+    assert result.status != "max_iterations_reached"
+    # the model really did keep proposing the same rejected thing for
+    # every REAL attempt — this proves degradation, not a lucky model
+    # recovery, and that the degraded execution skipped the LLM entirely.
+    assert call_count["feature_engineering_final"] == dynamic_loop_module.MAX_FEATURE_ENGINEERING_ATTEMPTS
+    # no drops were actually applied — a real "zero changes" outcome
+    assert list(ctx.engineered_df.columns) == list(ctx.raw_df.columns)

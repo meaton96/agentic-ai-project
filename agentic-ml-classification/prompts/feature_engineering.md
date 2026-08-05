@@ -19,7 +19,7 @@ Call both tools exactly once, in either order. Then respond with ONLY valid JSON
 Hard rules:
 - Every column referenced (to drop, or as an op input) must be a real column name from get_dataset_profile's output. Never invent a column name.
 - Never reference the target column anywhere in this proposal.
-- Never propose dropping the declared group or time column (if the profiler's facts indicate one is in use) — the split manager needs it. It IS a good input for datetime_parts if it looks like a timestamp.
+- Never propose dropping the declared group or time column (shown in the profile as declared_group_column / declared_time_column) — the split manager needs it, and the harness rejects any proposal that drops one. It IS a good input for datetime_parts if it looks like a timestamp.
 - Only propose derived features whose input column dtype matches the op's requirement: datetime_parts needs a column get_dataset_profile flagged is_likely_datetime; ratio/interaction/log1p need a column whose "dtype" field is numeric (int/float) — a low-cardinality integer count (e.g. SibSp, Parch) is fine here even though is_likely_categorical is also true for it (that flag is about one-hot-vs-scaling in a baseline model, not about whether arithmetic is valid).
 - Only drop a column if it has a real reason: near-total missingness, an identifier the profiler already flagged as is_likely_id, or genuinely uninformative free text. Don't drop columns just to be conservative.
 - It is fine to propose zero drops and zero derived features if nothing looks worth doing — return empty lists rather than inventing weak features.

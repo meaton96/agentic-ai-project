@@ -49,7 +49,7 @@ def run_split_step(
         strategy=strategy, seed=seed, group_column=group_column, time_column=time_column,
     )
     leakage_checks = run_all_split_leakage_checks(
-        df=df, group_column=group_column, time_column=time_column,
+        df=df, target_column=target_column, group_column=group_column, time_column=time_column,
         train_idx=manifest.train_idx, val_idx=manifest.val_idx, test_idx=manifest.test_idx,
         strategy=strategy,
     )
@@ -63,5 +63,9 @@ def run_split_step(
     return SplitStepResult(
         ok=ok, strategy_used=strategy, group_column=group_column, time_column=time_column,
         manifest=manifest, leakage_checks=[c.to_dict() for c in leakage_checks], notes=notes,
-        errors=[c.check_name for c in leakage_checks if not c.passed],
+        # detail, not just check_name — a bare "fold_class_presence" tells
+        # the planner (and state.last_action) nothing actionable; the
+        # detail says which split(s) and which class, matching the same
+        # fix already applied to modeling_step.py's gate errors.
+        errors=[f"failed {c.check_name} leakage gate ({c.detail})" for c in leakage_checks if not c.passed],
     )
