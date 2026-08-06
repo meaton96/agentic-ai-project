@@ -18,11 +18,11 @@ import argparse
 import json
 import sys
 import time
-import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from agentic_ml.cli_common import make_run_dir
 from agentic_ml.harness.dataset import DatasetSpec, load_dataset, write_dataset_spec
 from agentic_ml.harness.splits import make_split
 from agentic_ml.harness.leakage import run_all_split_leakage_checks
@@ -30,7 +30,6 @@ from agentic_ml.harness.baseline_ladder import ColumnProfile, build_baseline_pip
 from agentic_ml.harness.metrics import compute_metrics
 from agentic_ml.harness.leaderboard import append_leaderboard_entry
 from agentic_ml.paths import leaderboard_path as resolve_leaderboard_path
-from agentic_ml.paths import run_dir as resolve_run_dir
 
 
 def main():
@@ -49,9 +48,7 @@ def main():
     parser.add_argument("--run-id", default=None)
     args = parser.parse_args()
 
-    run_id = args.run_id or f"run_{uuid.uuid4().hex[:8]}"
-    run_dir = resolve_run_dir(run_id)
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_id, run_dir = make_run_dir(args.run_id)
 
     trace_path = run_dir / "trace.jsonl"
 

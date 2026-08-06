@@ -17,6 +17,7 @@ export function LaunchPage() {
   const [maxCandidates, setMaxCandidates] = useState('')
   const [modelEndpoint, setModelEndpoint] = useState<ModelEndpoint>('rit')
   const [skipFeatureEngineering, setSkipFeatureEngineering] = useState(false)
+  const [useMcp, setUseMcp] = useState(false)
   const [prompts, setPrompts] = useState<PromptInfo[]>([])
   const [usePromptOverrides, setUsePromptOverrides] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -49,6 +50,7 @@ export function LaunchPage() {
         model_endpoint: modelEndpoint,
         skip_feature_engineering: orchestrator === 'static' ? skipFeatureEngineering : false,
         use_prompt_overrides: usePromptOverrides,
+        use_mcp: orchestrator === 'dynamic' ? useMcp : false,
       })
       navigate(`/runs/${result.run_id}`)
     } catch (e) {
@@ -158,6 +160,23 @@ export function LaunchPage() {
               onChange={(e) => setSkipFeatureEngineering(e.target.checked)}
             />
             Skip feature engineering {orchestrator === 'dynamic' && <span className="hint">&nbsp;(static-orchestrator only)</span>}
+          </label>
+        </div>
+
+        <div className="field">
+          <label className="inline-label">
+            <input
+              type="checkbox"
+              checked={useMcp}
+              disabled={orchestrator === 'static'}
+              onChange={(e) => setUseMcp(e.target.checked)}
+            />
+            Fetch tool facts via MCP
+            {orchestrator === 'static' ? (
+              <span className="hint">&nbsp;(dynamic-orchestrator only)</span>
+            ) : (
+              <span className="hint">&nbsp;instead of in-process tools — see the MCP page for the server's config</span>
+            )}
           </label>
         </div>
 

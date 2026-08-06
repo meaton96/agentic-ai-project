@@ -19,17 +19,24 @@ from typing import Callable, Optional
 import joblib
 import pandas as pd
 
+from agentic_ml.domain.aviation.ngafid_config import (
+    NGAFID_EXTRA_COLUMNS, NGAFID_GROUP_COLUMN, NGAFID_ID_COLUMN, NGAFID_LABEL_COLUMN,
+    NGAFID_LABEL_MAP, NGAFID_SENSORS,
+)
 from agentic_ml.events import emit_event
-from agentic_ml.harness.dataset import DatasetSpec, LoadedDataset, load_dataset
+from agentic_ml.harness.dataset import DatasetSpec, LoadedDataset, hash_dataframe, load_dataset
 from agentic_ml.harness.drift import compute_drift_report
 from agentic_ml.harness.leaderboard import append_leaderboard_entry
 from agentic_ml.harness.metrics import compute_metrics
-from agentic_ml.harness.timeseries_features import extract_single_flight_raw
+from agentic_ml.harness.timeseries_features import (
+    build_flight_feature_table_streaming, extract_single_flight_raw,
+)
 from agentic_ml.harness.verification import build_review_bundle
+from agentic_ml.mcp_facts.provider import ToolProvider
 from agentic_ml.model_client import ModelClient
 from agentic_ml.orchestrator.agent_registry import AGENTS, get_agent, list_agent_summaries
 from agentic_ml.orchestrator.run_state import CandidateSummary, DynamicRunContext, RunStateSummary
-from agentic_ml.paths import leaderboard_path
+from agentic_ml.paths import datasets_root, leaderboard_path
 from agentic_ml.steps.deep_dive_step import run_deep_dive_step
 from agentic_ml.steps.feature_engineering_step import run_feature_engineering_step
 from agentic_ml.steps.finalize_step import run_finalize_step
@@ -42,15 +49,14 @@ from agentic_ml.steps.split_step import run_split_step
 from agentic_ml.steps.verification_step import run_verification_step
 from agentic_ml.templates.registry import get_template
 
-# Duplicated in scripts/featurize_ngafid_flights.py and
-# scripts/run_deep_dive_agent.py — same pre-existing tradeoff as there:
-# a plain 22-name column list isn't worth a shared module.
-NGAFID_SENSORS = [
-    "volt1", "volt2", "amp1", "amp2", "FQtyL", "FQtyR", "E1 FFlow",
-    "E1 OilT", "E1 OilP", "E1 RPM", "E1 CHT1", "E1 CHT2", "E1 CHT3",
-    "E1 CHT4", "E1 EGT1", "E1 EGT2", "E1 EGT3", "E1 EGT4", "OAT",
-    "IAS", "VSpd", "NormAc", "AltMSL",
-]
+# feature_engineering explicitly allows proposing zero changes ("nothing
+# worth doing" is a legitimate outcome, not a skipped step — see its
+# AgentSpec description). That makes it the one content-proposing agent
+# with a safe, always-valid deterministic fallback — after this many
+# rejected attempts (real incident: 13 identical rejections, all
+# proposing to drop the same harness-protected column), take that
+# fallback ourselves rather than keep trusting the model to find it.
+MAX_FEATURE_ENGINEERING_ATTEMPTS = 3
 
 
 def normalize_proposal(proposal):
@@ -145,12 +151,32 @@ def load_raw_hash(ctx: DynamicRunContext) -> None:
     ctx.raw_data_hash = raw_loaded.data_hash
 
 
+def _previous_error_for(agent_id: str, state: RunStateSummary) -> Optional[str]:
+    """The prior rejection reason to feed back into a fresh retry of the
+    SAME content-proposing agent (feature_engineering, modeling) —
+    derived from state.last_action, which already records exactly this
+    ("<agent_id>: FAILED - <reason>") without needing a new dedicated
+    tracking field. Without this, a rejected-but-plausible proposal can
+    repeat identically forever at temperature=0.0, since nothing tells
+    the agent WHY it was rejected — a real incident (feature_engineering
+    rejected 14 times proposing to drop a column intake had misclassified
+    as the time_column) is what surfaced this gap. Returns None unless
+    the IMMEDIATELY preceding action was this same agent failing — a
+    successful run, a different agent, or no history yet all correctly
+    get no feedback to react to."""
+    prefix = f"{agent_id}: FAILED - "
+    if state.last_action and state.last_action.startswith(prefix):
+        return state.last_action[len(prefix):]
+    return None
+
+
 def execute_agent_step(
     agent_id: str, args: dict, ctx: DynamicRunContext, state: RunStateSummary,
     client: ModelClient, model: Optional[str], verification_model: Optional[str],
     trace_fn: Optional[Callable[[dict], None]], write_transcript: Callable[[str, list[dict]], object],
     on_event: Optional[Callable[[dict], None]] = None,
     prompt_override_dir: Optional[str] = None,
+    tool_provider: Optional[ToolProvider] = None,
 ) -> tuple[bool, list[str]]:
     """Executes one already-validated agent step, mutating ctx/state in
     place. Returns (ok, errors). ok=False means this attempt didn't
@@ -160,9 +186,55 @@ def execute_agent_step(
     (checked before this is ever called) and unhandled exceptions are
     the "something is wrong" cases."""
     try:
+        if agent_id == "featurize_timeseries":
+            # Rolls up via the streaming/chunked engine, straight from
+            # ctx.data_path — deliberately NEVER read_dataframe(), which is
+            # exactly the unguarded full-load path this whole mechanism
+            # exists to route around for a multi-GB raw file. Config is
+            # hardcoded to NGAFID for now (see PROJECT_OVERVIEW.md /
+            # README.md for why: a pluggable per-dataset-family config is
+            # explicitly future work, not needed to unblock this dataset).
+            table = build_flight_feature_table_streaming(
+                ctx.data_path, sensor_columns=NGAFID_SENSORS,
+                id_column=NGAFID_ID_COLUMN, group_column=NGAFID_GROUP_COLUMN,
+                label_column=NGAFID_LABEL_COLUMN, label_map=NGAFID_LABEL_MAP,
+                extra_columns=NGAFID_EXTRA_COLUMNS, max_flights=ctx.featurize_max_flights,
+            )
+            out_path = datasets_root() / "processed" / f"{ctx.run_id}_featurized.csv"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            table.to_csv(out_path, index=False)
+
+            # raw_csv/features_csv populated the same way --raw-csv/
+            # --features-csv would be for a pre-existing model — this is
+            # what keeps deep_dive's extract_single_flight_raw(ctx.raw_csv, ...)
+            # working later in this same run without any change on its end.
+            ctx.raw_csv = ctx.data_path
+            ctx.features_csv = str(out_path)
+            # Equivalent to what load_raw_hash() would produce, but from the
+            # table already in memory rather than a redundant disk re-read —
+            # this is what lets the --target-given path skip load_raw_hash()
+            # entirely once this branch has run (see run_dynamic_orchestrator.py).
+            ctx.raw_df = table
+            ctx.engineered_df = table
+            ctx.raw_data_hash = hash_dataframe(table)
+
+            summary = {
+                "n_examples": len(table),
+                "n_groups": int(table[NGAFID_GROUP_COLUMN].nunique())
+                            if NGAFID_GROUP_COLUMN in table.columns else None,
+                "label_balance": table[NGAFID_LABEL_COLUMN].value_counts().to_dict()
+                                  if NGAFID_LABEL_COLUMN in table.columns else {},
+                "output_path": str(out_path),
+            }
+            state.featurization_done = True
+            state.featurization_summary = summary
+            emit_event(on_event, "featurize_timeseries", "featurization_completed", summary)
+            return True, []
+
         if agent_id == "intake":
             result = run_intake_step(ctx.raw_df, ctx.goal, client, model=model, trace_fn=trace_fn,
-                                      on_event=on_event, prompt_override_dir=prompt_override_dir)
+                                      on_event=on_event, prompt_override_dir=prompt_override_dir,
+                                      tool_provider=tool_provider)
             write_transcript("intake", result.messages)
             if not result.ok:
                 return False, result.validation_errors or ["intake agent failed"]
@@ -171,17 +243,44 @@ def execute_agent_step(
             ctx.group_column = proposal.get("group_column")
             ctx.time_column = proposal.get("time_column")
             ctx.id_columns = proposal.get("id_columns") or []
-            load_raw_hash(ctx)
+            # Skip when featurize_timeseries already populated raw_df/
+            # engineered_df/raw_data_hash directly from its in-memory
+            # rolled-up table — load_raw_hash() re-reads ctx.data_path from
+            # disk, which for a long-format run is the ORIGINAL raw file,
+            # and would silently clobber the rolled-up table with it.
+            if not state.featurization_done:
+                load_raw_hash(ctx)
             state.target_known = True
             state.target_column = ctx.target_column
             return True, []
 
         if agent_id == "feature_engineering":
+            ctx.feature_engineering_attempts += 1
+            if ctx.feature_engineering_attempts > MAX_FEATURE_ENGINEERING_ATTEMPTS:
+                # Deterministic conservative degradation — the same
+                # discipline every other agent here already follows for
+                # unparseable/repeatedly-failing LLM output (verification ->
+                # flagged, retrain_decision -> infer_only, deep_dive ->
+                # template): after enough rejected attempts, take the
+                # SAME "zero changes" outcome this agent is already allowed
+                # to propose itself, rather than trust the model to
+                # eventually land on it. previous_error + a bumped retry
+                # temperature (feature_engineering_step.py) make that more
+                # likely, but aren't a guarantee — this is what actually
+                # guarantees a run can't get stuck here, proven necessary
+                # by a real incident (13 identical rejections in a row).
+                emit_event(on_event, "feature_engineering", "proposal_degraded", {
+                    "attempts": ctx.feature_engineering_attempts, "last_error": state.last_action,
+                })
+                state.feature_engineering_done = True
+                return True, []
+
             result = run_feature_engineering_step(
                 ctx.engineered_df, ctx.target_column, client,
                 group_column=ctx.group_column, time_column=ctx.time_column,
                 model=model, trace_fn=trace_fn, on_event=on_event,
-                prompt_override_dir=prompt_override_dir,
+                prompt_override_dir=prompt_override_dir, tool_provider=tool_provider,
+                previous_error=_previous_error_for("feature_engineering", state),
             )
             write_transcript("feature_engineering", result.messages)
             if not result.ok:
@@ -193,8 +292,9 @@ def execute_agent_step(
 
         if agent_id == "profiler":
             result = run_profiler_step(ctx.engineered_df, ctx.target_column, client,
+                                       group_column=ctx.group_column, time_column=ctx.time_column,
                                        model=model, trace_fn=trace_fn, on_event=on_event,
-                                       prompt_override_dir=prompt_override_dir)
+                                       prompt_override_dir=prompt_override_dir, tool_provider=tool_provider)
             write_transcript("profiler", result.messages)
             if not result.ok:
                 return False, ["profiler agent never called get_dataset_profile"]
@@ -220,7 +320,17 @@ def execute_agent_step(
             ctx.strategy_used = result.strategy_used
             ctx.group_column = result.group_column
             ctx.time_column = result.time_column
-            state.split_done = True
+            # A failed split is NOT "done" — same convention as every other
+            # step's _done flag. Marking it done unconditionally created a
+            # structural dead end: split_and_check_leakage requires
+            # split_done=False (can't re-run) while modeling requires
+            # split_leakage_passed=True (can't proceed), so after one gate
+            # failure NO catalog agent was proposable and the planner
+            # burned its retries into planner_failed (a real NGAFID run
+            # died exactly this way). Leaving it False keeps the planner
+            # free to retry or finish; the leakage gates themselves are
+            # unchanged.
+            state.split_done = result.ok
             state.split_leakage_passed = result.ok
             if not result.ok:
                 return False, result.errors
@@ -233,7 +343,8 @@ def execute_agent_step(
                 train_idx=ctx.manifest.train_idx, val_idx=ctx.manifest.val_idx,
                 client=client, model=model, metric_names=ctx.metric_names, seed=ctx.seed,
                 already_tried_template_ids=ctx.tried_template_ids, trace_fn=trace_fn, on_event=on_event,
-                prompt_override_dir=prompt_override_dir,
+                prompt_override_dir=prompt_override_dir, tool_provider=tool_provider,
+                previous_error=_previous_error_for("modeling", state),
             )
             write_transcript("modeling", result.messages)
             if result.template_id:
@@ -265,7 +376,8 @@ def execute_agent_step(
                 profiler_report=ctx.profiler_report,
             )
             result = run_verification_step(bundle, client, model=verification_model, trace_fn=trace_fn,
-                                            on_event=on_event, prompt_override_dir=prompt_override_dir)
+                                            on_event=on_event, prompt_override_dir=prompt_override_dir,
+                                            tool_provider=tool_provider)
             write_transcript("verification", result.messages)
             for c in state.candidates:
                 if c.candidate_id == candidate_id:
@@ -355,7 +467,7 @@ def execute_agent_step(
                 "n_examples_accumulated_since_last_retrain": n_examples_since_last_train,
             }
             result = run_retrain_decision_step(monitoring_context, client, model=model, trace_fn=trace_fn,
-                                                on_event=on_event)
+                                                on_event=on_event, tool_provider=tool_provider)
             write_transcript("retrain_decision", result.messages)
             state.pending_retrain_action = result.action
             state.last_action = f"retrain_decision: {result.action} ({result.reasoning or 'n/a'})"
@@ -461,7 +573,8 @@ def execute_agent_step(
             result = run_deep_dive_step(
                 flight_df, feature_row, pipeline, feature_columns, background, client,
                 model=model, trace_fn=trace_fn, on_event=on_event,
-                prompt_override_dir=prompt_override_dir,
+                prompt_override_dir=prompt_override_dir, tool_provider=tool_provider,
+                flight_id=str(flight_id),
             )
             write_transcript("deep_dive", result.messages)
             ctx.deep_dive_results[str(flight_id)] = result
@@ -516,6 +629,7 @@ def run_dynamic_loop(
     write_transcript: Optional[Callable[[str, list[dict]], object]] = None,
     on_event: Optional[Callable[[dict], None]] = None,
     prompt_override_dir: Optional[str] = None,
+    tool_provider: Optional[ToolProvider] = None,
 ) -> DynamicLoopResult:
     write_transcript = write_transcript or (lambda name, messages: None)
     history: list[dict] = []
@@ -535,7 +649,7 @@ def run_dynamic_loop(
             planner_result = run_planner_step(
                 ctx.goal, state_dict, available_agents, iteration, max_iterations,
                 client, model=model, previous_error=previous_error, trace_fn=trace_fn, on_event=on_event,
-                prompt_override_dir=prompt_override_dir,
+                prompt_override_dir=prompt_override_dir, tool_provider=tool_provider,
             )
             write_transcript("planner", planner_result.messages)
             if not planner_result.ok:
@@ -577,6 +691,7 @@ def run_dynamic_loop(
         ok, errors = execute_agent_step(
             agent_id, step_args, ctx, state, client, model, verification_model,
             trace_fn, write_transcript, on_event=on_event, prompt_override_dir=prompt_override_dir,
+            tool_provider=tool_provider,
         )
         state.last_action = f"{agent_id}: {'OK' if ok else 'FAILED - ' + '; '.join(errors)}"
         history.append({

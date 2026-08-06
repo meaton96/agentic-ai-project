@@ -54,12 +54,32 @@ class ToolCallingAgent:
         system_prompt: str,
         model: Optional[str] = None,
         max_turns: int = 8,
+        temperature: float = 0.0,
+        max_tokens: int = 1024,
     ):
         self.client = model_client
         self.tools = {t.name: t for t in tools}
         self.system_prompt = system_prompt
         self.model = model
         self.max_turns = max_turns
+        # Previously silently pinned at ModelClient.call's own default
+        # (0.0) with no way to override — real incident: a step retrying
+        # a rejected proposal with specific feedback about why (see
+        # feature_engineering_step.py's previous_error) is guaranteed to
+        # get the exact same wrong answer again at temperature=0.0 if the
+        # feedback text doesn't change, since the whole prompt becomes
+        # byte-identical to the prior attempt. A caller building a retry
+        # can now pass a nonzero temperature so the same feedback has an
+        # actual chance to land differently.
+        self.temperature = temperature
+        # Same gap, different symptom: max_tokens was also silently pinned
+        # at ModelClient.call's own default (1024) with no override — real
+        # incident: a modeling candidate enumerating many individual
+        # derived-stat columns for a wide rolled-up table got cut off
+        # mid-column-name at exactly 1024 output tokens, producing a
+        # truncated, unparseable JSON response every attempt (not a
+        # malformed-response problem — a response-budget problem).
+        self.max_tokens = max_tokens
 
     def run(self, user_message: str, trace_fn: Optional[Callable[[dict], None]] = None) -> AgentRunResult:
         messages: list[dict] = [
@@ -75,7 +95,25 @@ class ToolCallingAgent:
                 trace_fn(record)
 
         for turn in range(self.max_turns):
-            response = self.client.call(messages, model=self.model, tools=tool_schemas)
+            # Logged BEFORE the call, not just on a successful response: if
+            # the API rejects the request outright (e.g. a context-length
+            # 400), the call raises before returning anything, so the
+            # success-only "model_call" trace below never fires — this is
+            # what's actually visible in trace.jsonl for that turn either
+            # way, closing a real gap where a failed-before-responding call
+            # otherwise left no record of what was about to be sent.
+            request_chars = sum(len(json.dumps(m, default=str)) for m in messages)
+            trace("model_call_started", turn=turn, request_chars=request_chars,
+                  request_chars_est_tokens=request_chars // 4)
+            try:
+                response = self.client.call(
+                    messages, model=self.model, tools=tool_schemas,
+                    temperature=self.temperature, max_tokens=self.max_tokens,
+                )
+            except Exception as e:
+                trace("model_call_failed", turn=turn, error=f"{type(e).__name__}: {e}",
+                      request_chars=request_chars, request_chars_est_tokens=request_chars // 4)
+                raise
             trace(
                 "model_call",
                 turn=turn,

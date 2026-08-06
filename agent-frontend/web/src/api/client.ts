@@ -7,9 +7,12 @@ import type {
   LaunchRunRequest,
   LaunchRunResponse,
   LeaderboardEntry,
+  McpConfigResponse,
   PromptInfo,
   RunSummary,
   TranscriptMessage,
+  WorkflowCatalog,
+  WorkflowCatalogType,
 } from './types'
 
 export const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? 'http://127.0.0.1:8001'
@@ -85,6 +88,14 @@ export function putPromptOverride(agent: string, content: string): Promise<Promp
 
 export function deletePromptOverride(agent: string): Promise<PromptInfo> {
   return request(`/api/prompts/${encodeURIComponent(agent)}`, { method: 'DELETE' })
+}
+
+export function getWorkflowCatalog(type: WorkflowCatalogType): Promise<WorkflowCatalog> {
+  return request(`/api/workflow-catalog?type=${encodeURIComponent(type)}`)
+}
+
+export function getMcpConfig(): Promise<McpConfigResponse> {
+  return request('/api/mcp/config')
 }
 
 // Not fetched via `request` — this is handed to `new EventSource(...)` by

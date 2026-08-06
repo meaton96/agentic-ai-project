@@ -18,9 +18,9 @@ import pandas as pd
 from agentic_ml.agent_runtime import ToolCallingAgent
 from agentic_ml.events import emit_event
 from agentic_ml.harness.intake import validate_dataset_spec_proposal
+from agentic_ml.mcp_facts.provider import LocalToolProvider, ToolProvider
 from agentic_ml.model_client import ModelClient
 from agentic_ml.prompt_loader import load_prompt, prompt_source, resolve_prompt_override_dir
-from agentic_ml.tools.intake_tool import make_raw_schema_tool
 
 
 @dataclass
@@ -44,6 +44,7 @@ def run_intake_step(
     trace_fn: Optional[Callable[[dict], None]] = None,
     on_event: Optional[Callable[[dict], None]] = None,
     prompt_override_dir: Optional[str] = None,
+    tool_provider: Optional[ToolProvider] = None,
 ) -> IntakeStepResult:
     resolved_override_dir = resolve_prompt_override_dir(prompt_override_dir)
     prompt_src, prompt_path = prompt_source("intake", resolved_override_dir)
@@ -51,7 +52,8 @@ def run_intake_step(
     emit_event(on_event, "intake", "prompt_loaded", {"source": prompt_src, "path": str(prompt_path)})
     emit_event(on_event, "intake", "agent_started", {"goal": goal_text})
 
-    tool = make_raw_schema_tool(df)
+    provider = tool_provider or LocalToolProvider()
+    tool = provider.make_raw_schema_tool(df)
     agent = ToolCallingAgent(
         model_client=client, tools=[tool], system_prompt=system_prompt,
         model=model, max_turns=max_turns,

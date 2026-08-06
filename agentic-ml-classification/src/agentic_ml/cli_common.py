@@ -10,6 +10,7 @@ import json
 import os
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 from dotenv import load_dotenv
@@ -61,7 +62,13 @@ def resolve_model_endpoint(
 
 
 def make_run_dir(run_id: Optional[str]) -> tuple[str, Path]:
-    run_id = run_id or f"run_{uuid.uuid4().hex[:8]}"
+    """run_id defaults to a local-time timestamp (run_YYMMDD_HHMMSS) so
+    runs/ sorts and scans chronologically at a glance instead of by
+    opaque hex — plus a short random suffix, since a bare
+    to-the-second timestamp isn't unique enough to rule out a collision
+    (e.g. two runs kicked off in quick succession) silently sharing one
+    directory and clobbering each other's transcripts/facts."""
+    run_id = run_id or f"run_{datetime.now().strftime('%y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
     run_dir = resolve_run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_id, run_dir

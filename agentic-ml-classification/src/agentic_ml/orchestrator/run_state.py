@@ -81,6 +81,30 @@ class RunStateSummary:
                              # it runs — v1 after cold start, v(n+1) after each retrain
     n_batches_processed: int = 0
 
+    # --- long-format time-series auto-routing ---
+    # looks_long_format is set once, before the loop starts, from
+    # harness/dataset.py::detect_dataset_shape's cheap sample-based peek —
+    # never recomputed mid-run. featurization_done flips True once the
+    # featurize_timeseries agent has actually rolled the dataset up.
+    # data_ready (below) is what intake/feature_engineering's
+    # required_state actually gates on; it's derived rather than a
+    # separately-mutated flag so there's no way to forget to flip it.
+    looks_long_format: bool = False
+    featurization_done: bool = False
+    featurization_summary: Optional[dict] = None  # n_flights, n_groups, label
+                                        # balance, output path — set by
+                                        # featurize_timeseries, same idea as
+                                        # drift_summary: textual context for
+                                        # the planner beyond a bare bool
+
+    @property
+    def data_ready(self) -> bool:
+        """False only while a detected long-format dataset hasn't been
+        rolled up yet — for every ordinary (already-tabular) run,
+        looks_long_format defaults False, so this is always True and
+        every existing agent's behavior is completely unaffected."""
+        return (not self.looks_long_format) or self.featurization_done
+
     @property
     def has_unverified_passing_candidate(self) -> bool:
         return any(c.passed_gate and c.verification_verdict is None for c in self.candidates)
@@ -132,6 +156,10 @@ class RunStateSummary:
             "batch_action_completed": self.batch_action_completed,
             "model_version": self.model_version,
             "n_batches_processed": self.n_batches_processed,
+            "looks_long_format": self.looks_long_format,
+            "featurization_done": self.featurization_done,
+            "featurization_summary": self.featurization_summary,
+            "data_ready": self.data_ready,
         }
 
 
@@ -149,11 +177,17 @@ class DynamicRunContext:
                 metric_names: Optional[list[str]] = None,
                 raw_csv: Optional[str] = None,
                 features_csv: Optional[str] = None,
-                run_id: str = "run"):
+                run_id: str = "run",
+                featurize_max_flights: Optional[int] = None):
         self.data_path = data_path
         self.goal = goal
         self.seed = seed
         self.run_id = run_id
+        self.featurize_max_flights = featurize_max_flights  # passthrough for the
+                                        # featurize_timeseries branch — caps how many
+                                        # flights build_flight_feature_table_streaming
+                                        # rolls up before stopping, for a bounded smoke
+                                        # run against a huge raw file; None = full file
 
         # populated as intake/feature-engineering run (or pre-seeded via --target)
         self.target_column = target_column
@@ -168,6 +202,11 @@ class DynamicRunContext:
         self.engineered_df = None     # raw_df, or FE-augmented if FE ran
         self.final_id_columns: list[str] = []
 
+        self.feature_engineering_attempts: int = 0  # dynamic_loop.py's
+                                        # MAX_FEATURE_ENGINEERING_ATTEMPTS
+                                        # bound — how many times this run has
+                                        # actually called the feature_engineering
+                                        # agent, regardless of outcome
         self.profiler_report: Optional[dict] = None
         self.strategy_used: Optional[str] = None
         self.manifest = None          # split_manifest.SplitManifest-like object

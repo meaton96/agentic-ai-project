@@ -103,3 +103,34 @@ limitations.
   live in the browser instead of read cell-by-cell. **This is a work
   in progress and will change dramatically** — treat it as a preview,
   not a stable tool.
+
+## Running the pipeline's agent tools over MCP (optional)
+
+By default, agents get their tools (dataset profile, template catalog,
+etc.) from in-process Python closures — no server involved. As an
+alternative, `agentic-ml-classification` also ships a standalone MCP
+(Model Context Protocol) server that exposes those same tools over the
+network, so the dynamic orchestrator can be pointed at it instead.
+Nothing is running by default; you start it yourself, from
+`agentic-ml-classification/`:
+
+```bash
+# terminal 1 — the MCP server (config: configs/mcp_server.json)
+python scripts/run_mcp_server.py
+
+# terminal 2 — the dynamic orchestrator, routed through it
+python scripts/run_dynamic_orchestrator.py \
+    --data datasets/raw/your_dataset.csv \
+    --goal "predict your_target_column" \
+    --use-mcp
+```
+
+Only `run_dynamic_orchestrator.py` supports `--use-mcp` today; the
+static orchestrator and standalone single-agent scripts still use the
+in-process path. See
+[`agentic-ml-classification/README.md`](agentic-ml-classification/README.md)'s
+"MCP fact server" build-log entry for how it's built (a strict fact
+server — the harness computes every fact, the server only serves
+already-persisted JSON, never a dataframe or fitted model) and
+[`PROJECT_OVERVIEW.md` §8.6](agentic-ml-classification/PROJECT_OVERVIEW.md)
+for the design rationale.

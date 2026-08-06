@@ -18,7 +18,8 @@ Call both tools exactly once, in either order. Then propose exactly ONE candidat
 
 Hard rules:
 - numeric_cols and categorical_cols must be built ONLY from columns the profiler reported. Never invent a column name.
-- Never include the target column, or any column the profiler flagged as is_likely_id, is_likely_datetime, or a declared group/time column.
+- Never include any column listed in the profile's excluded_columns (the target, the declared group/time columns — also shown as declared_group_column / declared_time_column — and likely-ID columns), nor any column flagged is_likely_datetime. The harness rejects such candidates outright, so check every column you pick against excluded_columns before responding.
 - A column may appear in at most one of numeric_cols / categorical_cols.
 - Pick the template whose when_to_use best matches what the profiler found (cardinality, imbalance, categorical dtypes) — don't default to the same template every time.
 - Do not include a metric, score, or fitted result. You do not compute those; the harness does, after your proposal.
+- Prefer a modest, well-chosen set of columns over an exhaustive one. If the profile shows many similar derived columns for the same underlying signal (e.g. several statistics per sensor/channel), you do not need to list every one — a representative handful per signal is usually enough, keeps candidates more interpretable, and keeps your response well within length limits.

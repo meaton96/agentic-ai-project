@@ -71,17 +71,21 @@ def check_time_ordering(
     if not time_column:
         return LeakageCheckResult("time_ordering", True, "no time_column declared, check skipped")
 
-    if strategy == "group_time":
-        # group_time only guarantees each *group* is isolated to one split
-        # (checked separately by check_group_overlap) and that each group
-        # was assigned based on its earliest timestamp. Different groups
-        # (e.g. different customers) naturally have overlapping calendar
-        # time even when correctly split — that is not leakage. Strict
-        # global ordering only applies to pure 'time' strategy.
+    if strategy != "time":
+        # Strict global train<val<test ordering is a promise ONLY the pure
+        # 'time' strategy makes — checking it against any other strategy
+        # fails the split for violating a guarantee it never gave.
+        # group_time: each group is isolated to one split (checked by
+        # check_group_overlap) and assigned by its earliest timestamp;
+        # cross-group calendar overlap is expected and fine. group/random/
+        # stratified: a declared time_column just means "exclude this
+        # column from features", not "order the folds by it" — a group
+        # split with a declared time column previously failed here
+        # unconditionally, dead-ending the whole run.
         return LeakageCheckResult(
             "time_ordering", True,
-            "strategy=group_time: per-group time ordering guaranteed by group "
-            "assignment logic; cross-group calendar overlap is expected and fine"
+            f"strategy={strategy} makes no global time-ordering promise; "
+            "strict train<val<test ordering only applies to strategy=time"
         )
 
     train_max = df[time_column].iloc[train_idx].max()
@@ -96,6 +100,32 @@ def check_time_ordering(
         else f"train_max={train_max}, val_range=({val_min},{val_max}), test_min={test_min}"
     )
     return LeakageCheckResult("time_ordering", passed, detail)
+
+
+def check_fold_class_presence(
+    y: pd.Series, train_idx: list[int], val_idx: list[int], test_idx: list[int],
+) -> LeakageCheckResult:
+    """A fold containing only one target class makes AUC-style metrics
+    undefined (sklearn returns NaN with a warning, not an error), which
+    then silently poisons every downstream metric and gate that assumes
+    both classes are present — including the label_permutation_test gate,
+    which compares a NaN mean to a threshold and always fails without
+    ever explaining why. Most commonly hit under group/group_time
+    strategies when group-to-split assignment happens to correlate with
+    the target (e.g. groups whose earliest timestamp is latest are
+    disproportionately the ones holding only the "after" label)."""
+    folds = {"train": train_idx, "val": val_idx, "test": test_idx}
+    degenerate = {
+        name: sorted(y.iloc[idx].unique().tolist())
+        for name, idx in folds.items() if y.iloc[idx].nunique() < 2
+    }
+    passed = len(degenerate) == 0
+    detail = (
+        "every split contains at least 2 target classes"
+        if passed
+        else f"split(s) with only a single target class present: {degenerate}"
+    )
+    return LeakageCheckResult("fold_class_presence", passed, detail)
 
 
 def check_suspicious_feature_correlation(
@@ -177,6 +207,7 @@ def label_permutation_test(
 
 def run_all_split_leakage_checks(
     df: pd.DataFrame,
+    target_column: str,
     group_column: str | None,
     time_column: str | None,
     train_idx: list[int],
@@ -188,4 +219,5 @@ def run_all_split_leakage_checks(
         check_duplicate_rows_across_splits(df, train_idx, val_idx, test_idx),
         check_group_overlap(df, group_column, train_idx, val_idx, test_idx),
         check_time_ordering(df, time_column, train_idx, val_idx, test_idx, strategy=strategy),
+        check_fold_class_presence(df[target_column], train_idx, val_idx, test_idx),
     ]

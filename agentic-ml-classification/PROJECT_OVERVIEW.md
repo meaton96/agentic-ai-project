@@ -720,6 +720,81 @@ and an assertion on `deep_dive_completed_flight_ids` in the routing
 test) — two more cases of a real run finding what a hardcoded-response
 test structurally could not.
 
+## 8.6 The MCP fact server: standardizing the agent-tool channel
+
+Every tool an agent calls (`get_dataset_profile`, `get_candidate_review_bundle`,
+`list_templates`, ...) was, until this point, a Python closure built
+inline by a `steps/*_step.py` function and handed straight to
+`ToolCallingAgent` — see `tools/*.py`. That's a clean boundary
+architecturally (§2's "agents propose, harness decides" already holds:
+the closure computes a fact, the agent can't alter what it returns),
+but it's a bespoke, in-process one. `src/agentic_ml/mcp_facts/`
+replaces that channel with the Model Context Protocol, the real-world
+standard for exposing tools to an LLM agent, without touching what any
+tool actually does.
+
+**Fact server, not compute server.** The tempting reading of "expose
+the tools as an MCP server" is to have the server itself run
+`profile_dataset()`, `raw_schema_summary()`, and so on. We didn't do
+that. Several of the existing tool factories close over live,
+harness-only state that should never leave this process — most
+sharply, `deep_dive_tool.py`'s fitted sklearn `Pipeline` (§7's sandbox
+constraints exist precisely because untrusted code and fitted objects
+are dangerous to hand around casually). Making the MCP server compute
+facts itself would mean either serializing that pipeline across a
+process boundary (weakening the invariant that agents never touch
+fitted objects directly) or duplicating harness logic server-side
+(a second, driftable copy of "what a fact means"). Instead: the
+harness computes every fact exactly as it always did, writes it as
+JSON to `runs/<run_id>/facts/<name>.json` (filesystem-first, the same
+discipline §3 already applies to events and transcripts), and the MCP
+server (`server.py`, built on FastMCP) only ever reads that directory
+back. The two genuinely stateless tools — `list_templates`,
+`list_feature_ops` — are the exception: they're recomputed live from
+the same registries the local tools already call, since persisting a
+copy would just be a staler mirror of the registry.
+
+**Provider parity is structural, not tested-in.** `provider.py`
+introduces `ToolProvider`, an interface both `LocalToolProvider`
+(today's in-process behavior) and `McpToolProvider` implement.
+Rather than hand-writing a second `Tool` definition per factory and
+hoping it stays in sync with the first, `McpToolProvider` *constructs*
+the local `Tool` and rebinds only its `handler` to round-trip through
+MCP — so the name, description, and JSON schema an agent sees are
+byte-identical by construction, whichever provider is wired in. A
+design-claim test still exists (`test_provider_parity_*` in
+`tests/test_mcp_facts.py`) because a construction detail isn't a
+substitute for a test that would actually fail if this ever broke —
+but the architecture doesn't rely on the test alone to keep the two
+paths honest.
+
+**Opt-in, not a migration.** Every `steps/*_step.py` function gained
+an optional `tool_provider` parameter defaulting to `None` ->
+`LocalToolProvider()` — zero behavior change for any script, notebook,
+or test that doesn't pass one, matching §10's rule that a refactor
+must not require touching existing test assertions.
+`scripts/run_dynamic_orchestrator.py --use-mcp` is currently the only
+entry point wired to construct an `McpToolProvider`; the other
+standalone scripts can adopt the identical one-line pattern later,
+deliberately not bundled into this milestone.
+
+**Why not fold in A2A too.** The same "modernize communication" ask
+included whether to expose agent-to-agent messaging via the A2A
+protocol (Agent Cards, task delegation between independently-running
+agents). We didn't, on architectural grounds rather than scope: A2A's
+premise is that peers negotiate and hand off tasks directly, but §2's
+whole point is that no agent's output is ever trusted without an
+independent deterministic re-check — `execute_agent_step` and
+`validate_plan` (§8.5) are exactly that re-check, sitting between every
+pair of agents in this pipeline. Direct A2A messaging between, say, the
+planner and the modeling agent would mean routing around that check,
+which is a regression, not a modernization. `orchestrator/agent_registry.py`'s
+`AgentSpec` catalog is already the closest analog worth naming: id,
+description, `when_to_use`, capability gating, and an arg schema — the
+same shape an A2A Agent Card advertises — so the honest comparison is
+"we already have agent cards; we deliberately don't have peer-to-peer
+task handoff."
+
 ## 9. An engineering decision worth mentioning: why there's no OpenClaw
 
 The original plan used OpenClaw (an existing agent-runtime framework)
@@ -877,6 +952,7 @@ harness composes further than any single dataset it was built against.
 | 6 — Priors/evidence reuse across runs | Not built |
 | 7 — Parallel candidate search | Not built |
 | 8 — Dynamic orchestrator (agent catalog + planning agent) | Done |
+| 8.6 — MCP fact server (opt-in agent-tool channel) | Done |
 
 Built out of numeric order on purpose: Phase 5 came before Phase 4.
 The deterministic gates in §7 already blocked leaky or broken

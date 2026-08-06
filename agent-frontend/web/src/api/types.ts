@@ -27,6 +27,11 @@ export interface LaunchRunRequest {
   model_endpoint?: ModelEndpoint
   skip_feature_engineering?: boolean
   use_prompt_overrides?: boolean
+  // Dynamic-orchestrator only (run_orchestrator.py/static has no --use-mcp
+  // flag at all) — fetches agent tool facts through the MCP fact server
+  // instead of in-process closures. See GET /api/mcp/config for what that
+  // server is currently configured to serve.
+  use_mcp?: boolean
 }
 
 export interface LaunchRunResponse {
@@ -111,4 +116,57 @@ export interface TranscriptMessage {
     function: { name: string; arguments: unknown }
   }>
   tool_call_id?: string
+}
+
+// GET /api/workflow-catalog?type=static|dynamic — read-only topology for the
+// Builder screen. "gate" = deterministic/no-LLM (dark, per PROJECT_OVERVIEW.md
+// §3), "agent" = an LLM call. `data` carries type-specific extras: the
+// dynamic catalog puts `when_to_use`/`required_state` there (straight off
+// agentic_ml.orchestrator.agent_registry.AgentSpec), the static topology
+// leaves it mostly empty.
+export type WorkflowCatalogType = 'static' | 'dynamic'
+export type WorkflowNodeKind = 'agent' | 'gate'
+
+export interface WorkflowNode {
+  id: string
+  label: string
+  kind: WorkflowNodeKind
+  description: string
+  data: Record<string, unknown>
+}
+
+export interface WorkflowEdge {
+  id: string
+  source: string
+  target: string
+  label?: string | null
+}
+
+export interface WorkflowCatalog {
+  nodes: WorkflowNode[]
+  edges: WorkflowEdge[]
+}
+
+// GET /api/mcp/config — read-only view of the pipeline's MCP fact server
+// (agentic_ml.mcp_facts.server): configs/mcp_server.json plus the tool
+// catalog that config would register, straight off the real FastMCP tool
+// registry. `reachable` is a best-effort TCP check only (no MCP handshake) —
+// this app never starts/stops that server process itself.
+export interface McpToolInfo {
+  name: string
+  description: string
+  input_schema: Record<string, unknown>
+  enabled: boolean
+}
+
+export interface McpConfigResponse {
+  config_path: string
+  config_exists: boolean
+  name: string
+  host: string
+  port: number
+  url: string
+  enabled_tools: string[]
+  reachable: boolean
+  tools: McpToolInfo[]
 }
