@@ -1,0 +1,73 @@
+{
+  "properties": {
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "seq": {
+      "title": "Seq",
+      "type": "integer"
+    },
+    "ts": {
+      "format": "date-time",
+      "title": "Ts",
+      "type": "string"
+    },
+    "agent_id": {
+      "title": "Agent Id",
+      "type": "string"
+    },
+    "parent_call_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Call Id"
+    },
+    "type": {
+      "const": "tool_result",
+      "default": "tool_result",
+      "title": "Type",
+      "type": "string"
+    },
+    "call_id": {
+      "title": "Call Id",
+      "type": "string"
+    },
+    "result": {
+      "title": "Result"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error"
+    },
+    "duration_ms": {
+      "title": "Duration Ms",
+      "type": "number"
+    }
+  },
+  "required": [
+    "run_id",
+    "seq",
+    "ts",
+    "agent_id",
+    "call_id",
+    "result",
+    "duration_ms"
+  ],
+  "title": "ToolResultEvent",
+  "type": "object"
+}

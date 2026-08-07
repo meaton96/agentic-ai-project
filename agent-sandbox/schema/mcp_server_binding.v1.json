@@ -1,0 +1,66 @@
+{
+  "properties": {
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "transport": {
+      "enum": [
+        "stdio",
+        "http",
+        "sse"
+      ],
+      "title": "Transport",
+      "type": "string"
+    },
+    "connection": {
+      "additionalProperties": true,
+      "title": "Connection",
+      "type": "object"
+    },
+    "credential_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Credential Ref"
+    },
+    "allowed_tools": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Allowed Tools"
+    },
+    "logging_policy": {
+      "default": "full",
+      "enum": [
+        "full",
+        "hashed",
+        "metadata"
+      ],
+      "title": "Logging Policy",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "transport",
+    "connection"
+  ],
+  "title": "McpServerBinding",
+  "type": "object"
+}

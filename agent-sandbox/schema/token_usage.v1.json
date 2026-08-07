@@ -1,0 +1,23 @@
+{
+  "properties": {
+    "prompt_tokens": {
+      "title": "Prompt Tokens",
+      "type": "integer"
+    },
+    "completion_tokens": {
+      "title": "Completion Tokens",
+      "type": "integer"
+    },
+    "total_tokens": {
+      "title": "Total Tokens",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens"
+  ],
+  "title": "TokenUsage",
+  "type": "object"
+}

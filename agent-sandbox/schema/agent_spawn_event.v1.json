@@ -1,0 +1,57 @@
+{
+  "properties": {
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "seq": {
+      "title": "Seq",
+      "type": "integer"
+    },
+    "ts": {
+      "format": "date-time",
+      "title": "Ts",
+      "type": "string"
+    },
+    "agent_id": {
+      "title": "Agent Id",
+      "type": "string"
+    },
+    "parent_call_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Call Id"
+    },
+    "type": {
+      "const": "agent_spawn",
+      "default": "agent_spawn",
+      "title": "Type",
+      "type": "string"
+    },
+    "child_agent_id": {
+      "title": "Child Agent Id",
+      "type": "string"
+    },
+    "spawned_via_tool": {
+      "title": "Spawned Via Tool",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "seq",
+    "ts",
+    "agent_id",
+    "child_agent_id",
+    "spawned_via_tool"
+  ],
+  "title": "AgentSpawnEvent",
+  "type": "object"
+}

@@ -1,0 +1,57 @@
+{
+  "properties": {
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "seq": {
+      "title": "Seq",
+      "type": "integer"
+    },
+    "ts": {
+      "format": "date-time",
+      "title": "Ts",
+      "type": "string"
+    },
+    "agent_id": {
+      "title": "Agent Id",
+      "type": "string"
+    },
+    "parent_call_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Call Id"
+    },
+    "type": {
+      "const": "agent_result",
+      "default": "agent_result",
+      "title": "Type",
+      "type": "string"
+    },
+    "final_output": {
+      "title": "Final Output",
+      "type": "string"
+    },
+    "turns_used": {
+      "title": "Turns Used",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "run_id",
+    "seq",
+    "ts",
+    "agent_id",
+    "final_output",
+    "turns_used"
+  ],
+  "title": "AgentResultEvent",
+  "type": "object"
+}
