@@ -34,10 +34,15 @@ from typing import Callable, Optional
 import pandas as pd
 from sklearn.base import clone
 
+from agentic_ml.ablation import AblationConfig
 from agentic_ml.agent_runtime import ToolCallingAgent
 from agentic_ml.events import emit_event
 from agentic_ml.harness.column_grouping import expand_grouped_columns
-from agentic_ml.harness.leakage import check_suspicious_feature_correlation, label_permutation_test
+from agentic_ml.harness.leakage import (
+    LeakageCheckResult,
+    check_suspicious_feature_correlation,
+    label_permutation_test,
+)
 from agentic_ml.harness.sandbox import run_candidate_build
 from agentic_ml.harness.metrics import compute_metrics, roc_auc_any
 from agentic_ml.mcp_facts.provider import LocalToolProvider, ToolProvider
@@ -135,9 +140,11 @@ def run_modeling_step(
     prompt_override_dir: Optional[str] = None,
     tool_provider: Optional[ToolProvider] = None,
     previous_error: Optional[str] = None,
+    ablation: Optional[AblationConfig] = None,
 ) -> ModelingStepResult:
     if metric_names is None:
         metric_names = ["roc_auc", "pr_auc", "f1", "accuracy"]
+    ablation = ablation or AblationConfig()
 
     resolved_override_dir = resolve_prompt_override_dir(prompt_override_dir)
     prompt_src, prompt_path = prompt_source("modeling", resolved_override_dir)
@@ -267,17 +274,27 @@ def run_modeling_step(
         p = candidate_pipeline.predict_proba(X_va)
         return roc_auc_any(y_va, p)
 
-    permutation_check = label_permutation_test(
-        fit_and_score, X.iloc[train_idx], y.iloc[train_idx], X.iloc[val_idx], y.iloc[val_idx],
-        metric_name="roc_auc", seed=seed,
-    )
+    if ablation.skip_label_permutation_gate:
+        permutation_check = LeakageCheckResult(
+            "label_permutation_test", True, "SKIPPED (ablation: skip_label_permutation_gate)",
+        )
+    else:
+        permutation_check = label_permutation_test(
+            fit_and_score, X.iloc[train_idx], y.iloc[train_idx], X.iloc[val_idx], y.iloc[val_idx],
+            metric_name="roc_auc", seed=seed,
+        )
     emit_event(on_event, "modeling", "leakage_gate_result",
                 {"candidate_id": candidate_id, **permutation_check.to_dict()})
 
     selected_cols = [c for c in config.get("numeric_cols", []) + config.get("categorical_cols", []) if c in X.columns]
-    correlation_check = check_suspicious_feature_correlation(
-        X[selected_cols].iloc[train_idx], y.iloc[train_idx],
-    )
+    if ablation.skip_feature_correlation_gate:
+        correlation_check = LeakageCheckResult(
+            "suspicious_feature_correlation", True, "SKIPPED (ablation: skip_feature_correlation_gate)",
+        )
+    else:
+        correlation_check = check_suspicious_feature_correlation(
+            X[selected_cols].iloc[train_idx], y.iloc[train_idx],
+        )
     emit_event(on_event, "modeling", "leakage_gate_result",
                 {"candidate_id": candidate_id, **correlation_check.to_dict()})
 

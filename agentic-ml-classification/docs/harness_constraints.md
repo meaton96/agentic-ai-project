@@ -540,4 +540,6 @@ most likely to be worth a literature comparison are:
 
 Full design rationale and worked failure-mode examples for every step above
 are in [`PROJECT_OVERVIEW.md`](../PROJECT_OVERVIEW.md); this document is the
-condensed, constraint-focused companion to it.
+condensed, constraint-focused companion to it. For the same rules written
+as formal algorithmic pseudocode (paper-appendix style), see
+[`harness_pseudocode.md`](harness_pseudocode.md).

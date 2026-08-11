@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from agentic_ml.ablation import AblationConfig
 from agentic_ml.harness.verification import build_review_bundle
 from agentic_ml.model_client import ModelResponse
 from agentic_ml.steps.modeling_step import run_modeling_step
@@ -190,6 +191,59 @@ def test_modeling_step_accepts_candidate_without_leaky_column(leaky_df):
     assert result.feature_correlation_check is not None
     assert result.feature_correlation_check["passed"] is True
     assert result.ok is True
+
+
+# --- ablation: does disabling one leakage gate let the leaky candidate through? ---
+
+def _run_leaky_candidate(leaky_df, ablation=None):
+    candidate_json = json.dumps({
+        "candidate_id": "candidate_leaky", "template_id": "logistic_numeric",
+        "config": {"numeric_cols": ["noise", "leak"]},
+        "explanation": "Uses all available numeric columns.",
+    })
+    train_idx, val_idx = list(range(0, 200)), list(range(200, 300))
+    return run_modeling_step(
+        full_df=leaky_df, X=leaky_df[["noise", "leak"]], y=leaky_df["target"],
+        target_column="target", group_column=None, time_column=None,
+        train_idx=train_idx, val_idx=val_idx, client=_fake_modeling_client(candidate_json),
+        ablation=ablation,
+    )
+
+
+def test_ablation_none_matches_default_behavior(leaky_df):
+    """ablation=None must be byte-for-byte the same as omitting the
+    argument entirely — every existing call site that doesn't pass
+    ablation= is relying on this."""
+    result = _run_leaky_candidate(leaky_df, ablation=None)
+    assert result.ok is False
+    assert result.feature_correlation_check["passed"] is False
+
+
+def test_ablation_disabling_correlation_gate_lets_the_leak_through(leaky_df):
+    """The permutation gate alone does NOT catch this fixture (shuffling
+    labels makes the proxy column just as useless as noise — see the
+    complementary-gates claim in harness_constraints.md §Step 5). With
+    only the correlation gate disabled, nothing left is checking the
+    columns this candidate actually selected, so the leaky candidate is
+    accepted."""
+    result = _run_leaky_candidate(leaky_df, ablation=AblationConfig(skip_feature_correlation_gate=True))
+    assert result.feature_correlation_check["passed"] is True
+    assert "SKIPPED" in result.feature_correlation_check["detail"]
+    assert result.label_permutation_check["passed"] is True  # unaffected, still runs for real
+    assert result.ok is True  # the leak is now silently accepted
+
+
+def test_ablation_disabling_permutation_gate_still_catches_this_leak(leaky_df):
+    """The correlation gate alone is sufficient for THIS fixture (a raw
+    near-duplicate column) — disabling only the permutation gate should
+    not change the outcome, demonstrating the two gates are not
+    symmetric for every fault: this one is only a Track-A (content)
+    leak, not a process leak."""
+    result = _run_leaky_candidate(leaky_df, ablation=AblationConfig(skip_label_permutation_gate=True))
+    assert result.label_permutation_check["passed"] is True
+    assert "SKIPPED" in result.label_permutation_check["detail"]
+    assert result.feature_correlation_check["passed"] is False  # unaffected, still runs for real
+    assert result.ok is False  # still correctly rejected
 
 
 def test_modeling_step_requests_a_larger_token_budget_than_the_default(leaky_df):
