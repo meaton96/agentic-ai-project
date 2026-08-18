@@ -12,6 +12,7 @@ from typing import Callable, Optional
 
 import pandas as pd
 
+from agentic_ml.ablation import AblationConfig
 from agentic_ml.events import emit_event
 from agentic_ml.harness.leakage import run_all_split_leakage_checks
 from agentic_ml.harness.splits import make_split, resolve_split_columns
@@ -39,19 +40,21 @@ def run_split_step(
     seed: int,
     strategy_override: Optional[str] = None,
     on_event: Optional[Callable[[dict], None]] = None,
+    ablation: Optional[AblationConfig] = None,
 ) -> SplitStepResult:
     strategy = strategy_override or profiler_report["recommended_split_strategy"]
     group_column, time_column, notes = resolve_split_columns(
-        strategy, group_column, time_column, profiler_report,
+        strategy, group_column, time_column, profiler_report, ablation=ablation,
     )
     manifest = make_split(
         df=df, target_column=target_column, data_hash=data_hash,
         strategy=strategy, seed=seed, group_column=group_column, time_column=time_column,
+        ablation=ablation,
     )
     leakage_checks = run_all_split_leakage_checks(
         df=df, target_column=target_column, group_column=group_column, time_column=time_column,
         train_idx=manifest.train_idx, val_idx=manifest.val_idx, test_idx=manifest.test_idx,
-        strategy=strategy,
+        strategy=strategy, ablation=ablation,
     )
     for check in leakage_checks:
         emit_event(on_event, "split_and_check_leakage", "leakage_gate_result", check.to_dict())

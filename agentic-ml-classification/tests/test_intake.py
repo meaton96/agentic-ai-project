@@ -108,3 +108,85 @@ def test_validate_proposal_rejects_target_in_id_columns(sample_df):
         "target_column": "churned", "id_columns": ["churned"],
     })
     assert any("cannot include the target_column" in e for e in errors)
+
+
+# --- ablation: what actually happens when each check is disabled ---
+# See docs/ablation_study_report.md Phase 1c and scripts/run_ablation_study.py
+# for the full study this locks in the most severe/interesting findings from.
+
+def test_ablation_group_equals_target_produces_empty_train_fold():
+    """The most severe Phase 1c finding: with the collision check
+    disabled, group_column=target_column is accepted, and group-based
+    splitting then assigns entire classes to entire folds — in this
+    fixture, ALL of train ends up empty. check_group_overlap does not
+    catch this (there genuinely is no group overlap); only
+    check_fold_class_presence does."""
+    from agentic_ml.ablation import AblationConfig
+    from agentic_ml.harness.leakage import check_fold_class_presence, check_group_overlap
+    from agentic_ml.harness.splits import make_split
+
+    rng = np.random.RandomState(0)
+    n = 200
+    df = pd.DataFrame({"x": rng.normal(size=n), "target": rng.randint(0, 2, size=n)})
+
+    ablation = AblationConfig(skip_group_time_target_collision_check=True)
+    errors = validate_dataset_spec_proposal(
+        df, {"target_column": "target", "group_column": "target"}, ablation=ablation,
+    )
+    assert errors == []
+
+    m = make_split(df, target_column="target", data_hash="x", strategy="group",
+                    group_column="target", val_frac=0.2, test_frac=0.2, seed=0)
+    assert len(m.train_idx) == 0, "train fold should end up completely empty in this fixture"
+
+    overlap = check_group_overlap(df, "target", m.train_idx, m.val_idx, m.test_idx)
+    assert overlap.passed, "group_overlap genuinely finds nothing wrong -- it is not the backstop"
+
+    presence = check_fold_class_presence(df["target"], m.train_idx, m.val_idx, m.test_idx)
+    assert not presence.passed, "fold_class_presence is the check that actually catches this"
+
+
+def test_ablation_single_class_target_is_backstopped_by_split_level_check():
+    """Disabling the cardinality lower bound accepts a single-class
+    target at intake, but the unrelated split-level
+    check_fold_class_presence independently catches it — genuine
+    defense in depth, unlike the group/target collision case above."""
+    from agentic_ml.ablation import AblationConfig
+    from agentic_ml.harness.leakage import check_fold_class_presence
+    from agentic_ml.harness.splits import make_split
+
+    rng = np.random.RandomState(0)
+    n = 200
+    df = pd.DataFrame({"x": rng.normal(size=n), "target": 1})
+
+    ablation = AblationConfig(skip_cardinality_check=True)
+    errors = validate_dataset_spec_proposal(df, {"target_column": "target"}, ablation=ablation)
+    assert errors == []
+
+    m = make_split(df, target_column="target", data_hash="x", strategy="stratified",
+                    val_frac=0.2, test_frac=0.2, seed=0)
+    presence = check_fold_class_presence(df["target"], m.train_idx, m.val_idx, m.test_idx)
+    assert not presence.passed, "an independent split-level check must still catch a single-class target"
+
+
+def test_ablation_id_columns_as_string_silently_drops_a_real_feature():
+    """Disabling the id_columns type check accepts a STRING where a list
+    was expected. Python's *string unpacking then iterates it character
+    by character, and if any of those single characters happens to match
+    a real column name, that column silently vanishes from the feature
+    set — no error at any layer."""
+    from agentic_ml.ablation import AblationConfig
+    from agentic_ml.harness.dataset import DatasetSpec, LoadedDataset
+
+    df = pd.DataFrame({"x": [1, 2], "target": [0, 1], "customer_id": ["a", "b"]})
+
+    ablation = AblationConfig(skip_id_columns_type_check=True)
+    errors = validate_dataset_spec_proposal(
+        df, {"target_column": "target", "id_columns": "xt"}, ablation=ablation,
+    )
+    assert errors == []
+
+    spec = DatasetSpec(path="fixture", target_column="target", id_columns="xt")
+    loaded = LoadedDataset(df=df, spec=spec, data_hash="fixture")
+    assert "x" not in loaded.X.columns, "the genuine feature column 'x' silently disappears"
+    assert list(loaded.X.columns) == ["customer_id"]

@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold, KFold, GroupKFold
 
+from agentic_ml.ablation import AblationConfig
 
 VALID_STRATEGIES = {"random", "stratified", "group", "time", "group_time"}
 
@@ -34,6 +35,7 @@ def resolve_split_columns(
     group_column: Optional[str],
     time_column: Optional[str],
     profiler_report: dict,
+    ablation: Optional[AblationConfig] = None,
 ) -> tuple[Optional[str], Optional[str], list[str]]:
     """Reconciles a chosen split strategy against whatever group/time
     columns were actually declared (by intake or a CLI/config override).
@@ -57,8 +59,19 @@ def resolve_split_columns(
     notes for the caller to print) rather than silent, and it does NOT
     fall back to a different (weaker) strategy — the whole point is to
     honor the recommended strategy using the evidence that justified it.
+
+    ablation: research-only, see agentic_ml.ablation — every flag
+    defaults to False, so ablation=None is identical to omitting it.
+    skip_split_column_reconciliation disables this whole reconciliation
+    pass — a recovery mechanism, not a reject gate, so disabling it
+    doesn't produce a leak, only a less clear error location (make_split
+    raises its own "requires group_column"/"requires time_column" error
+    instead of this function transparently auto-filling one).
     """
+    ablation = ablation or AblationConfig()
     notes: list[str] = []
+    if ablation.skip_split_column_reconciliation:
+        return group_column, time_column, notes
     likely_group = profiler_report.get("likely_group_columns") or []
     likely_time = profiler_report.get("likely_datetime_columns") or []
 
@@ -129,17 +142,19 @@ def make_split(
     test_frac: float = 0.15,
     group_column: Optional[str] = None,
     time_column: Optional[str] = None,
+    ablation: Optional[AblationConfig] = None,
 ) -> SplitManifest:
-    if strategy not in VALID_STRATEGIES:
+    ablation = ablation or AblationConfig()
+    if not ablation.skip_strategy_validity_check and strategy not in VALID_STRATEGIES:
         raise ValueError(f"Unknown split strategy '{strategy}'. Valid: {VALID_STRATEGIES}")
 
     n = len(df)
     y = df[target_column]
     rng = np.random.RandomState(seed)
 
-    if strategy in ("group", "group_time") and not group_column:
+    if not ablation.skip_group_required_check and strategy in ("group", "group_time") and not group_column:
         raise ValueError(f"strategy='{strategy}' requires group_column")
-    if strategy in ("time", "group_time") and not time_column:
+    if not ablation.skip_time_required_check and strategy in ("time", "group_time") and not time_column:
         raise ValueError(f"strategy='{strategy}' requires time_column")
 
     if strategy == "random":

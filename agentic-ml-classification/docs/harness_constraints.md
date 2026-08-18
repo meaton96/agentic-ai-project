@@ -166,7 +166,7 @@ later does — see Step 5 for the sixth check, which is candidate-specific.
 
 ---
 
-## Step 5 — Modeling Agent + sandboxed build + two leakage gates
+## Step 5 — Modeling Agent + sandboxed build + three leakage gates
 
 **Agent sees:** profiler facts plus a fixed catalog of six pre-built
 "recipe templates" (`templates/registry.py:50`): `logistic_numeric`,
@@ -233,12 +233,40 @@ agent. The template catalog is the deliberate middle ground.
    `threshold=0.98`, re-run here scoped to exactly the columns *this*
    candidate selected) — catches leakage in raw *feature content*, e.g. a
    near-duplicate-of-target column the candidate happened to select. A test
-   in the suite proves these two gates are complementary, not redundant: a
+   in the suite proves gates 7 and 8 are complementary, not redundant: a
    candidate selecting a near-perfect proxy column passes the permutation
    test (shuffled labels make the proxy equally useless) but is caught by
    the correlation gate.
+9. **Train-vs-holdout consistency gate**
+   (`harness/leakage.py::train_cv_consistency_check`, added after
+   [`ablation_study_report.md`](ablation_study_report.md) found a real
+   gap — gates 7 and 8 both miss a component that's properly scoped to
+   its `fit(X, y)` arguments but internally self-referential, e.g. a
+   target encoder that isn't cross-fitted, so a training row's own label
+   leaks into its own encoded feature). Compares an in-sample score
+   (fit on the training fold, score on that same fold) against a
+   held-out score (a single internal split within the training fold),
+   then subtracts the *same* gap computed under one round of label
+   permutation — not an absolute threshold. That redesign wasn't
+   optional: a first version using a fixed absolute gap threshold
+   correctly caught the synthetic leak but rejected a legitimate
+   candidate using a gradient-boosted template, whose ordinary
+   model-capacity overfitting produced a *larger* gap (0.54) than any
+   threshold that would still catch a real leak. Excess gap over the
+   shuffled-label baseline must stay under `0.15` (default
+   `excess_gap_tolerance`). Does **not** catch a leak that bypasses the
+   `fit(X, y)` arguments entirely via a closure over external state —
+   no refit-based statistical test can, since every split and
+   permutation would be equally "poisoned" — but that specific bug
+   class is prevented structurally by layer 5's contract (a template
+   never receives data at build time, so it cannot construct such a
+   closure in the first place). See the ablation report for both
+   worked examples, including one where a real (non-closure)
+   self-referential encoder was built and, empirically, did *not*
+   meaningfully inflate validation-fold performance — the residual risk
+   this gate guards against is real but narrower than it first appears.
 
-**Only a candidate that clears all eight of these layers becomes eligible
+**Only a candidate that clears all nine of these layers becomes eligible
 for Step 6.**
 
 ---
@@ -255,7 +283,7 @@ of `"approved"`, `"flagged"`, or `"rejected"`.
 
 **The constraint that makes this a genuine trust boundary, not a rubber
 stamp:** the harness only ever shows this agent candidates that have
-*already* passed all eight Step-5 gates. Its output schema has no
+*already* passed all nine Step-5 gates. Its output schema has no
 "override" option — there is no field it can set that unblocks a
 gate-failed candidate. Structurally:
 
@@ -482,10 +510,11 @@ misuse/irreversible actions, not statistical validity.
   project's label-permutation gate (§Step 5, layer 7) targets.
   **The core architectural difference is the mechanism, not the target
   bugs**: LeakageDetector reads *source code* pre-execution and flags a
-  pattern for a human to fix; this project's two leakage gates run
+  pattern for a human to fix; this project's leakage gates run
   *empirically*, post-fit, against the actual data (shuffled-label
-  refit; raw feature-target correlation) and **block promotion
-  automatically** rather than surfacing a TODO comment. A pattern-based
+  refit; raw feature-target correlation; train-vs-holdout consistency)
+  and **block promotion automatically** rather than surfacing a TODO
+  comment. A pattern-based
   static check can miss leakage that only manifests through actual
   values (e.g. a near-duplicate column with an innocuous name); an
   empirical gate can miss a leakage pattern that happens not to move the

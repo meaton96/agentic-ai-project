@@ -568,6 +568,117 @@ def test_finalize_cannot_run_twice():
     assert "final_test_metrics_present" in errors[0]
 
 
+# --- ablation: Dynamic Planner + Verification + Finalize (Phase 1g) ---
+# See docs/ablation_study_report.md and scripts/run_ablation_study.py.
+
+def test_ablation_planner_registry_check_disabled_crashes_inside_validate_plan():
+    """A hallucinated agent_id is rejected cleanly by default. Disabling
+    the registry check doesn't let it through -- get_agent() a few lines
+    later raises KeyError inside validate_plan itself."""
+    from agentic_ml.ablation import AblationConfig
+
+    state = RunStateSummary(goal="predict x")
+    proposal = {"action": "run_agent", "agent_id": "not_a_real_agent", "args": {}, "reasoning": "x"}
+
+    assert validate_plan(proposal, state, capabilities=set()) != []
+
+    with pytest.raises(KeyError):
+        validate_plan(proposal, state, capabilities=set(), ablation=AblationConfig(skip_planner_registry_check=True))
+
+
+def test_ablation_disabling_precondition_check_reproduces_finalize_running_twice():
+    """This IS the Finalize one-shot guard -- steps/finalize_step.py has
+    no check of its own; the entire guarantee lives in validate_plan's
+    required_state precondition. Disabling the precondition check
+    silently permits a second 'finalize' proposal after the test set has
+    already been touched once."""
+    from agentic_ml.ablation import AblationConfig
+
+    state = RunStateSummary(goal="predict x")
+    state.candidates = [CandidateSummary(
+        candidate_id="c1", template_id="sklearn_mixed_pipeline", metric_name="roc_auc",
+        metric_value=0.9, passed_gate=True, verification_verdict="approved",
+    )]
+    state.final_test_metrics_present = True
+    proposal = {"action": "run_agent", "agent_id": "finalize", "args": {}, "reasoning": "lock it in again"}
+
+    assert validate_plan(proposal, state, capabilities=set()) != []
+    assert validate_plan(proposal, state, capabilities=set(),
+                          ablation=AblationConfig(skip_planner_precondition_check=True)) == []
+
+
+def test_ablation_verification_gate_status_check_found_a_real_shipped_gap():
+    """Not a hypothetical ablation like the rest of this study: this
+    check was ADDED by the ablation study after finding it was missing
+    entirely. An explicit args={"candidate_id": ...} targeting a
+    gate-FAILED candidate bypasses best_unverified_candidate_id()'s
+    filter, and nothing downstream re-checked it -- confirmed to let a
+    leaky candidate reach the verification LLM and be approved. This
+    test locks in the fix; skip_verification_gate_status_check
+    reproduces the original bug for comparison."""
+    from types import SimpleNamespace
+
+    from agentic_ml.ablation import AblationConfig
+    from agentic_ml.orchestrator.dynamic_loop import execute_agent_step
+
+    def make_fixtures():
+        passed = SimpleNamespace(
+            candidate_id="c_passed", template_id="logistic_numeric", config={"numeric_cols": ["age"]},
+            explanation="ok", metrics={"roc_auc": {"value": 0.7}},
+            label_permutation_check={"passed": True, "detail": "ok", "check": "x"},
+            feature_correlation_check={"passed": True, "detail": "ok", "check": "y"},
+            pipeline=None, ok=True,
+        )
+        failed = SimpleNamespace(
+            candidate_id="c_failed", template_id="logistic_numeric", config={"numeric_cols": ["age", "leak"]},
+            explanation="uses a leaky column", metrics={"roc_auc": {"value": 0.99}},
+            label_permutation_check={"passed": True, "detail": "ok", "check": "x"},
+            feature_correlation_check={"passed": False, "detail": "leak corr=1.0", "check": "y"},
+            pipeline=None, ok=False,
+        )
+        state = RunStateSummary(goal="predict x")
+        state.candidates = [
+            CandidateSummary(candidate_id="c_passed", template_id="logistic_numeric", metric_name="roc_auc",
+                              metric_value=0.7, passed_gate=True),
+            CandidateSummary(candidate_id="c_failed", template_id="logistic_numeric", metric_name="roc_auc",
+                              metric_value=0.99, passed_gate=False),
+        ]
+        ctx = DynamicRunContext(data_path="x", goal="predict x")
+        ctx.modeling_results = {"c_passed": passed, "c_failed": failed}
+        ctx.profiler_report = {"is_imbalanced": False, "class_imbalance_ratio": 0.9, "leakage_risk_flags": []}
+        ctx.run_id = "test"
+        ctx.loaded = SimpleNamespace(data_hash="fakehash")
+        return state, ctx
+
+    class ApprovesEverythingClient:
+        def call(self, messages, model=None, tools=None, temperature=0.0, max_tokens=1024):
+            return ModelResponse(
+                text=json.dumps({"verdict": "approved", "concerns": [], "reasoning": "fine"}),
+                tool_calls=[], raw=None, latency_seconds=0.0, model="fake", input_tokens=0, output_tokens=0,
+            )
+
+    # fixed behavior (default): blocked before ever reaching the LLM
+    state, ctx = make_fixtures()
+    ok, errors = execute_agent_step(
+        "verification", {"candidate_id": "c_failed"}, ctx, state, ApprovesEverythingClient(),
+        None, None, None, lambda name, msgs: None, on_event=None,
+    )
+    assert ok is False
+    assert "failed its harness gates" in errors[0]
+    failed_summary = next(c for c in state.candidates if c.candidate_id == "c_failed")
+    assert failed_summary.verification_verdict is None
+
+    # ablated: reproduces the original bug
+    state2, ctx2 = make_fixtures()
+    ok2, errors2 = execute_agent_step(
+        "verification", {"candidate_id": "c_failed"}, ctx2, state2, ApprovesEverythingClient(),
+        None, None, None, lambda name, msgs: None, on_event=None,
+        ablation=AblationConfig(skip_verification_gate_status_check=True),
+    )
+    failed_summary2 = next(c for c in state2.candidates if c.candidate_id == "c_failed")
+    assert failed_summary2.verification_verdict == "approved", "reproduces the exact pre-fix bug"
+
+
 # --- normalize_proposal: repairs a real schema confusion without relaxing validation ---
 
 def test_normalize_proposal_repairs_agent_name_in_action_field():

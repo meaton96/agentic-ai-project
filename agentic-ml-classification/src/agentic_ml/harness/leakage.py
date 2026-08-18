@@ -6,9 +6,12 @@ the leaderboard, not just produce a warning agents can ignore.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 import pandas as pd
+
+from agentic_ml.ablation import AblationConfig
 
 
 @dataclass
@@ -205,6 +208,113 @@ def label_permutation_test(
     return LeakageCheckResult("label_permutation_test", passed, detail)
 
 
+def _train_holdout_gap(fit_and_score_fn, X_train, y_train, holdout_frac: float, seed: int) -> float:
+    """in_sample_score - held_out_score for one label assignment, using a
+    SINGLE internal train/holdout split rather than full n-fold CV —
+    2 fits instead of (1 + n_folds). K-fold CV was the first version of
+    this check (see train_cv_consistency_check's docstring for why it
+    had to change) and was accurate but far too expensive: 18 refits per
+    candidate made the test suite time out. A single holdout split is
+    the same idea (score on data the model wasn't fit on, from within
+    the training fold) at a cost comparable to label_permutation_test's
+    own 5 refits, which is what actually has to run on every candidate."""
+    rng = np.random.RandomState(seed)
+    n = len(X_train)
+    idx = np.arange(n)
+    rng.shuffle(idx)
+    split_at = max(1, int(n * (1 - holdout_frac)))
+    fit_idx, holdout_idx = idx[:split_at], idx[split_at:]
+
+    X_fit = X_train.iloc[fit_idx] if hasattr(X_train, "iloc") else X_train[fit_idx]
+    y_fit = y_train.iloc[fit_idx] if hasattr(y_train, "iloc") else y_train[fit_idx]
+    X_ho = X_train.iloc[holdout_idx] if hasattr(X_train, "iloc") else X_train[holdout_idx]
+    y_ho = y_train.iloc[holdout_idx] if hasattr(y_train, "iloc") else y_train[holdout_idx]
+
+    in_sample_score = fit_and_score_fn(X_fit, y_fit, X_fit, y_fit)
+    holdout_score = fit_and_score_fn(X_fit, y_fit, X_ho, y_ho)
+    return in_sample_score - holdout_score
+
+
+def train_cv_consistency_check(
+    fit_and_score_fn, X_train, y_train, metric_name: str,
+    holdout_frac: float = 0.3, n_baseline_permutations: int = 1, seed: int = 42, excess_gap_tolerance: float = 0.15,
+) -> LeakageCheckResult:
+    """
+    Added after an ablation study (docs/ablation_study_report.md,
+    Scenario 2) found a real gap: label_permutation_test does NOT
+    reliably catch a preprocessing component (e.g. a target encoder)
+    that is properly scoped to whatever (X, y) it's given via fit(), but
+    is internally self-referential — i.e. not cross-fitted, so a
+    training row's own label leaks into its own encoded feature value.
+    That gap exists because label_permutation_test only ever refits on
+    a DIFFERENT (shuffled) y — it never inspects the pipeline's behavior
+    on the SAME data it was fit on, which is exactly where in-sample
+    self-referential bias shows up.
+
+    Two iterations to get here, both worth recording:
+    - v1 compared in-sample score to a 5-fold CV score against a FIXED
+      absolute gap threshold. Broke on real candidates using
+      high-capacity templates (gradient-boosted trees) on a small stub
+      dataset: gap=0.54 from ordinary model capacity, not leakage — an
+      absolute threshold can't tell a tree's normal overfitting from a
+      genuine leak when the former can be larger.
+    - v2 fixed the false-positive by comparing the real train-vs-holdout
+      gap to the SAME gap computed under label permutation (capacity-
+      driven overfitting shows up similarly whether fitting real or
+      shuffled labels; what's left after subtracting is leakage-specific)
+      — but used full n-fold CV for both, an 18-refit cost per candidate
+      that made the test suite time out. This version keeps v2's
+      relative-to-permutation-baseline logic but replaces n-fold CV with
+      a single internal train/holdout split (4 refits total: in-sample +
+      holdout, for both the real and one shuffled pass) — comparable
+      cost to label_permutation_test's own 5 refits, which already runs
+      on every candidate.
+
+    This does NOT catch a leak that bypasses the (X, y) arguments to
+    fit() entirely (e.g. a component reading a closed-over reference
+    instead of its actual arguments) — no refit-based statistical test
+    can, since every split and every permutation would be equally
+    "poisoned," so the real and baseline gaps would move together and
+    the excess would stay near zero. That class of bug is prevented
+    structurally in this project by the sandbox contract
+    (harness/sandbox.py): a template's build_pipeline(config) never
+    receives data, so it cannot construct such a reference in the first
+    place. See docs/ablation_study_report.md for both worked examples,
+    including one where a real (non-closure) self-referential encoder
+    was constructed and, empirically, did NOT meaningfully inflate
+    validation-fold performance either — the risk this check guards
+    against is real but narrower than it first appears.
+
+    fit_and_score_fn(X_train, y_train, X_val, y_val) -> float (metric value)
+    """
+    try:
+        real_gap = _train_holdout_gap(fit_and_score_fn, X_train, y_train, holdout_frac, seed)
+    except Exception as e:
+        return LeakageCheckResult("train_cv_consistency", False, f"candidate failed to fit in-sample: {e}")
+
+    rng = np.random.RandomState(seed)
+    y_arr = np.asarray(y_train)
+    baseline_gaps = []
+    for _ in range(n_baseline_permutations):
+        y_shuffled = rng.permutation(y_arr)
+        try:
+            baseline_gaps.append(_train_holdout_gap(fit_and_score_fn, X_train, y_shuffled, holdout_frac, seed))
+        except Exception:
+            continue
+
+    if not baseline_gaps:
+        return LeakageCheckResult("train_cv_consistency", False, "could not compute a shuffled-label baseline gap")
+
+    baseline_gap = float(np.mean(baseline_gaps))
+    excess_gap = real_gap - baseline_gap
+    passed = excess_gap <= excess_gap_tolerance
+    detail = (
+        f"real train-vs-holdout gap={real_gap:.4f}; shuffled-label baseline gap={baseline_gap:.4f} "
+        f"(excess gap={excess_gap:.4f}, tolerance={excess_gap_tolerance})"
+    )
+    return LeakageCheckResult("train_cv_consistency", passed, detail)
+
+
 def run_all_split_leakage_checks(
     df: pd.DataFrame,
     target_column: str,
@@ -214,10 +324,26 @@ def run_all_split_leakage_checks(
     val_idx: list[int],
     test_idx: list[int],
     strategy: str = "time",
+    ablation: Optional[AblationConfig] = None,
 ) -> list[LeakageCheckResult]:
+    """ablation: research-only, see agentic_ml.ablation — every flag
+    defaults to False, so ablation=None is identical to omitting it. A
+    skipped check is replaced with a trivially-passing result (not
+    omitted from the list) so run_split_step's `all(c.passed ...)` sees
+    the same shape of result it always does — this is what "the check
+    doesn't run" actually looks like to a caller, not a shorter list."""
+    ablation = ablation or AblationConfig()
+
+    def _skip(name: str) -> LeakageCheckResult:
+        return LeakageCheckResult(name, True, "SKIPPED (ablation)")
+
     return [
-        check_duplicate_rows_across_splits(df, train_idx, val_idx, test_idx),
-        check_group_overlap(df, group_column, train_idx, val_idx, test_idx),
-        check_time_ordering(df, time_column, train_idx, val_idx, test_idx, strategy=strategy),
-        check_fold_class_presence(df[target_column], train_idx, val_idx, test_idx),
+        _skip("duplicate_rows_across_splits") if ablation.skip_duplicate_rows_check
+        else check_duplicate_rows_across_splits(df, train_idx, val_idx, test_idx),
+        _skip("group_overlap") if ablation.skip_split_group_overlap_check
+        else check_group_overlap(df, group_column, train_idx, val_idx, test_idx),
+        _skip("time_ordering") if ablation.skip_time_ordering_check
+        else check_time_ordering(df, time_column, train_idx, val_idx, test_idx, strategy=strategy),
+        _skip("fold_class_presence") if ablation.skip_split_fold_class_presence_check
+        else check_fold_class_presence(df[target_column], train_idx, val_idx, test_idx),
     ]

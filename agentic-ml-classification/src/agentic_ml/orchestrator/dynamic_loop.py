@@ -19,6 +19,7 @@ from typing import Callable, Optional
 import joblib
 import pandas as pd
 
+from agentic_ml.ablation import AblationConfig
 from agentic_ml.domain.aviation.ngafid_config import (
     NGAFID_EXTRA_COLUMNS, NGAFID_GROUP_COLUMN, NGAFID_ID_COLUMN, NGAFID_LABEL_COLUMN,
     NGAFID_LABEL_MAP, NGAFID_SENSORS,
@@ -82,12 +83,16 @@ def normalize_proposal(proposal):
     return proposal
 
 
-def validate_plan(proposal, state: RunStateSummary, capabilities: set) -> list[str]:
+def validate_plan(proposal, state: RunStateSummary, capabilities: set, ablation: Optional[AblationConfig] = None) -> list[str]:
     """Deterministic re-check of the planner's proposal against the
     REAL registry and REAL run state — never trusts the planner's own
     claim that a precondition holds. This is the control-flow analog of
     e.g. harness/intake.py::validate_dataset_spec_proposal: an agent's
-    output is a proposal, not a fact, until this passes."""
+    output is a proposal, not a fact, until this passes.
+
+    ablation: research-only, see agentic_ml.ablation — every flag
+    defaults to False, so ablation=None is identical to omitting it."""
+    ablation = ablation or AblationConfig()
     if not isinstance(proposal, dict):
         return ["proposal is not a JSON object"]
 
@@ -98,27 +103,31 @@ def validate_plan(proposal, state: RunStateSummary, capabilities: set) -> list[s
         return []
 
     agent_id = proposal.get("agent_id")
-    available_ids = {a["agent_id"] for a in list_agent_summaries(capabilities)}
-    if agent_id not in available_ids:
-        return [f"agent_id {agent_id!r} is not a known/available agent for this run "
-                f"(available: {sorted(available_ids)})"]
+    if not ablation.skip_planner_registry_check:
+        available_ids = {a["agent_id"] for a in list_agent_summaries(capabilities)}
+        if agent_id not in available_ids:
+            return [f"agent_id {agent_id!r} is not a known/available agent for this run "
+                    f"(available: {sorted(available_ids)})"]
+    # if skip_planner_registry_check is active on a genuinely hallucinated
+    # agent_id, get_agent() below raises KeyError instead — deliberate.
 
     spec = get_agent(agent_id)
     state_dict = state.to_planner_dict()
     errors = []
-    for key, required_val in spec.required_state.items():
-        actual = state_dict.get(key)
-        # bool preconditions check truthiness (the original, still-dominant case);
-        # anything else (e.g. required_val=None, or a specific string like
-        # "infer_only" — see agent_registry.py's retrain_decision/infer_batch
-        # entries) checks exact equality instead. isinstance check comes first
-        # since bool is a subtype of int and would otherwise compare oddly.
-        satisfied = bool(actual) == required_val if isinstance(required_val, bool) else actual == required_val
-        if not satisfied:
-            errors.append(
-                f"precondition failed for '{agent_id}': requires {key}={required_val!r}, "
-                f"actual {key}={actual!r}"
-            )
+    if not ablation.skip_planner_precondition_check:
+        for key, required_val in spec.required_state.items():
+            actual = state_dict.get(key)
+            # bool preconditions check truthiness (the original, still-dominant case);
+            # anything else (e.g. required_val=None, or a specific string like
+            # "infer_only" — see agent_registry.py's retrain_decision/infer_batch
+            # entries) checks exact equality instead. isinstance check comes first
+            # since bool is a subtype of int and would otherwise compare oddly.
+            satisfied = bool(actual) == required_val if isinstance(required_val, bool) else actual == required_val
+            if not satisfied:
+                errors.append(
+                    f"precondition failed for '{agent_id}': requires {key}={required_val!r}, "
+                    f"actual {key}={actual!r}"
+                )
 
     args = proposal.get("args")
     if args is None:
@@ -177,6 +186,7 @@ def execute_agent_step(
     on_event: Optional[Callable[[dict], None]] = None,
     prompt_override_dir: Optional[str] = None,
     tool_provider: Optional[ToolProvider] = None,
+    ablation: Optional[AblationConfig] = None,
 ) -> tuple[bool, list[str]]:
     """Executes one already-validated agent step, mutating ctx/state in
     place. Returns (ok, errors). ok=False means this attempt didn't
@@ -184,7 +194,11 @@ def execute_agent_step(
     is a legitimate, expected outcome the run continues from, not a
     reason to abort the whole loop; only validate_plan() rejections
     (checked before this is ever called) and unhandled exceptions are
-    the "something is wrong" cases."""
+    the "something is wrong" cases.
+
+    ablation: research-only, see agentic_ml.ablation — every flag
+    defaults to False, so ablation=None is identical to omitting it."""
+    ablation = ablation or AblationConfig()
     try:
         if agent_id == "featurize_timeseries":
             # Rolls up via the streaming/chunked engine, straight from
@@ -366,6 +380,21 @@ def execute_agent_step(
             if not candidate_id or candidate_id not in ctx.modeling_results:
                 return False, [f"no such unverified passing candidate: {candidate_id!r}"]
             candidate = ctx.modeling_results[candidate_id]
+            # Real gap found by the ablation study, not a hypothetical:
+            # validate_plan's has_unverified_passing_candidate precondition
+            # only checks that SOME candidate passed, not that THIS
+            # explicitly-args-targeted one did — best_unverified_candidate_id()
+            # filters correctly, but args.get("candidate_id") bypasses it
+            # entirely when set. ctx.modeling_results holds every candidate
+            # ever proposed, gate-failures included (see the append two
+            # branches up), so an explicit candidate_id naming a failed one
+            # reached build_review_bundle + the verification LLM directly —
+            # confirmed empirically to return "approved" on a leaky
+            # candidate. This check is the one-way-ratchet invariant
+            # (CLAUDE.md #4) actually enforced at this call site, not just
+            # documented.
+            if not ablation.skip_verification_gate_status_check and not candidate.ok:
+                return False, [f"candidate {candidate_id!r} failed its harness gates and cannot be sent to verification"]
             template = get_template(candidate.template_id)
             bundle = build_review_bundle(
                 candidate_id=candidate.candidate_id, template_id=candidate.template_id,
@@ -630,6 +659,7 @@ def run_dynamic_loop(
     on_event: Optional[Callable[[dict], None]] = None,
     prompt_override_dir: Optional[str] = None,
     tool_provider: Optional[ToolProvider] = None,
+    ablation: Optional[AblationConfig] = None,
 ) -> DynamicLoopResult:
     write_transcript = write_transcript or (lambda name, messages: None)
     history: list[dict] = []
@@ -660,7 +690,7 @@ def run_dynamic_loop(
                              "errors": [previous_error]})
                 continue
             normalized_proposal = normalize_proposal(planner_result.proposal)
-            plan_errors = validate_plan(normalized_proposal, state, capabilities)
+            plan_errors = validate_plan(normalized_proposal, state, capabilities, ablation=ablation)
             if not plan_errors:
                 proposal = normalized_proposal
                 emit_event(on_event, "planner", "planner_proposal_accepted",
@@ -691,7 +721,7 @@ def run_dynamic_loop(
         ok, errors = execute_agent_step(
             agent_id, step_args, ctx, state, client, model, verification_model,
             trace_fn, write_transcript, on_event=on_event, prompt_override_dir=prompt_override_dir,
-            tool_provider=tool_provider,
+            tool_provider=tool_provider, ablation=ablation,
         )
         state.last_action = f"{agent_id}: {'OK' if ok else 'FAILED - ' + '; '.join(errors)}"
         history.append({

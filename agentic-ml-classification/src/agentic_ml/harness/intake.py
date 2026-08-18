@@ -13,8 +13,11 @@ here there isn't even a target_column yet, so nothing target-dependent
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from typing import Optional
 
 import pandas as pd
+
+from agentic_ml.ablation import AblationConfig
 
 from .column_grouping import group_columns_by_pattern
 from .profiler import DATETIME_NAME_HINTS, GROUP_NAME_HINTS, ID_NAME_HINTS, _looks_like_datetime, _name_hints
@@ -63,23 +66,31 @@ def raw_schema_summary(df: pd.DataFrame) -> dict:
     return {"n_rows": n_rows, "n_columns": len(df.columns), "columns": group_columns_by_pattern(columns)}
 
 
-def validate_dataset_spec_proposal(df: pd.DataFrame, proposal: dict) -> list[str]:
+def validate_dataset_spec_proposal(df: pd.DataFrame, proposal: dict, ablation: Optional[AblationConfig] = None) -> list[str]:
     """Structural + classification-eligibility validation of an intake
     agent's proposed DatasetSpec fields. Does not trust the agent's
     'task' claim — always requires the target to have between 2 and
     MAX_CLASSES non-null unique values (binary or multiclass; see
-    priors/general — MVP scope)."""
+    priors/general — MVP scope).
+
+    ablation: research-only, see agentic_ml.ablation — every flag
+    defaults to False, so ablation=None is identical to omitting it."""
+    ablation = ablation or AblationConfig()
     if not isinstance(proposal, dict):
         return ["top-level response is not a JSON object"]
 
     errors: list[str] = []
     target = proposal.get("target_column")
-    if not target or target not in df.columns:
+    if not ablation.skip_target_existence_check and (not target or target not in df.columns):
         errors.append(f"target_column '{target}' not found in dataset columns")
         return errors  # nothing else is checkable without a valid target
+    # if skip_target_existence_check is active on a genuinely invalid
+    # target, execution falls through to here deliberately — df[target]
+    # below will raise KeyError instead of failing with a clean message,
+    # which is the point of the ablation.
 
     n_unique_target = int(df[target].dropna().nunique())
-    if n_unique_target < 2 or n_unique_target > MAX_CLASSES:
+    if not ablation.skip_cardinality_check and (n_unique_target < 2 or n_unique_target > MAX_CLASSES):
         errors.append(
             f"target_column '{target}' has {n_unique_target} unique non-null values; "
             f"this pipeline requires between 2 and {MAX_CLASSES} distinct class labels"
@@ -89,19 +100,19 @@ def validate_dataset_spec_proposal(df: pd.DataFrame, proposal: dict) -> list[str
         val = proposal.get(field_name)
         if val is None:
             continue
-        if val not in df.columns:
+        if not ablation.skip_group_time_existence_check and val not in df.columns:
             errors.append(f"{field_name} '{val}' not found in dataset columns")
-        if val == target:
+        if not ablation.skip_group_time_target_collision_check and val == target:
             errors.append(f"{field_name} cannot be the same as target_column")
 
     id_columns = proposal.get("id_columns") or []
-    if not isinstance(id_columns, list):
+    if not ablation.skip_id_columns_type_check and not isinstance(id_columns, list):
         errors.append("id_columns must be a list")
-    else:
+    elif isinstance(id_columns, list):
         for col in id_columns:
-            if col not in df.columns:
+            if not ablation.skip_id_columns_check and col not in df.columns:
                 errors.append(f"id_columns references unknown column '{col}'")
-            if col == target:
+            if not ablation.skip_id_columns_check and col == target:
                 errors.append(f"id_columns cannot include the target_column '{col}'")
 
     return errors

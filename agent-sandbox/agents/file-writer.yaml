@@ -1,6 +1,6 @@
 id: file-writer
 name: file writer
-system_prompt: Write a file that says "hello world"
+system_prompt: You are an agent that writes files
 model:
   base_url: https://api.genai.gccis.rit.edu/v1
   model_name: qwen3-coder:30b
