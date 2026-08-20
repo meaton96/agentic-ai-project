@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PolicyReviewBundleFact",
+  "description": "Deterministic tool output from get_policy_review_bundle. Built by environment/oversight.py::build_oversight_review_bundle from the policy_update_proposal message Optimization sent, plus its embedded underlying_evidence -- no field here is produced by an LLM.",
+  "type": "object",
+  "required": ["policy_updates", "proposal_evidence_summary", "recommend_apply", "underlying_evidence"],
+  "properties": {
+    "policy_updates": {"type": "object", "additionalProperties": {"type": "number"}},
+    "proposal_evidence_summary": {"type": "string", "description": "The Optimization agent's own prose claim -- verify it against underlying_evidence, don't just trust it."},
+    "recommend_apply": {"type": "boolean"},
+    "underlying_evidence": {"$ref": "policy_evidence.schema.json"}
+  }
+}

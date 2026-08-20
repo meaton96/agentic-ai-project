@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TaskQueueProfileFact",
+  "description": "Deterministic tool output from get_task_queue_profile. Computed entirely by environment/queue.py + environment/state.py; no field here is ever produced by an LLM. urgency_signal/energy_cost_proxy/availability_bonus are documented proxies derived from real columns (Reallocation, Execution_Time, Machine_Status), not ground-truth priority/cost data -- see environment/queue.py's module docstring.",
+  "type": "object",
+  "required": ["pending_tasks", "machine_status", "synthetic_variance_injected"],
+  "properties": {
+    "pending_tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "task_id", "machine_id", "network_slice_id", "task_type", "execution_time",
+          "needs_reallocation", "urgency_signal", "energy_cost_proxy", "availability_bonus"
+        ],
+        "properties": {
+          "task_id": {"type": "string"},
+          "machine_id": {"type": "string"},
+          "network_slice_id": {"type": "string"},
+          "task_type": {"type": "string"},
+          "execution_time": {"type": "number"},
+          "needs_reallocation": {"type": "boolean"},
+          "urgency_signal": {"type": "number", "minimum": 0, "maximum": 1},
+          "energy_cost_proxy": {"type": "number", "minimum": 0, "maximum": 1},
+          "availability_bonus": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    "machine_status": {
+      "type": "object",
+      "additionalProperties": {"enum": ["Active", "Idle", "Maintenance", "Overloaded"]}
+    },
+    "synthetic_variance_injected": {
+      "type": "object",
+      "additionalProperties": {"type": "boolean"}
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LoadMonitorReport",
+  "description": "The Load Monitor agent's structured proposal (its final JSON response after calling get_resource_snapshot). Validated by steps/load_monitor_step.py's _flags_match against the tool's authoritative flags — a mismatch does not fail the step (deterministic_report stays authoritative either way) but is logged via flag_mismatch for review.",
+  "type": "object",
+  "required": ["flags", "narrative_summary"],
+  "properties": {
+    "flags": {
+      "type": "array",
+      "description": "Must exactly reproduce (same scope/id/severity set, order-independent) the tool output's flags array.",
+      "items": {
+        "type": "object",
+        "required": ["scope", "id", "severity", "metric", "value", "threshold"],
+        "properties": {
+          "scope": {"enum": ["machine", "slice"]},
+          "id": {"type": "string"},
+          "severity": {"enum": ["warning", "critical"]},
+          "metric": {"type": "string"},
+          "value": {"type": "number"},
+          "threshold": {"type": "number"}
+        }
+      }
+    },
+    "narrative_summary": {
+      "type": "string",
+      "description": "2-4 sentence plain-language summary. Must mention injected synthetic variance if any jittered column was used, per the load_monitor.md prompt."
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PolicyUpdateProposal",
+  "description": "The Optimization agent's structured proposal. Validated by steps/optimization_step.py against environment/policy_evidence.py::validate_policy_proposal (hard gate: policy_updates keys must be a subset of ALLOWED_POLICY_KEYS and numeric). On success this is sent, together with the full deterministic evidence dict, as a policy_update_proposal message to the human_oversight mailbox -- the third A2A hop.",
+  "type": "object",
+  "required": ["policy_updates", "evidence", "recommend_apply"],
+  "properties": {
+    "policy_updates": {
+      "type": "object",
+      "additionalProperties": {"type": "number"},
+      "description": "Keys must be a subset of {queue_size, snapshot_window, slice_capacity} -- the only parameters actually wired to a CLI flag across agents #2-4."
+    },
+    "evidence": {"type": "string"},
+    "recommend_apply": {"type": "boolean"}
+  }
+}

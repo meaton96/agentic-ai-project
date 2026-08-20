@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OversightVerdict",
+  "description": "The Human Oversight agent's structured response, normalized by environment/oversight.py::parse_oversight_verdict. Unlike every other gate in this project, there is no deterministic correct verdict to check this against -- the one enforced rule is that an unparseable or malformed response degrades to 'flagged', never silently to 'approved' (mirrors the sibling ML pipeline's Verification agent rule exactly).",
+  "type": "object",
+  "required": ["verdict", "concerns", "reasoning"],
+  "properties": {
+    "verdict": {"enum": ["approved", "rejected", "flagged"]},
+    "concerns": {"type": "array", "items": {"type": "string"}},
+    "reasoning": {"type": "string"}
+  }
+}

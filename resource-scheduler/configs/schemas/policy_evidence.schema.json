@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PolicyEvidenceFact",
+  "description": "Deterministic tool output from get_policy_evidence. Computed entirely by environment/policy_evidence.py by reading existing report JSON files under runs/<run_id>/ that agents #2-4's CLI scripts already write -- no field here is ever produced by an LLM, and this fact does not depend on the task table at all.",
+  "type": "object",
+  "required": [
+    "n_runs_scanned", "n_run_dirs_considered", "ranking_valid_rate", "ranking_score_inconsistent_rate",
+    "allocation_acceptance_rate", "allocation_accepted", "allocation_environment_rejected", "allocation_agent_rejected",
+    "reroute_acceptance_rate", "reroute_accepted", "reroute_environment_rejected"
+  ],
+  "properties": {
+    "n_runs_scanned": {"type": "integer", "minimum": 0, "description": "Runs that had at least one relevant report file present."},
+    "n_run_dirs_considered": {"type": "integer", "minimum": 0, "description": "Total run directories examined, including ones with no relevant report at all."},
+    "ranking_valid_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "ranking_score_inconsistent_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "allocation_acceptance_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "allocation_accepted": {"type": "integer", "minimum": 0},
+    "allocation_environment_rejected": {"type": "integer", "minimum": 0},
+    "allocation_agent_rejected": {"type": "integer", "minimum": 0},
+    "reroute_acceptance_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "reroute_accepted": {"type": "integer", "minimum": 0},
+    "reroute_environment_rejected": {"type": "integer", "minimum": 0}
+  }
+}
