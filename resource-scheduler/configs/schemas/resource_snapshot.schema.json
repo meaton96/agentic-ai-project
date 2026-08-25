@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ResourceSnapshotFact",
+  "description": "Deterministic tool output from get_resource_snapshot. Computed entirely by environment/state.py; no field here is ever produced by an LLM.",
+  "type": "object",
+  "required": ["snapshot", "thresholds", "flags"],
+  "properties": {
+    "snapshot": {
+      "type": "object",
+      "required": ["window_rows", "machines", "slices", "synthetic_variance_injected"],
+      "properties": {
+        "window_rows": {"type": "integer", "minimum": 0},
+        "machines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["machine_id", "status", "queue_depth", "utilization_pct"],
+            "properties": {
+              "machine_id": {"type": "string"},
+              "status": {"enum": ["Active", "Idle", "Maintenance", "Overloaded"]},
+              "queue_depth": {"type": "integer", "minimum": 0},
+              "utilization_pct": {"type": "number", "minimum": 0, "maximum": 100}
+            }
+          }
+        },
+        "slices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["slice_id", "latency_ms", "capacity_used_pct", "urllc_score"],
+            "properties": {
+              "slice_id": {"type": "string"},
+              "latency_ms": {"type": "number", "minimum": 0},
+              "capacity_used_pct": {"type": "number", "minimum": 0, "maximum": 100},
+              "urllc_score": {"type": "number", "minimum": 0, "maximum": 1}
+            }
+          }
+        },
+        "synthetic_variance_injected": {
+          "type": "object",
+          "description": "column name -> whether jitter was injected because the source column was constant. Must be checked before trusting any numeric reading as real.",
+          "additionalProperties": {"type": "boolean"}
+        }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "required": ["machine_utilization_pct", "slice_latency_ms", "slice_capacity_used_pct"],
+      "additionalProperties": {
+        "type": "object",
+        "required": ["warning", "critical"],
+        "properties": {
+          "warning": {"type": ["number", "null"]},
+          "critical": {"type": ["number", "null"]}
+        },
+        "description": "null means no valid threshold could be computed (e.g. a zero-variance baseline) -- never treat null as 'always flag' or 'never flag' silently; environment/state.py's _flag() skips flagging entirely when either bound is null."
+      }
+    },
+    "flags": {
+      "type": "array",
+      "description": "The authoritative flags for this snapshot. See load_monitor_report.schema.json — the agent must reproduce this list exactly, not recompute it.",
+      "items": {"$ref": "#/definitions/flag"}
+    }
+  },
+  "definitions": {
+    "flag": {
+      "type": "object",
+      "required": ["scope", "id", "severity", "metric", "value", "threshold"],
+      "properties": {
+        "scope": {"enum": ["machine", "slice"]},
+        "id": {"type": "string"},
+        "severity": {"enum": ["warning", "critical"]},
+        "metric": {"type": "string"},
+        "value": {"type": "number"},
+        "threshold": {"type": "number"}
+      }
+    }
+  }
+}

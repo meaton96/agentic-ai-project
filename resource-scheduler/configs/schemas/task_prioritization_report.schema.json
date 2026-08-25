@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TaskPrioritizationReport",
+  "description": "The Task Prioritization agent's structured proposal. Validated by steps/task_prioritization_step.py against environment/queue.py: validate_ranking_proposal is a hard gate (ranked_task_ids must be an exact permutation of the pending task ids; score_breakdown must cover exactly those ids), is_ranking_score_consistent is a soft flag (ranking order should match descending final_score). On success this proposal is sent as-is to the resource_allocation mailbox (a2a/mailbox.py) as a task_ranking message.",
+  "type": "object",
+  "required": ["ranked_task_ids", "score_breakdown", "reasoning"],
+  "properties": {
+    "ranked_task_ids": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Must be exactly one permutation of the pending task ids from TaskQueueProfileFact.pending_tasks."
+    },
+    "score_breakdown": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["urgency", "energy_cost", "availability_bonus", "final_score"],
+        "properties": {
+          "urgency": {"type": "number"},
+          "energy_cost": {"type": "number"},
+          "availability_bonus": {"type": "number"},
+          "final_score": {"type": "number"}
+        }
+      }
+    },
+    "reasoning": {"type": "string"}
+  }
+}
