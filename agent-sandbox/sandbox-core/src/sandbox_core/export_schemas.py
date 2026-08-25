@@ -23,6 +23,8 @@ from sandbox_core.schemas.events import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from sandbox_core.schemas.pipeline_run import PipelineRunRecord, PipelineRunSpec, PipelineStepResult
+from sandbox_core.schemas.pipeline_spec import PipelineSpec, PipelineStep
 from sandbox_core.schemas.run_spec import RunSpec
 
 # repo-relative: agent-sandbox/sandbox-core/src/sandbox_core/export_schemas.py -> agent-sandbox/schema
@@ -45,6 +47,11 @@ MODELS = {
     "agent_spawn_event": AgentSpawnEvent,
     "agent_result_event": AgentResultEvent,
     "error_event": ErrorEvent,
+    "pipeline_spec": PipelineSpec,
+    "pipeline_step": PipelineStep,
+    "pipeline_run_spec": PipelineRunSpec,
+    "pipeline_run_record": PipelineRunRecord,
+    "pipeline_step_result": PipelineStepResult,
 }
 
 

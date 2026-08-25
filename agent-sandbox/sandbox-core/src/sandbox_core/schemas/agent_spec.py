@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
@@ -34,3 +34,13 @@ class AgentSpec(BaseModel):
     mcp_servers: list[McpServerBinding] = Field(default_factory=list)
     sub_agents: list[SubAgentBinding] = Field(default_factory=list)
     max_turns: int = 25
+
+
+@runtime_checkable
+class AgentSpecLoader(Protocol):
+    """Decouples pipeline execution from *how* agent specs are stored —
+    sandbox-server's specs.py implements this over its YAML-file-per-id
+    directory, cli.py's pipeline command over a sibling directory. Mirrors
+    CredentialResolver's role for secrets."""
+
+    def load(self, agent_id: str) -> AgentSpec: ...

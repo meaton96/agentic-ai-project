@@ -4,8 +4,13 @@
 // raw stream URL, not a parsed response).
 import type {
   AgentSpec,
+  LaunchPipelineRunRequest,
+  LaunchPipelineRunResponse,
   LaunchRunRequest,
   LaunchRunResponse,
+  PipelineRunRecord,
+  PipelineRunSummary,
+  PipelineSpec,
   RunDetail,
   RunSummary,
   ValidationErrorDetail,
@@ -102,4 +107,36 @@ export function getRun(runId: string): Promise<RunDetail> {
 // useRunStream.ts, which needs the raw URL, not a parsed response.
 export function runStreamUrl(runId: string): string {
   return `${API_BASE}/runs/${encodeURIComponent(runId)}/stream`
+}
+
+export function listPipelines(): Promise<PipelineSpec[]> {
+  return request('/pipelines')
+}
+
+export function getPipeline(id: string): Promise<PipelineSpec> {
+  return request(`/pipelines/${encodeURIComponent(id)}`)
+}
+
+export function createPipeline(spec: PipelineSpec): Promise<PipelineSpec> {
+  return request('/pipelines', { method: 'POST', body: JSON.stringify(spec) })
+}
+
+export function updatePipeline(id: string, spec: PipelineSpec): Promise<PipelineSpec> {
+  return request(`/pipelines/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(spec) })
+}
+
+export function deletePipeline(id: string): Promise<void> {
+  return request(`/pipelines/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export function launchPipelineRun(body: LaunchPipelineRunRequest): Promise<LaunchPipelineRunResponse> {
+  return request('/pipeline-runs', { method: 'POST', body: JSON.stringify(body) })
+}
+
+export function listPipelineRuns(): Promise<PipelineRunSummary[]> {
+  return request('/pipeline-runs')
+}
+
+export function getPipelineRun(pipelineRunId: string): Promise<PipelineRunRecord> {
+  return request(`/pipeline-runs/${encodeURIComponent(pipelineRunId)}`)
 }

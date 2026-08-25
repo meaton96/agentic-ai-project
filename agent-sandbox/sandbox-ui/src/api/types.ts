@@ -142,3 +142,56 @@ export interface ValidationErrorDetail {
   msg: string
   type: string
 }
+
+// Mirrors sandbox_core.schemas.pipeline_spec / pipeline_run — a
+// deterministic, harness-driven sequence of agent steps, not an
+// LLM-orchestrated one. See docs/architecture.md.
+export interface PipelineStep {
+  step_id: string
+  agent_id: string
+  task_template: string
+}
+
+export interface PipelineSpec {
+  id: string
+  name: string
+  steps: PipelineStep[]
+}
+
+export type PipelineStepStatus = 'completed' | 'errored' | 'truncated'
+export type PipelineRunStatus = 'running' | 'completed' | 'errored'
+
+export interface PipelineStepResult {
+  step_id: string
+  agent_id: string
+  run_id: string
+  status: PipelineStepStatus
+  output: string | null
+}
+
+export interface PipelineRunRecord {
+  pipeline_run_id: string
+  pipeline_id: string
+  task: string
+  created_at: string
+  status: PipelineRunStatus
+  steps: PipelineStepResult[]
+  error: string | null
+}
+
+export interface PipelineRunSummary {
+  pipeline_run_id: string
+  pipeline_id: string
+  created_at: string
+  status: PipelineRunStatus
+  step_count: number
+}
+
+export interface LaunchPipelineRunRequest {
+  pipeline_id: string
+  task: string
+}
+
+export interface LaunchPipelineRunResponse {
+  pipeline_run_id: string
+}

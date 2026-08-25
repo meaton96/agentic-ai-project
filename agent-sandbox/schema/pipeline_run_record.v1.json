@@ -1,0 +1,107 @@
+{
+  "$defs": {
+    "PipelineStepResult": {
+      "description": "The outcome of one already-finished pipeline step. `run_id` is the\nunderlying agent run's own run_id \u2014 its full events.jsonl/trace is\nreachable through the exact same endpoints a standalone agent run is.",
+      "properties": {
+        "step_id": {
+          "title": "Step Id",
+          "type": "string"
+        },
+        "agent_id": {
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "errored",
+            "truncated"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output"
+        }
+      },
+      "required": [
+        "step_id",
+        "agent_id",
+        "run_id",
+        "status"
+      ],
+      "title": "PipelineStepResult",
+      "type": "object"
+    }
+  },
+  "description": "The pipeline-level trace: an ordered list of step outcomes plus\noverall status. Persisted as a single JSON file (not a JSONL event log \u2014\nthere's no live per-event fan-out at this level; each step's own run\nalready has one) so a pipeline run survives a server restart the same\nway an agent run's events.jsonl does.",
+  "properties": {
+    "pipeline_run_id": {
+      "title": "Pipeline Run Id",
+      "type": "string"
+    },
+    "pipeline_id": {
+      "title": "Pipeline Id",
+      "type": "string"
+    },
+    "task": {
+      "title": "Task",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "running",
+        "completed",
+        "errored"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "steps": {
+      "items": {
+        "$ref": "#/$defs/PipelineStepResult"
+      },
+      "title": "Steps",
+      "type": "array"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error"
+    }
+  },
+  "required": [
+    "pipeline_run_id",
+    "pipeline_id",
+    "task",
+    "created_at",
+    "status"
+  ],
+  "title": "PipelineRunRecord",
+  "type": "object"
+}

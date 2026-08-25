@@ -4,6 +4,9 @@ import { AgentEditor } from './pages/AgentEditor'
 import { RunLauncher } from './pages/RunLauncher'
 import { RunView } from './pages/RunView'
 import { RunHistory } from './pages/RunHistory'
+import { PipelineList } from './pages/PipelineList'
+import { PipelineLauncher } from './pages/PipelineLauncher'
+import { PipelineRunView } from './pages/PipelineRunView'
 
 function Nav() {
   return (
@@ -17,6 +20,12 @@ function Nav() {
       </NavLink>
       <NavLink to="/runs" className={({ isActive }) => (isActive ? 'active' : '')}>
         Runs
+      </NavLink>
+      <NavLink to="/pipelines" className={({ isActive }) => (isActive ? 'active' : '')}>
+        Pipelines
+      </NavLink>
+      <NavLink to="/pipeline-runs" className={({ isActive }) => (isActive ? 'active' : '')}>
+        Pipeline runs
       </NavLink>
     </nav>
   )
@@ -36,6 +45,10 @@ export function App() {
             <Route path="/runs/:runId/live" element={<RunView />} />
             <Route path="/runs" element={<RunHistory />} />
             <Route path="/runs/:runId" element={<RunHistory />} />
+            <Route path="/pipelines" element={<PipelineList />} />
+            <Route path="/pipelines/launch" element={<PipelineLauncher />} />
+            <Route path="/pipeline-runs" element={<PipelineRunView />} />
+            <Route path="/pipeline-runs/:pipelineRunId" element={<PipelineRunView />} />
           </Routes>
         </main>
       </div>

@@ -5,8 +5,13 @@
 `agent-sandbox` is a bring-your-own-agent research sandbox: a researcher defines
 an agent (system prompt, model endpoint, MCP tool servers) as a declarative
 spec, launches it against a task, and watches/replays the full turn-by-turn
-trace. The longer-term product goal is an RIT-gated hosted version of this;
-today it's a single-user local dev tool with no auth layer.
+trace. Agents can also be chained into a **pipeline** — a deterministic,
+harness-driven sequence of agent steps where one step's output feeds the
+next step's task — without any pipeline-specific logic living in
+sandbox-core itself. The longer-term product goal is an RIT-gated hosted
+version of this, extensible enough to run real multi-step agent pipelines
+(e.g. a predictive-maintenance classification pipeline) natively; today it's
+a single-user local dev tool with no auth layer.
 
 The project is split into four independently-versioned pieces that layer
 cleanly on top of each other:
@@ -53,11 +58,16 @@ flowchart TB
 
     subgraph Core["sandbox-core (library)"]
         CLI["sandbox CLI"]
-        AgentLoop["agent_loop.execute_run / run_agent"]
-        ModelClient["ModelClient\n(httpx → OpenAI-compatible /chat/completions)"]
-        McpClient["mcp_client.connect_mcp_servers"]
+        AgentLoop["agent_loop.execute_run"]
+        Adapter["strands_adapter.build_agent\n+ SandboxEventHooks"]
         CredStore["YamlCredentialStore"]
         EventLog["EventLog (JSONL)"]
+    end
+
+    subgraph Strands["strands-agents (library)"]
+        StrandsAgent["strands.Agent\n(tool-calling loop, retries)"]
+        OpenAIModel["OpenAIModel\n(→ OpenAI-compatible /chat/completions)"]
+        MCPClient["MCPClient\n(per McpServerBinding: stdio / http / sse)"]
     end
 
     subgraph Disk["Local filesystem"]
@@ -81,9 +91,11 @@ flowchart TB
 
     RunManager --> AgentLoop
     CLI --> AgentLoop
-    AgentLoop --> ModelClient --> LLM
-    AgentLoop --> McpClient --> MCP
-    AgentLoop --> CredStore --> Creds
+    AgentLoop --> Adapter --> CredStore --> Creds
+    Adapter --> StrandsAgent
+    StrandsAgent --> OpenAIModel --> LLM
+    StrandsAgent --> MCPClient --> MCP
+    StrandsAgent -. hook events .-> AgentLoop
     AgentLoop --> EventLog --> Runs
 ```
 
@@ -91,8 +103,12 @@ flowchart TB
 
 ### sandbox-core (`sandbox-core/src/sandbox_core/`)
 
-The dependency-free heart of the system — importable and runnable with no
-server or UI at all.
+The heart of the system — importable and runnable with no server or UI at
+all. The actual agent loop, model retries, and MCP session lifecycle are
+[Strands Agents](https://strandsagents.com) (`strands-agents`), not hand-rolled
+here; sandbox-core's own code is the YAML/pydantic authoring surface plus a
+thin adapter that turns a validated `AgentSpec` into a `strands.Agent` and
+translates its hook events into our own `Event` union.
 
 **Schemas** (`schemas/`), all pydantic v2 models:
 
@@ -115,31 +131,31 @@ server or UI at all.
 
 **Runtime** (`runtime/`):
 
-- `agent_loop.py` — the actual tool-calling loop. `run_agent()` takes an
-  already-resolved `model_client` and already-connected `servers` dict (so
-  it's trivially testable with fakes) and drives turns up to `max_turns`:
-  call the model → log the request/response → if no tool calls, done
-  (`AgentResultEvent`); otherwise execute each requested tool call against
-  the owning `ConnectedMcpServer`, append `ToolCallEvent`/`ToolResultEvent`,
-  feed the result back as a `tool` message, and loop. Hitting `max_turns`
-  without a final answer produces an `ErrorEvent` with
-  `context.phase == "max_turns"`. `execute_run()` is the full orchestration
-  used by the CLI and the server: resolves the model API key, connects every
-  MCP server, calls `run_agent()`, and guarantees all connections close on
-  the way out.
-- `model_client.py` — `ModelClient` posts directly to
-  `{base_url}/chat/completions` with `httpx` (no `openai` SDK dependency,
-  since every target — RIT's gateway, local vLLM, any BYO endpoint — only
-  needs to be OpenAI-compatible). Retries on `429`/5xx/timeout/connect
-  errors with exponential backoff (capped at 8s, `max_retries` attempts);
-  any other failure becomes an `ErrorEvent` rather than raising.
-- `mcp_client.py` — `connect_mcp_servers()` is an async context manager that
-  opens a session per `McpServerBinding` (stdio/http/sse, via the `mcp` SDK),
-  lists and allowlist-filters its tools, and yields
-  `{binding.name: ConnectedMcpServer}`; every session is guaranteed closed on
-  exit via an `AsyncExitStack`. `ConnectedMcpServer.call_tool()` is the
-  enforcement point for `allowed_tools` (a filtered-out tool never reaches
-  the server) and for `logging_policy` (via `redact_result`).
+- `strands_adapter.py` — the actual "harness": `build_agent()` resolves the
+  model API key, builds an `OpenAIModel` pointed at `ModelConfig.base_url`
+  (any OpenAI-compatible `/chat/completions` endpoint — RIT's gateway, local
+  vLLM, any BYO target), builds one `strands.tools.mcp.MCPClient` per
+  `McpServerBinding` (stdio/http/sse, with `tool_filters` enforcing
+  `allowed_tools` and per-binding credential injection into headers/env), and
+  constructs a `strands.Agent` wired to both plus a `SandboxEventHooks`
+  instance. `SandboxEventHooks` is a Strands `HookProvider` that translates
+  `BeforeModelCallEvent`/`AfterModelCallEvent`/`BeforeToolCallEvent`/
+  `AfterToolCallEvent` into our own `LlmRequestEvent`/`LlmResponseEvent`/
+  `ToolCallEvent`/`ToolResultEvent` and appends each to `EventLog` as it
+  fires — applying `redact_result()` per the owning binding's
+  `logging_policy` along the way, exactly as the old hand-rolled loop did.
+- `agent_loop.py` — `execute_run()` is the thin orchestration used by the CLI
+  and the server: builds the agent (offloaded to a worker thread, since
+  `Agent(tools=[MCPClient, ...])` synchronously loads every MCP server's
+  tools on construction and shouldn't block a shared asyncio event loop),
+  calls `agent.invoke_async(task, limits=Limits(turns=max_turns))`, and maps
+  its terminal `stop_reason` onto our `Event` union: `"limit_turns"` becomes
+  an `ErrorEvent` with `context.phase == "max_turns"` (matching the old
+  hand-rolled loop's truncation behavior exactly), a model failure surfaced
+  via the hook becomes the `ErrorEvent` it already logged, and a normal
+  completion becomes `AgentResultEvent`. The actual tool-calling loop, model
+  retries, and MCP session lifecycle all live in Strands now — this function
+  no longer implements any of them.
 - `credential_store.py` — `YamlCredentialStore`, a flat `ref -> value` YAML
   file at `~/.sandbox/credentials.yaml` (overridable via
   `SANDBOX_CREDENTIALS_PATH`). Raises typed errors
@@ -211,7 +227,11 @@ React + Vite + `react-router-dom`, talking to the server over plain
 - **Pages**: `AgentList` / `AgentEditor` (agent CRUD), `RunLauncher` (pick
   an agent + task, `POST /runs`), `RunView` (live run via SSE at
   `/runs/:runId/live`), `RunHistory` (list + replay past runs, including
-  ones not launched from this UI session).
+  ones not launched from this UI session). `PipelineList` (pipelines are
+  authored as YAML for now — no visual editor yet), `PipelineLauncher` (pick
+  a pipeline + seed task, `POST /pipeline-runs`), `PipelineRunView` (polls
+  `GET /pipeline-runs/{id}` — no SSE at the pipeline level, see "Pipelines"
+  below — and links each step to its own ordinary `RunView`).
 - **`api/client.ts`** is the single module that knows the server's routes
   and response shapes; components never call `fetch` directly. Errors from
   non-2xx responses are normalized into a typed `ApiError`, including
@@ -228,10 +248,59 @@ React + Vite + `react-router-dom`, talking to the server over plain
 Versioned (`*.v1.json`) JSON Schema exports of every `sandbox-core` pydantic
 model — `agent_spec`, `run_spec`, `event` (and each event subtype),
 `credential_ref`, `mcp_server_binding`, `model_config`, `sub_agent_binding`,
-`token_usage`. Generated by `sandbox-core/src/sandbox_core/export_schemas.py`.
-Exists so a consumer that isn't Python (a future hosted UI, another
-language's agent implementation) has a versioned contract instead of needing
-to import the pydantic models directly.
+`token_usage`, `pipeline_spec`, `pipeline_step`, `pipeline_run_spec`,
+`pipeline_run_record`, `pipeline_step_result`. Generated by
+`sandbox-core/src/sandbox_core/export_schemas.py`. Exists so a consumer that
+isn't Python (a future hosted UI, another language's agent implementation)
+has a versioned contract instead of needing to import the pydantic models
+directly.
+
+## Pipelines
+
+A `PipelineSpec` (`schemas/pipeline_spec.py`) is an ordered list of
+`PipelineStep`s (`step_id`, `agent_id`, `task_template`) — deliberately
+**not** LLM-orchestrated (contrast `AgentSpec.sub_agents`/Strands'
+`as_tool()`, still schema-only). The sandbox itself walks the list in order;
+each step is a completely ordinary agent run with its own `run_id` and
+`events.jsonl`, produced by calling `agent_loop.execute_run()` exactly as a
+standalone run would. `task_template` supports two placeholders — `{{task}}`
+(the pipeline run's seed task) and `{{steps.<step_id>.output}}` (a prior
+step's `AgentResultEvent.final_output`) — plain string substitution, not a
+templating engine.
+
+- **`runtime/pipeline_runner.py`** (`sandbox-core`) — `execute_pipeline()` is
+  the thin coordinator: resolves each step's `AgentSpec` via an injected
+  `AgentSpecLoader` (mirrors `CredentialResolver`'s role for secrets — decouples
+  execution from *how* specs are stored), calls `execute_run()` per step, and
+  halts at the first step that doesn't finish with `AgentResultEvent`. Also
+  owns `save_pipeline_run_record()`/`read_pipeline_run_record()`, a single
+  JSON file (`pipeline.json`) per pipeline run — not a JSONL event log, since
+  there's no per-event fan-out at this level (each step's own run already
+  has one).
+- **`pipeline_specs.py` / `routes/pipelines.py`** (`sandbox-server`) — CRUD
+  over `PipelineSpec` YAML files under `./pipelines`, same file-per-id
+  pattern as `specs.py`/`routes/agents.py`.
+- **`pipeline_run_manager.py` / `routes/pipeline_runs.py`** (`sandbox-server`)
+  — `PipelineRunManager` mirrors `RunManager`'s shape (in-memory tracked runs
+  + disk fallback, launched as an `asyncio.create_task`) but delegates every
+  step to the *existing* `RunManager`/`execute_run` machinery. Its manifest
+  root (`./pipeline-runs` by default, `SANDBOX_PIPELINE_RUNS_DIR`) is
+  deliberately **not** a subdirectory of the agent-runs `output_root`
+  (`./runs`): `RunManager.list_runs()` treats every immediate child directory
+  of `output_root` as a candidate agent run, so a pipeline manifest living
+  anywhere under it — even nested — would show up as a phantom entry in the
+  plain agent-runs list. Each step's own per-agent-run `EventLog` still lives
+  under the normal `output_root`, same as any standalone run.
+- **No SSE at the pipeline level.** A pipeline run's live status is served
+  by a plain polling `GET /pipeline-runs/{id}` (updated after each step
+  completes); watching one *step* live still goes through the existing
+  per-run SSE endpoint unchanged. This was a deliberate scope cut, not a
+  limitation of the design — the pipeline layer was built to need zero
+  changes to the SSE/event-log contract.
+- **CLI**: `sandbox pipeline run <pipeline_spec.yaml> --task "..." --agents-dir <dir>`
+  — the headless counterpart, using a `DirectoryAgentSpecLoader` over a
+  directory of `<agent_id>.yaml` files instead of `sandbox-server`'s
+  `specs.py`-backed loader.
 
 ## Run lifecycle & streaming
 
@@ -240,9 +309,9 @@ to import the pydantic models directly.
    becomes `RunManager.launch_run()`; standalone, it's `execute_run()`
    called straight from `cli.py`.
 2. **Execution** — `execute_run()` resolves the model API key via the
-   `CredentialResolver`, opens every MCP server connection on the spec, and
-   runs `run_agent()`'s turn loop until a final answer, an error, or
-   `max_turns` is hit.
+   `CredentialResolver`, builds a `strands.Agent` wired to every MCP server on
+   the spec, and runs it (`agent.invoke_async(..., limits=Limits(turns=...))`)
+   until a final answer, an error, or `max_turns` is hit.
 3. **Persistence** — every event (`llm_request`, `llm_response`,
    `tool_call`, `tool_result`, terminal `agent_result`/`error`) is appended
    to `runs/<run_id>/events.jsonl` as it happens — this file is the single
@@ -267,29 +336,31 @@ to import the pydantic models directly.
 
 ```mermaid
 sequenceDiagram
-    participant Loop as run_agent()
-    participant Model as ModelClient
+    participant Run as agent_loop.execute_run()
+    participant Agent as strands.Agent
     participant LLM as Model endpoint
-    participant MCP as ConnectedMcpServer
+    participant MCP as MCP server
+    participant Hooks as SandboxEventHooks
     participant Log as EventLog
 
-    Loop->>Model: complete(messages, tools)
-    Model->>LLM: POST /chat/completions
-    LLM-->>Model: choice (content or tool_calls)
-    Model-->>Loop: ModelTurn(request, response)
-    Loop->>Log: append(LlmRequestEvent)
-    Loop->>Log: append(LlmResponseEvent)
+    Run->>Agent: invoke_async(task, limits=Limits(turns=max_turns))
+    Agent->>LLM: POST /chat/completions
+    LLM-->>Agent: choice (content or tool_calls)
+    Agent->>Hooks: BeforeModelCallEvent / AfterModelCallEvent
+    Hooks->>Log: append(LlmRequestEvent) / append(LlmResponseEvent)
     alt no tool_calls
-        Loop->>Log: append(AgentResultEvent)
+        Agent-->>Run: AgentResult(stop_reason="end_turn", ...)
+        Run->>Log: append(AgentResultEvent)
     else has tool_calls
         loop each tool call
-            Loop->>MCP: call_tool(name, args)
-            MCP-->>Loop: (ToolCallEvent, ToolResultEvent, raw_value)
-            Loop->>Log: append(ToolCallEvent)
-            Loop->>Log: append(ToolResultEvent)
+            Agent->>MCP: call_tool(name, args)
+            MCP-->>Agent: result
+            Agent->>Hooks: BeforeToolCallEvent / AfterToolCallEvent
+            Hooks->>Log: append(ToolCallEvent) / append(ToolResultEvent)
         end
-        Note over Loop: raw_value appended to messages as a tool response; next turn begins
+        Note over Agent: result appended to conversation history; next turn begins
     end
+    Note over Agent: hitting the turns cap ends the loop with stop_reason="limit_turns" —\nRun maps that to ErrorEvent(context.phase="max_turns")
 ```
 
 ## Security & isolation notes
@@ -304,25 +375,38 @@ sequenceDiagram
   ever sees a real value, and it runs entirely in `sandbox-core`/
   `sandbox-server`, never in the browser.
 - **Tool exposure is allowlisted per binding**: `McpServerBinding.allowed_tools`
-  is enforced in `ConnectedMcpServer` — a filtered-out tool is invisible to
-  the model (not offered as a schema) and rejected again defensively if the
-  model names it anyway.
+  is enforced via `tool_filters` on each binding's `MCPClient` — a
+  filtered-out tool is never loaded onto the agent in the first place (not
+  offered as a schema).
 - **Tool-result logging is policy-controlled**: `logging_policy` on each
   `McpServerBinding` (`full` / `hashed` / `metadata`) governs what actually
   lands in `events.jsonl`, independent of what the model itself receives —
-  so a noisy or sensitive tool result can be redacted from the persisted
-  trace without changing agent behavior.
+  `SandboxEventHooks` applies `redact_result()` when persisting
+  `ToolResultEvent`, after Strands has already fed the unredacted result back
+  to the model, so a noisy or sensitive tool result can be redacted from the
+  persisted trace without changing agent behavior.
 
 ## Known gaps / not yet built
 
 - **Auth / RIT gating** — the product goal from the project vision; nothing
   in this codebase implements it yet.
 - **Sub-agent spawning** — `AgentSpec.sub_agents` (`SubAgentBinding`) and
-  `AgentSpawnEvent` are defined in the schema layer, but `agent_loop.py`'s
-  turn loop does not yet expose sub-agents as callable tools or spawn them —
-  the wiring is schema-only today.
-- **No database** — agent specs are files under `agents/*.yaml`, runs are
-  directories under `runs/<run_id>/`. Fine for single-user local dev; would
+  `AgentSpawnEvent` are defined in the schema layer, but `strands_adapter.py`
+  does not yet build child agents or expose them as tools via Strands'
+  `agent.as_tool()` — the wiring is still schema-only. Strands makes this a
+  much smaller lift than it used to be, and the piece that used to be
+  missing — a way to resolve an agent id into another `AgentSpec` — now
+  exists (`AgentSpecLoader`, built for pipelines; see "Pipelines" above) and
+  could be reused here. Deliberately not pursued as the pipeline mechanism
+  though: LLM-driven sequencing is the opposite of the harness-driven
+  `PipelineSpec` design.
+- **Pipeline gate steps** — today every `PipelineStep` is an agent call; a
+  second, non-LLM callable step type (`agentic_ml`'s "agents propose,
+  harness decides" pattern) plus conditional/looping edges between steps are
+  the next planned addition, not yet built.
+- **No database** — agent specs, pipeline specs, and runs are all files
+  under `agents/*.yaml` / `pipelines/*.yaml` / `runs/<run_id>/` /
+  `pipeline-runs/<pipeline_run_id>/`. Fine for single-user local dev; would
   need to change for a multi-tenant hosted version.
 
 ## Local dev workflow
@@ -336,12 +420,20 @@ process group, e.g. `npm run dev`'s spawned `vite` child too):
 - `sandbox-server` at `http://127.0.0.1:8000` (log: `server.log`)
 - `sandbox-ui` at `http://localhost:5173` (log: `ui.log`)
 
-Agent specs default to `./agents`, run output to `./runs`, both relative to
-`start.sh`'s directory — override with `SANDBOX_AGENTS_DIR` /
-`SANDBOX_RUNS_DIR` / `SANDBOX_CREDENTIALS_PATH` env vars before running it.
+Agent specs default to `./agents`, pipeline specs to `./pipelines`, run
+output to `./runs`, pipeline-run manifests to `./pipeline-runs` — all
+relative to `start.sh`'s directory — override with `SANDBOX_AGENTS_DIR` /
+`SANDBOX_PIPELINES_DIR` / `SANDBOX_RUNS_DIR` / `SANDBOX_PIPELINE_RUNS_DIR` /
+`SANDBOX_CREDENTIALS_PATH` env vars before running it.
 
 To run a single agent with no server at all:
 
 ```bash
 sandbox run agents/file-writer.yaml --task "write a file that says hello"
+```
+
+To run a pipeline with no server at all:
+
+```bash
+sandbox pipeline run pipelines/sensor-report.yaml --task "..." --agents-dir ./agents
 ```

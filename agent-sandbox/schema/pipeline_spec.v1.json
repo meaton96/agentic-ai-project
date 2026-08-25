@@ -1,0 +1,52 @@
+{
+  "$defs": {
+    "PipelineStep": {
+      "description": "One step in a PipelineSpec: run `agent_id` with a task rendered from\n`task_template`. `task_template` supports two placeholders \u2014 `{{task}}`\n(the pipeline run's seed task) and `{{steps.<step_id>.output}}` (a prior\nstep's AgentResultEvent.final_output) \u2014 deliberately plain string\nsubstitution, not a templating engine; typed step output is future work.",
+      "properties": {
+        "step_id": {
+          "title": "Step Id",
+          "type": "string"
+        },
+        "agent_id": {
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "task_template": {
+          "title": "Task Template",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_id",
+        "agent_id",
+        "task_template"
+      ],
+      "title": "PipelineStep",
+      "type": "object"
+    }
+  },
+  "description": "A deterministic, harness-driven sequence of agent steps. Each step is\nan ordinary agent run (its own run_id/events.jsonl, unchanged) \u2014 this\nspec only decides what order to run them in and how one step's output\nfeeds the next step's task. Not LLM-orchestrated (contrast\nAgentSpec.sub_agents/as_tool()): the sandbox itself walks `steps` in\norder, matching agentic_ml's \"agents propose, harness decides\" split.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "steps": {
+      "items": {
+        "$ref": "#/$defs/PipelineStep"
+      },
+      "title": "Steps",
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "name"
+  ],
+  "title": "PipelineSpec",
+  "type": "object"
+}

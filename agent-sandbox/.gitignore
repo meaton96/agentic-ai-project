@@ -9,3 +9,8 @@ runs/
 # scratch output written by the example agents (e.g. examples/agents/file-writer.yaml)
 sandbox-core/examples/workspace/*
 !sandbox-core/examples/workspace/.gitkeep
+
+# generated output from agents/file-explorer.yaml — workspace/docs/ is committed
+# seed data for it to read, workspace/output/ is scratch it writes to
+workspace/output/*
+!workspace/output/.gitkeep
