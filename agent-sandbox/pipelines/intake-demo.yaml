@@ -1,0 +1,14 @@
+id: intake-demo
+name: intake demo
+steps:
+- step_id: intake
+  agent_id: intake
+  task_template: 'Read docs/equipment.csv with read_file and propose the target/id/time
+    columns. Context: {{task}}'
+- step_id: features
+  agent_id: feature-ideas
+  task_template: 'Given this intake proposal, suggest derived features: {{steps.intake.output}}'
+- step_id: report
+  agent_id: intake-report
+  task_template: 'Combine these two proposals into output/intake-report.md. Intake:
+    {{steps.intake.output}} Features: {{steps.features.output}}'

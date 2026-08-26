@@ -29,11 +29,13 @@ export function PipelineList() {
     <div>
       <div className="row" style={{ justifyContent: 'space-between', marginBottom: 16 }}>
         <h2 style={{ margin: 0 }}>Pipelines</h2>
+        <Link to="/pipelines/new">
+          <button>+ new pipeline</button>
+        </Link>
       </div>
       <p className="muted">
         A pipeline is a deterministic, ordered sequence of agent steps — the sandbox runs each
-        step's agent in turn and substitutes its output into the next step's task. Authored as
-        YAML under <code>pipelines/*.yaml</code> for now; a visual editor is future work.
+        step's agent in turn and substitutes its output into the next step's task.
       </p>
 
       {error && <div className="error-text">{error}</div>}
@@ -64,6 +66,9 @@ export function PipelineList() {
                   <div className="row-actions">
                     <Link to={`/pipelines/launch?pipeline=${encodeURIComponent(pipeline.id)}`}>
                       <button className="secondary">run</button>
+                    </Link>
+                    <Link to={`/pipelines/${encodeURIComponent(pipeline.id)}`}>
+                      <button className="secondary">edit</button>
                     </Link>
                     <button className="danger" onClick={() => handleDelete(pipeline.id)}>
                       delete

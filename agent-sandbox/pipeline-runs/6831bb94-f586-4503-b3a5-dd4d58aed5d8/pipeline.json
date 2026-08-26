@@ -1,0 +1,31 @@
+{
+  "pipeline_run_id": "6831bb94-f586-4503-b3a5-dd4d58aed5d8",
+  "pipeline_id": "intake-demo",
+  "task": "predictive maintenance dataset for two pieces of equipment",
+  "created_at": "2026-08-26T16:31:16.604532Z",
+  "status": "completed",
+  "steps": [
+    {
+      "step_id": "intake",
+      "agent_id": "intake",
+      "run_id": "f0be345a-1cec-4ec3-95f9-0b3e4fb4ffbe",
+      "status": "completed",
+      "output": "• **Target column**: `failed_within_7d` - this is the binary outcome indicating whether equipment failed within the next 7 days, which is the prediction target for the maintenance model.\n• **Entity identifier**: `equipment_id` - this uniquely identifies each piece of equipment in the dataset, allowing analysis to be grouped by individual units.\n• **Time column**: `timestamp` - this denotes when each observation was recorded, enabling time-series analysis and tracking of equipment conditions over time."
+    },
+    {
+      "step_id": "features",
+      "agent_id": "feature-ideas",
+      "run_id": "14847660-6b8f-4d28-96fd-1e4051e9a878",
+      "status": "completed",
+      "output": "**Feature 1:** `days_since_last_failure` = Calculate the number of days since the last failure event for each equipment unit, helping capture degradation patterns and maintenance intervals.\n\n**Feature 2:** `rolling_avg_temperature` = Compute the 7-day moving average of temperature readings, smoothing out short-term fluctuations to identify sustained thermal stress patterns.\n\n**Feature 3:** `failure_risk_score` = Combine multiple sensor metrics (temperature, vibration, pressure) into a composite score using weighted averages, providing a single metric that captures overall equipment health risk."
+    },
+    {
+      "step_id": "report",
+      "agent_id": "intake-report",
+      "run_id": "6a3d6bd4-3a7a-4ce5-ac42-98bc01355ab0",
+      "status": "completed",
+      "output": "The file `output/intake-report.md` has been successfully created with the combined data intake and feature engineering proposals. Let me know if you need any further modifications or additional files."
+    }
+  ],
+  "error": null
+}

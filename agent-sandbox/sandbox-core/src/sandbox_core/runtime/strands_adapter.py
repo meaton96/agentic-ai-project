@@ -77,20 +77,34 @@ def _stdio_env(binding: McpServerBinding, credential: str | None) -> dict | None
     return env
 
 
+def _require(connection: dict, key: str, binding: McpServerBinding) -> object:
+    """A bare `connection[key]` raises a bare KeyError with no indication of
+    which binding or field is wrong — this is the error a mistyped/empty
+    `connection` in the AgentForm UI actually produces, so give it a message
+    that says what to fix instead."""
+    if key not in connection:
+        raise ValueError(
+            f"MCP server {binding.name!r} ({binding.transport} transport) is missing "
+            f"required connection field {key!r}. Got connection={connection!r} — "
+            f"check the agent's 'Connection (JSON)' field."
+        )
+    return connection[key]
+
+
 def _mcp_client_for(binding: McpServerBinding, resolver: CredentialResolver | None) -> MCPClient:
     credential = resolver.resolve(binding.credential_ref) if (binding.credential_ref and resolver) else None
     tool_filters = {"allowed": binding.allowed_tools} if binding.allowed_tools is not None else None
 
     if binding.transport in ("http", "sse"):
         return MCPClient(
-            url=binding.connection["url"],
+            url=_require(binding.connection, "url", binding),
             headers=_auth_headers(binding, credential),
             tool_filters=tool_filters,
         )
     if binding.transport == "stdio":
         conn = binding.connection
         params = StdioServerParameters(
-            command=conn["command"],
+            command=_require(conn, "command", binding),
             args=conn.get("args", []),
             env=_stdio_env(binding, credential),
             cwd=conn.get("cwd"),

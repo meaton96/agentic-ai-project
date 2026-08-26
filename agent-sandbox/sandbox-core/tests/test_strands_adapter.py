@@ -77,6 +77,29 @@ def test_mcp_client_for_unknown_transport_raises():
         assert "carrier-pigeon" in str(exc)
 
 
+def test_mcp_client_for_stdio_missing_command_raises_a_clear_error_not_a_bare_keyerror():
+    # empty connection JSON — e.g. AgentForm's "Connection (JSON)" field left
+    # at its default `{}` — used to raise a bare KeyError('command') with no
+    # indication of what to fix.
+    binding = make_binding(transport="stdio", connection={})
+    try:
+        _mcp_client_for(binding, None)
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "command" in str(exc)
+        assert "fs" in str(exc)
+
+
+def test_mcp_client_for_http_missing_url_raises_a_clear_error_not_a_bare_keyerror():
+    binding = make_binding(transport="http", connection={})
+    try:
+        _mcp_client_for(binding, None)
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "url" in str(exc)
+        assert "fs" in str(exc)
+
+
 # --- _flatten_tool_result_content: mirrors the old mcp_client._flatten_content ---
 
 

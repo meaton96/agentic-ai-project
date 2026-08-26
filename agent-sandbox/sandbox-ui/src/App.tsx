@@ -5,6 +5,7 @@ import { RunLauncher } from './pages/RunLauncher'
 import { RunView } from './pages/RunView'
 import { RunHistory } from './pages/RunHistory'
 import { PipelineList } from './pages/PipelineList'
+import { PipelineEditor } from './pages/PipelineEditor'
 import { PipelineLauncher } from './pages/PipelineLauncher'
 import { PipelineRunView } from './pages/PipelineRunView'
 
@@ -46,7 +47,9 @@ export function App() {
             <Route path="/runs" element={<RunHistory />} />
             <Route path="/runs/:runId" element={<RunHistory />} />
             <Route path="/pipelines" element={<PipelineList />} />
+            <Route path="/pipelines/new" element={<PipelineEditor />} />
             <Route path="/pipelines/launch" element={<PipelineLauncher />} />
+            <Route path="/pipelines/:pipelineId" element={<PipelineEditor />} />
             <Route path="/pipeline-runs" element={<PipelineRunView />} />
             <Route path="/pipeline-runs/:pipelineRunId" element={<PipelineRunView />} />
           </Routes>
