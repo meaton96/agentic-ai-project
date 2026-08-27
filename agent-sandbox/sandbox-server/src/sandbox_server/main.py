@@ -14,6 +14,7 @@ from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sandbox_core.env import configure_gate_paths
 
 from . import config
 from .pipeline_run_manager import PipelineRunManager
@@ -24,6 +25,8 @@ from .routes.pipelines import router as pipelines_router
 from .routes.runs import router as runs_router
 from .routes.stream import router as stream_router
 from .run_manager import Runner, RunManager
+
+configure_gate_paths()
 
 _DEV_ORIGINS = [
     "http://localhost:5173", "http://127.0.0.1:5173",

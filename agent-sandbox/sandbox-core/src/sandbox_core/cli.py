@@ -7,13 +7,14 @@ from pathlib import Path
 
 import yaml
 
+from sandbox_core.env import configure_gate_paths
 from sandbox_core.runtime.agent_loop import execute_run
 from sandbox_core.runtime.credential_store import CredentialFileError, CredentialNotFoundError, YamlCredentialStore
 from sandbox_core.runtime.event_log import EventLog
 from sandbox_core.runtime.pipeline_runner import execute_pipeline
 from sandbox_core.schemas.agent_spec import AgentSpec
 from sandbox_core.schemas.events import ErrorEvent
-from sandbox_core.schemas.pipeline_run import PipelineRunSpec
+from sandbox_core.schemas.pipeline_run import GateStepResult, PipelineRunSpec, PipelineStepResult, StepResult
 from sandbox_core.schemas.pipeline_spec import PipelineSpec
 from sandbox_core.schemas.run_spec import RunSpec
 
@@ -101,8 +102,12 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
     agent_loader = DirectoryAgentSpecLoader(Path(args.agents_dir))
     resolver = YamlCredentialStore()
 
-    def on_step(step_result):
-        print(f"  [{step_result.status}] {step_result.step_id} (run_id={step_result.run_id})")
+    def on_step(step_result: StepResult) -> None:
+        if isinstance(step_result, GateStepResult):
+            routed = step_result.routed_to if step_result.routed_to is not None else "end"
+            print(f"  [gate] {step_result.step_id} decision={step_result.decision!r} -> {routed}")
+        else:
+            print(f"  [{step_result.status}] {step_result.step_id} (run_id={step_result.run_id})")
 
     print(f"pipeline_run_id: {run.pipeline_run_id}")
     try:
@@ -124,7 +129,11 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
         print(f"pipeline failed: {record.error}", file=sys.stderr)
         return 1
 
-    print(f"pipeline completed. final step output:\n{record.steps[-1].output}")
+    last_step = record.steps[-1]
+    if isinstance(last_step, PipelineStepResult):
+        print(f"pipeline completed. final step output:\n{last_step.output}")
+    else:
+        print(f"pipeline completed. final step was gate {last_step.step_id!r} (decision={last_step.decision!r})")
     return 0
 
 
@@ -159,6 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_gate_paths()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

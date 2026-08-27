@@ -23,8 +23,14 @@ from sandbox_core.schemas.events import (
     ToolCallEvent,
     ToolResultEvent,
 )
-from sandbox_core.schemas.pipeline_run import PipelineRunRecord, PipelineRunSpec, PipelineStepResult
-from sandbox_core.schemas.pipeline_spec import PipelineSpec, PipelineStep
+from sandbox_core.schemas.pipeline_run import (
+    GateStepResult,
+    PipelineRunRecord,
+    PipelineRunSpec,
+    PipelineStepResult,
+    StepResult,
+)
+from sandbox_core.schemas.pipeline_spec import GateStep, PipelineSpec, PipelineStep, Step
 from sandbox_core.schemas.run_spec import RunSpec
 
 # repo-relative: agent-sandbox/sandbox-core/src/sandbox_core/export_schemas.py -> agent-sandbox/schema
@@ -49,9 +55,11 @@ MODELS = {
     "error_event": ErrorEvent,
     "pipeline_spec": PipelineSpec,
     "pipeline_step": PipelineStep,
+    "gate_step": GateStep,
     "pipeline_run_spec": PipelineRunSpec,
     "pipeline_run_record": PipelineRunRecord,
     "pipeline_step_result": PipelineStepResult,
+    "gate_step_result": GateStepResult,
 }
 
 
@@ -64,10 +72,11 @@ def export_schemas(output_dir: Path = DEFAULT_OUTPUT_DIR) -> list[Path]:
         path.write_text(json.dumps(model.model_json_schema(), indent=2) + "\n")
         written.append(path)
 
-    # Event is a discriminated Union, not a BaseModel, so it needs a TypeAdapter.
-    event_path = output_dir / f"event.v{SCHEMA_VERSION}.json"
-    event_path.write_text(json.dumps(TypeAdapter(Event).json_schema(), indent=2) + "\n")
-    written.append(event_path)
+    # Discriminated Unions aren't BaseModels, so they need a TypeAdapter.
+    for stem, union_type in {"event": Event, "step": Step, "step_result": StepResult}.items():
+        path = output_dir / f"{stem}.v{SCHEMA_VERSION}.json"
+        path.write_text(json.dumps(TypeAdapter(union_type).json_schema(), indent=2) + "\n")
+        written.append(path)
 
     return written
 

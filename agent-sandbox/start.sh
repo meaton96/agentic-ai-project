@@ -9,6 +9,14 @@
 # SANDBOX_CREDENTIALS_PATH before running this script if you want different
 # locations.
 #
+# A PipelineSpec GateStep's "module.path:function_name" needs to be
+# importable in whichever process runs it — sandbox_core.env.configure_gate_paths()
+# handles that automatically at server/CLI startup by reading
+# SANDBOX_GATES_PYTHONPATH from the repo-root .env (../.env from here) and
+# adding its (':'-separated, relative-to-here-unless-absolute) directories
+# to sys.path. Nothing to set in this script itself — add/edit that var in
+# ../.env, not here. See docs/phase3-testing-guide.md.
+#
 # Ctrl+C stops both servers (and, since each is launched via `setsid`, their
 # own child processes too — e.g. `npm run dev` spawns a separate `vite`
 # process; killing just npm's PID leaves that one running). Logs go to

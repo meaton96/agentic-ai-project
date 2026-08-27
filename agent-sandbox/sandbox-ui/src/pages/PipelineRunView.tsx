@@ -117,20 +117,29 @@ function PipelineRunDetail({ pipelineRunId }: { pipelineRunId: string }) {
               </tr>
             </thead>
             <tbody>
-              {detail.steps.map((step) => (
-                <tr key={step.step_id}>
-                  <td>{step.step_id}</td>
-                  <td className="muted">{step.agent_id}</td>
-                  <td>
-                    <StatusBadge status={step.status} />
-                  </td>
-                  <td>
-                    <Link to={`/runs/${encodeURIComponent(step.run_id)}/live`}>
-                      <code>{step.run_id}</code>
-                    </Link>
-                  </td>
-                </tr>
-              ))}
+              {detail.steps.map((step) =>
+                step.kind === 'gate' ? (
+                  <tr key={step.step_id}>
+                    <td>{step.step_id}</td>
+                    <td className="muted">gate</td>
+                    <td className="muted">decision: {step.decision}</td>
+                    <td className="muted">→ routed to {step.routed_to ?? 'end'}</td>
+                  </tr>
+                ) : (
+                  <tr key={step.step_id}>
+                    <td>{step.step_id}</td>
+                    <td className="muted">{step.agent_id}</td>
+                    <td>
+                      <StatusBadge status={step.status} />
+                    </td>
+                    <td>
+                      <Link to={`/runs/${encodeURIComponent(step.run_id)}/live`}>
+                        <code>{step.run_id}</code>
+                      </Link>
+                    </td>
+                  </tr>
+                ),
+              )}
               {detail.status === 'running' && (
                 <tr>
                   <td colSpan={4} className="muted">

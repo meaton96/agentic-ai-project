@@ -1,0 +1,37 @@
+{
+  "description": "The outcome of one already-finished gate step: no agent run backs it,\njust a decision and where it routed to. `routed_to` is None when the\ngate's decision resolved to the \"__end__\" sentinel.",
+  "properties": {
+    "kind": {
+      "const": "gate",
+      "default": "gate",
+      "title": "Kind",
+      "type": "string"
+    },
+    "step_id": {
+      "title": "Step Id",
+      "type": "string"
+    },
+    "decision": {
+      "title": "Decision",
+      "type": "string"
+    },
+    "routed_to": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Routed To"
+    }
+  },
+  "required": [
+    "step_id",
+    "decision",
+    "routed_to"
+  ],
+  "title": "GateStepResult",
+  "type": "object"
+}

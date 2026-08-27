@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Annotated, Literal, Union
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -19,15 +19,30 @@ class PipelineRunSpec(BaseModel):
 
 
 class PipelineStepResult(BaseModel):
-    """The outcome of one already-finished pipeline step. `run_id` is the
-    underlying agent run's own run_id — its full events.jsonl/trace is
+    """The outcome of one already-finished agent pipeline step. `run_id` is
+    the underlying agent run's own run_id — its full events.jsonl/trace is
     reachable through the exact same endpoints a standalone agent run is."""
 
+    kind: Literal["agent"] = "agent"
     step_id: str
     agent_id: str
     run_id: str
     status: PipelineStepStatus
     output: str | None = None
+
+
+class GateStepResult(BaseModel):
+    """The outcome of one already-finished gate step: no agent run backs it,
+    just a decision and where it routed to. `routed_to` is None when the
+    gate's decision resolved to the "__end__" sentinel."""
+
+    kind: Literal["gate"] = "gate"
+    step_id: str
+    decision: str
+    routed_to: str | None
+
+
+StepResult = Annotated[Union[PipelineStepResult, GateStepResult], Field(discriminator="kind")]
 
 
 class PipelineRunRecord(BaseModel):
@@ -42,5 +57,5 @@ class PipelineRunRecord(BaseModel):
     task: str
     created_at: datetime
     status: PipelineRunStatus
-    steps: list[PipelineStepResult] = Field(default_factory=list)
+    steps: list[StepResult] = Field(default_factory=list)
     error: str | None = None

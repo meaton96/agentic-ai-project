@@ -1,0 +1,13 @@
+id: gate-happy-demo
+name: gate-happy-demo
+steps:
+- kind: agent
+  step_id: summarize
+  agent_id: summarizer
+  task_template: 'Summarize: {{task}}'
+- kind: gate
+  step_id: check
+  gate: gates_demo:approve
+  on_result:
+    approved: __end__
+max_steps: 50

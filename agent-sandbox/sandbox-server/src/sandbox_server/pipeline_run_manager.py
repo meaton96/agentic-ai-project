@@ -15,7 +15,7 @@ from sandbox_core.runtime.agent_loop import execute_run
 from sandbox_core.runtime.credential_store import YamlCredentialStore
 from sandbox_core.runtime.pipeline_runner import Runner, execute_pipeline, read_pipeline_run_record, save_pipeline_run_record
 from sandbox_core.schemas.agent_spec import AgentSpec
-from sandbox_core.schemas.pipeline_run import PipelineRunRecord, PipelineRunSpec, PipelineStepResult
+from sandbox_core.schemas.pipeline_run import PipelineRunRecord, PipelineRunSpec, StepResult
 from sandbox_core.schemas.pipeline_spec import PipelineSpec
 
 from .specs import read_agent_spec
@@ -50,7 +50,7 @@ class TrackedPipelineRun:
     task: str
     created_at: datetime
     status: str = "running"
-    steps: list[PipelineStepResult] = field(default_factory=list)
+    steps: list[StepResult] = field(default_factory=list)
     error: str | None = None
 
     def to_record(self) -> PipelineRunRecord:
@@ -111,7 +111,7 @@ class PipelineRunManager:
         tracked.error = record.error
         save_pipeline_run_record(record, self.pipeline_runs_root)
 
-    def _on_step(self, tracked: TrackedPipelineRun, result: PipelineStepResult) -> None:
+    def _on_step(self, tracked: TrackedPipelineRun, result: StepResult) -> None:
         tracked.steps.append(result)
         save_pipeline_run_record(tracked.to_record(), self.pipeline_runs_root)
 

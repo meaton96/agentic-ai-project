@@ -257,26 +257,57 @@ directly.
 
 ## Pipelines
 
-A `PipelineSpec` (`schemas/pipeline_spec.py`) is an ordered list of
-`PipelineStep`s (`step_id`, `agent_id`, `task_template`) — deliberately
-**not** LLM-orchestrated (contrast `AgentSpec.sub_agents`/Strands'
-`as_tool()`, still schema-only). The sandbox itself walks the list in order;
-each step is a completely ordinary agent run with its own `run_id` and
-`events.jsonl`, produced by calling `agent_loop.execute_run()` exactly as a
-standalone run would. `task_template` supports two placeholders — `{{task}}`
-(the pipeline run's seed task) and `{{steps.<step_id>.output}}` (a prior
-step's `AgentResultEvent.final_output`) — plain string substitution, not a
-templating engine.
+A `PipelineSpec` (`schemas/pipeline_spec.py`) is a sequence of `Step`s — a
+discriminated union (`kind` field, mirroring `events.py`'s `Event` union) of
+two step shapes:
+
+- **`PipelineStep`** (`kind: "agent"`, the default so pre-existing YAML with
+  no `kind` field still validates unchanged): `step_id`, `agent_id`,
+  `task_template`. A completely ordinary agent run with its own `run_id` and
+  `events.jsonl`, produced by calling `agent_loop.execute_run()` exactly as a
+  standalone run would. `task_template` supports two placeholders —
+  `{{task}}` (the pipeline run's seed task) and
+  `{{steps.<step_id>.output}}` (a prior step's `AgentResultEvent.final_output`)
+  — plain string substitution, not a templating engine.
+- **`GateStep`** (`kind: "gate"`): `gate` (a `"module.path:function_name"`
+  import reference) and `on_result` (a decision-string → next-step_id map,
+  with the `"__end__"` sentinel meaning "the pipeline completes successfully
+  here"). No agent run backs a gate — it's a deterministic, in-process
+  Python callable, run with every completed step's output so far
+  (`dict[str, str]`, keyed by `step_id`) and returning a decision string.
+  This is `agentic_ml`'s "agents propose, harness decides" pattern made
+  generic, and it's what lets a `PipelineSpec` express a reject/retry loop
+  (e.g. `verification → modeling`) that a strictly linear step list can't.
+  A gate is deliberately **not sandboxed** — see "Known gaps" below.
+
+The sandbox walks `steps` starting from the first declared `step_id`: a
+completed agent step advances to the next step in declaration order; a gate
+step's decision (looked up in `on_result`) can jump anywhere, including
+backward. `PipelineSpec.max_steps` (default 50) caps total step executions
+per run — the pipeline-level analog of `AgentSpec.max_turns` — so a gate that
+always routes backward can't loop forever.
 
 - **`runtime/pipeline_runner.py`** (`sandbox-core`) — `execute_pipeline()` is
-  the thin coordinator: resolves each step's `AgentSpec` via an injected
-  `AgentSpecLoader` (mirrors `CredentialResolver`'s role for secrets — decouples
-  execution from *how* specs are stored), calls `execute_run()` per step, and
-  halts at the first step that doesn't finish with `AgentResultEvent`. Also
-  owns `save_pipeline_run_record()`/`read_pipeline_run_record()`, a single
-  JSON file (`pipeline.json`) per pipeline run — not a JSONL event log, since
-  there's no per-event fan-out at this level (each step's own run already
-  has one).
+  the thin coordinator: resolves each agent step's `AgentSpec` via an
+  injected `AgentSpecLoader` (mirrors `CredentialResolver`'s role for
+  secrets — decouples execution from *how* specs are stored), calls
+  `execute_run()` per agent step, and resolves/calls each gate step's
+  function via `_resolve_gate()`/`_run_gate()` (supports sync and async gate
+  functions). Halts — returning a `PipelineRunRecord` with
+  `status="errored"` — at the first agent step that doesn't finish with
+  `AgentResultEvent`, the first gate that fails to resolve/run or returns a
+  decision missing from its `on_result`, or once `max_steps` is exceeded;
+  every halt reason is a clear message naming the offending step, mirroring
+  `strands_adapter._mcp_client_for()`'s `_require()` rather than surfacing a
+  bare `KeyError`/`AttributeError`. Also owns
+  `save_pipeline_run_record()`/`read_pipeline_run_record()`, a single JSON
+  file (`pipeline.json`) per pipeline run — not a JSONL event log, since
+  there's no per-event fan-out at this level (each agent step's own run
+  already has one). Each finished step's outcome is one of two
+  `StepResult` variants (`schemas/pipeline_run.py`, same discriminated-union
+  technique as `Step`): `PipelineStepResult` (agent id, run id, status,
+  output) or `GateStepResult` (decision, `routed_to` — `None` means the
+  gate routed to `"__end__"`).
 - **`pipeline_specs.py` / `routes/pipelines.py`** (`sandbox-server`) — CRUD
   over `PipelineSpec` YAML files under `./pipelines`, same file-per-id
   pattern as `specs.py`/`routes/agents.py`.
@@ -400,10 +431,20 @@ sequenceDiagram
   could be reused here. Deliberately not pursued as the pipeline mechanism
   though: LLM-driven sequencing is the opposite of the harness-driven
   `PipelineSpec` design.
-- **Pipeline gate steps** — today every `PipelineStep` is an agent call; a
-  second, non-LLM callable step type (`agentic_ml`'s "agents propose,
-  harness decides" pattern) plus conditional/looping edges between steps are
-  the next planned addition, not yet built.
+- **Gate execution is trusted, in-process Python only** — `GateStep` (see
+  "Pipelines" above) resolves `gate` by ordinary Python import and calls it
+  directly in the sandbox-server process, with no subprocess isolation or
+  AST validation of any kind. This is fine for an operator-authored gate
+  reusing e.g. `agentic_ml.harness.*` functions unmodified, but
+  `agentic_ml`'s real `modeling` gate needs to sandbox-execute *untrusted
+  LLM-generated* code (AST-checked, subprocess-isolated, per
+  `agent-frontend/CLAUDE.md`'s forkserver requirements) — that isolation
+  layer is a separate, not-yet-built piece of work.
+- **Gate authoring in the browser is round-trip-safe but not visualized as a
+  graph** — `PipelineForm` (`sandbox-ui`) can create/edit gate steps
+  (function path + decision→step_id table) alongside agent steps, but the
+  pipeline is still shown as a flat, top-to-bottom list; a gate that jumps
+  backward isn't rendered as a loop.
 - **No database** — agent specs, pipeline specs, and runs are all files
   under `agents/*.yaml` / `pipelines/*.yaml` / `runs/<run_id>/` /
   `pipeline-runs/<pipeline_run_id>/`. Fine for single-user local dev; would

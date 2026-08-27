@@ -90,75 +90,19 @@
       "type": "object"
     }
   },
-  "description": "The pipeline-level trace: an ordered list of step outcomes plus\noverall status. Persisted as a single JSON file (not a JSONL event log \u2014\nthere's no live per-event fan-out at this level; each step's own run\nalready has one) so a pipeline run survives a server restart the same\nway an agent run's events.jsonl does.",
-  "properties": {
-    "pipeline_run_id": {
-      "title": "Pipeline Run Id",
-      "type": "string"
+  "discriminator": {
+    "mapping": {
+      "agent": "#/$defs/PipelineStepResult",
+      "gate": "#/$defs/GateStepResult"
     },
-    "pipeline_id": {
-      "title": "Pipeline Id",
-      "type": "string"
-    },
-    "task": {
-      "title": "Task",
-      "type": "string"
-    },
-    "created_at": {
-      "format": "date-time",
-      "title": "Created At",
-      "type": "string"
-    },
-    "status": {
-      "enum": [
-        "running",
-        "completed",
-        "errored"
-      ],
-      "title": "Status",
-      "type": "string"
-    },
-    "steps": {
-      "items": {
-        "discriminator": {
-          "mapping": {
-            "agent": "#/$defs/PipelineStepResult",
-            "gate": "#/$defs/GateStepResult"
-          },
-          "propertyName": "kind"
-        },
-        "oneOf": [
-          {
-            "$ref": "#/$defs/PipelineStepResult"
-          },
-          {
-            "$ref": "#/$defs/GateStepResult"
-          }
-        ]
-      },
-      "title": "Steps",
-      "type": "array"
-    },
-    "error": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Error"
-    }
+    "propertyName": "kind"
   },
-  "required": [
-    "pipeline_run_id",
-    "pipeline_id",
-    "task",
-    "created_at",
-    "status"
-  ],
-  "title": "PipelineRunRecord",
-  "type": "object"
+  "oneOf": [
+    {
+      "$ref": "#/$defs/PipelineStepResult"
+    },
+    {
+      "$ref": "#/$defs/GateStepResult"
+    }
+  ]
 }

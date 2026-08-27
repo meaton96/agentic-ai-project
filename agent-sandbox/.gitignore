@@ -6,6 +6,9 @@ credentials.yaml
 # event logs produced by `sandbox run`
 runs/
 
+# pipeline-run manifests produced by `sandbox pipeline run` / PipelineRunManager
+pipeline-runs/
+
 # scratch output written by the example agents (e.g. examples/agents/file-writer.yaml)
 sandbox-core/examples/workspace/*
 !sandbox-core/examples/workspace/.gitkeep

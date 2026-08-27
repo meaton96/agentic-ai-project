@@ -144,24 +144,40 @@ export interface ValidationErrorDetail {
 }
 
 // Mirrors sandbox_core.schemas.pipeline_spec / pipeline_run — a
-// deterministic, harness-driven sequence of agent steps, not an
+// deterministic, harness-driven sequence of agent/gate steps, not an
 // LLM-orchestrated one. See docs/architecture.md.
 export interface PipelineStep {
+  kind: 'agent'
   step_id: string
   agent_id: string
   task_template: string
 }
 
+// A deterministic, non-LLM step: `gate` is a "module:function" import
+// path, called with every completed step's output so far; its decision is
+// looked up in `on_result` to pick the next step_id ("__end__" ends the
+// pipeline here).
+export interface GateStep {
+  kind: 'gate'
+  step_id: string
+  gate: string
+  on_result: Record<string, string>
+}
+
+export type Step = PipelineStep | GateStep
+
 export interface PipelineSpec {
   id: string
   name: string
-  steps: PipelineStep[]
+  steps: Step[]
+  max_steps: number
 }
 
 export type PipelineStepStatus = 'completed' | 'errored' | 'truncated'
 export type PipelineRunStatus = 'running' | 'completed' | 'errored'
 
 export interface PipelineStepResult {
+  kind: 'agent'
   step_id: string
   agent_id: string
   run_id: string
@@ -169,13 +185,24 @@ export interface PipelineStepResult {
   output: string | null
 }
 
+// No agent run backs a gate step — `routed_to` is null when the gate's
+// decision resolved to the "__end__" sentinel.
+export interface GateStepResult {
+  kind: 'gate'
+  step_id: string
+  decision: string
+  routed_to: string | null
+}
+
+export type StepResult = PipelineStepResult | GateStepResult
+
 export interface PipelineRunRecord {
   pipeline_run_id: string
   pipeline_id: string
   task: string
   created_at: string
   status: PipelineRunStatus
-  steps: PipelineStepResult[]
+  steps: StepResult[]
   error: string | null
 }
 

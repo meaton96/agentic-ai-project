@@ -13,8 +13,8 @@ from .events import (
     TokenUsage,
     redact_result,
 )
-from .pipeline_run import PipelineRunRecord, PipelineRunSpec, PipelineStepResult
-from .pipeline_spec import PipelineSpec, PipelineStep
+from .pipeline_run import GateStepResult, PipelineRunRecord, PipelineRunSpec, PipelineStepResult, StepResult
+from .pipeline_spec import GateStep, PipelineSpec, PipelineStep, Step
 from .run_spec import RunSpec
 
 __all__ = [
@@ -39,7 +39,11 @@ __all__ = [
     "CredentialResolver",
     "PipelineSpec",
     "PipelineStep",
+    "GateStep",
+    "Step",
     "PipelineRunSpec",
     "PipelineRunRecord",
     "PipelineStepResult",
+    "GateStepResult",
+    "StepResult",
 ]

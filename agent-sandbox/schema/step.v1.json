@@ -64,47 +64,19 @@
       "type": "object"
     }
   },
-  "description": "A deterministic, harness-driven sequence of agent/gate steps. Each\nagent step is an ordinary agent run (its own run_id/events.jsonl,\nunchanged); each gate step is a plain Python call. This spec only\ndecides what order to run them in, how one step's output feeds the\nnext, and \u2014 via gates \u2014 which step runs next. Not LLM-orchestrated\n(contrast AgentSpec.sub_agents/as_tool()): the sandbox itself walks\n`steps`, matching agentic_ml's \"agents propose, harness decides\" split.",
-  "properties": {
-    "id": {
-      "title": "Id",
-      "type": "string"
+  "discriminator": {
+    "mapping": {
+      "agent": "#/$defs/PipelineStep",
+      "gate": "#/$defs/GateStep"
     },
-    "name": {
-      "title": "Name",
-      "type": "string"
-    },
-    "steps": {
-      "items": {
-        "discriminator": {
-          "mapping": {
-            "agent": "#/$defs/PipelineStep",
-            "gate": "#/$defs/GateStep"
-          },
-          "propertyName": "kind"
-        },
-        "oneOf": [
-          {
-            "$ref": "#/$defs/PipelineStep"
-          },
-          {
-            "$ref": "#/$defs/GateStep"
-          }
-        ]
-      },
-      "title": "Steps",
-      "type": "array"
-    },
-    "max_steps": {
-      "default": 50,
-      "title": "Max Steps",
-      "type": "integer"
-    }
+    "propertyName": "kind"
   },
-  "required": [
-    "id",
-    "name"
-  ],
-  "title": "PipelineSpec",
-  "type": "object"
+  "oneOf": [
+    {
+      "$ref": "#/$defs/PipelineStep"
+    },
+    {
+      "$ref": "#/$defs/GateStep"
+    }
+  ]
 }

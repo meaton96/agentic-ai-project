@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from sandbox_core.schemas.pipeline_spec import PipelineSpec, PipelineStep
+from sandbox_core.schemas.pipeline_spec import GateStep, PipelineSpec, PipelineStep
 
 
 def test_pipeline_spec_roundtrip():
@@ -31,3 +31,37 @@ def test_pipeline_spec_rejects_duplicate_step_ids():
                 PipelineStep(step_id="a", agent_id="agent-b", task_template="y"),
             ],
         )
+
+
+def test_pipeline_step_kind_defaults_to_agent_so_existing_yaml_stays_valid():
+    step = PipelineStep(step_id="a", agent_id="agent-a", task_template="x")
+    assert step.kind == "agent"
+
+
+def test_pipeline_spec_max_steps_defaults_to_50():
+    pipeline = PipelineSpec(id="pipe-1", name="x", steps=[PipelineStep(step_id="a", agent_id="a", task_template="x")])
+    assert pipeline.max_steps == 50
+
+
+def test_pipeline_spec_roundtrip_with_a_gate_step():
+    pipeline = PipelineSpec(
+        id="pipe-1",
+        name="with gate",
+        steps=[
+            PipelineStep(step_id="a", agent_id="agent-a", task_template="{{task}}"),
+            GateStep(
+                kind="gate",
+                step_id="check",
+                gate="mypkg.gates:decide",
+                on_result={"approved": "__end__", "rejected": "a"},
+            ),
+        ],
+    )
+    reloaded = PipelineSpec.model_validate(pipeline.model_dump())
+    assert reloaded == pipeline
+    assert isinstance(reloaded.steps[1], GateStep)
+
+
+def test_gate_step_requires_kind_gate_explicitly():
+    with pytest.raises(ValidationError):
+        GateStep(step_id="check", gate="mypkg.gates:decide", on_result={})

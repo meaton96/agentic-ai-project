@@ -1,6 +1,12 @@
 {
   "description": "One step in a PipelineSpec: run `agent_id` with a task rendered from\n`task_template`. `task_template` supports two placeholders \u2014 `{{task}}`\n(the pipeline run's seed task) and `{{steps.<step_id>.output}}` (a prior\nstep's AgentResultEvent.final_output) \u2014 deliberately plain string\nsubstitution, not a templating engine; typed step output is future work.",
   "properties": {
+    "kind": {
+      "const": "agent",
+      "default": "agent",
+      "title": "Kind",
+      "type": "string"
+    },
     "step_id": {
       "title": "Step Id",
       "type": "string"
