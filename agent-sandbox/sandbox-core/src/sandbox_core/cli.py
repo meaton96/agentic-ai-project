@@ -105,7 +105,8 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
     def on_step(step_result: StepResult) -> None:
         if isinstance(step_result, GateStepResult):
             routed = step_result.routed_to if step_result.routed_to is not None else "end"
-            print(f"  [gate] {step_result.step_id} decision={step_result.decision!r} -> {routed}")
+            suffix = f" output={step_result.output!r}" if step_result.output is not None else ""
+            print(f"  [gate] {step_result.step_id} decision={step_result.decision!r} -> {routed}{suffix}")
         else:
             print(f"  [{step_result.status}] {step_result.step_id} (run_id={step_result.run_id})")
 
@@ -132,6 +133,8 @@ def _cmd_pipeline_run(args: argparse.Namespace) -> int:
     last_step = record.steps[-1]
     if isinstance(last_step, PipelineStepResult):
         print(f"pipeline completed. final step output:\n{last_step.output}")
+    elif last_step.output is not None:
+        print(f"pipeline completed. final step was gate {last_step.step_id!r} — output:\n{last_step.output}")
     else:
         print(f"pipeline completed. final step was gate {last_step.step_id!r} (decision={last_step.decision!r})")
     return 0

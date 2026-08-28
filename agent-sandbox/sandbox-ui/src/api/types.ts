@@ -186,12 +186,16 @@ export interface PipelineStepResult {
 }
 
 // No agent run backs a gate step — `routed_to` is null when the gate's
-// decision resolved to the "__end__" sentinel.
+// decision resolved to the "__end__" sentinel. `output` feeds
+// {{steps.<step_id>.output}} for later steps, same as PipelineStepResult's —
+// a gate wrapping a deterministic data-pipeline stage (DataFrame in,
+// DataFrame out) puts an artifact-path reference here, not prose.
 export interface GateStepResult {
   kind: 'gate'
   step_id: string
   decision: string
   routed_to: string | null
+  output: string | null
 }
 
 export type StepResult = PipelineStepResult | GateStepResult

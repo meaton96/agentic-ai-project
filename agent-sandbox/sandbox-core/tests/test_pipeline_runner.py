@@ -426,3 +426,83 @@ async def test_async_gate_function_is_awaited_not_ignored(tmp_path):
     gate_result = record.steps[-1]
     assert isinstance(gate_result, GateStepResult)
     assert gate_result.decision == "approved"
+
+
+# -- gate output: artifact-reference passthrough -----------------------------
+
+
+@pytest.mark.asyncio
+async def test_gate_output_feeds_downstream_step_template(tmp_path):
+    """A gate can hand forward data (here, a fake artifact path) the same
+    way an agent step's final_output does — proving a deterministic,
+    non-LLM pipeline stage (e.g. a DataFrame transform) can sit in a
+    pipeline and feed a real reference forward, not just route control
+    flow."""
+    pipeline = make_pipeline(
+        PipelineStep(step_id="a", agent_id="agent-a", task_template="{{task}}"),
+        make_gate("transform", "fixture_gates:approve_with_artifact_path", {"approved": "b"}),
+        PipelineStep(step_id="b", agent_id="agent-b", task_template="Use this file: {{steps.transform.output}}"),
+    )
+    runner = fake_runner_factory(
+        {
+            "agent-a": [result_event("r1", "agent-a", "out-a")],
+            "agent-b": [result_event("r2", "agent-b", "out-b")],
+        }
+    )
+    loader = FakeAgentLoader({"agent-a": make_agent("agent-a"), "agent-b": make_agent("agent-b")})
+
+    record = await execute_pipeline(
+        pipeline, make_run(), agent_loader=loader, resolver=FakeResolver(), output_root=tmp_path, runner=runner
+    )
+
+    assert record.status == "completed"
+    gate_result = record.steps[1]
+    assert isinstance(gate_result, GateStepResult)
+    assert gate_result.output == "artifacts/fake_features.parquet"
+    assert runner.calls[1] == {"agent_id": "agent-b", "task": "Use this file: artifacts/fake_features.parquet"}
+
+
+@pytest.mark.asyncio
+async def test_gate_returning_bare_string_still_works(tmp_path):
+    """Backward compatibility: a gate that returns just a decision string
+    (every gate before this feature existed) must keep working, with
+    output left None."""
+    pipeline = make_pipeline(
+        PipelineStep(step_id="a", agent_id="agent-a", task_template="{{task}}"),
+        make_gate("check", "fixture_gates:always_approve", {"approved": "__end__"}),
+    )
+    runner = fake_runner_factory({"agent-a": [result_event("r1", "agent-a", "out-a")]})
+    loader = FakeAgentLoader({"agent-a": make_agent("agent-a")})
+
+    record = await execute_pipeline(
+        pipeline, make_run(), agent_loader=loader, resolver=FakeResolver(), output_root=tmp_path, runner=runner
+    )
+
+    gate_result = record.steps[-1]
+    assert isinstance(gate_result, GateStepResult)
+    assert gate_result.output is None
+
+
+@pytest.mark.asyncio
+async def test_gate_as_first_step_can_read_the_seed_task(tmp_path):
+    """A gate has no {{task}} template placeholder (it isn't rendering a
+    template) — it needs the reserved "__task__" outputs key instead, so a
+    deterministic stage can be the very first step in a pipeline with no
+    LLM call needed just to pass through the seed input."""
+    pipeline = make_pipeline(
+        make_gate("intake", "fixture_gates:echo_seed_task", {"approved": "__end__"}),
+    )
+
+    record = await execute_pipeline(
+        pipeline,
+        make_run(task="path/to/titanic.csv"),
+        agent_loader=FakeAgentLoader({}),
+        resolver=FakeResolver(),
+        output_root=tmp_path,
+        runner=fake_runner_factory({}),
+    )
+
+    assert record.status == "completed"
+    gate_result = record.steps[0]
+    assert isinstance(gate_result, GateStepResult)
+    assert gate_result.output == "path/to/titanic.csv"

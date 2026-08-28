@@ -26,4 +26,18 @@ async def async_always_approve(outputs: dict[str, str]) -> str:
     return "approved"
 
 
+def approve_with_artifact_path(outputs: dict[str, str]) -> tuple[str, str]:
+    """Stands in for a deterministic pipeline stage (e.g. a DataFrame
+    transform): "does work", then hands forward a reference to wherever it
+    wrote the real result — never the payload itself."""
+    return "approved", "artifacts/fake_features.parquet"
+
+
+def echo_seed_task(outputs: dict[str, str]) -> tuple[str, str]:
+    """A gate as the very first step in a pipeline, reading the seed task via
+    the reserved "__task__" key instead of a {{task}} template placeholder
+    (which gates don't have) — the shape a real "intake"-style stage needs."""
+    return "approved", outputs["__task__"]
+
+
 not_callable = "not a function"

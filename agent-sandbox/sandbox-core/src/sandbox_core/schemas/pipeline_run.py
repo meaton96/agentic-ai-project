@@ -34,12 +34,22 @@ class PipelineStepResult(BaseModel):
 class GateStepResult(BaseModel):
     """The outcome of one already-finished gate step: no agent run backs it,
     just a decision and where it routed to. `routed_to` is None when the
-    gate's decision resolved to the "__end__" sentinel."""
+    gate's decision resolved to the "__end__" sentinel.
+
+    `output`, like PipelineStepResult.output, feeds `{{steps.<step_id>.output}}`
+    for later steps — a gate is deterministic Python, so this is deliberately
+    *not* restricted to prose: a gate wrapping a real data-pipeline stage
+    (e.g. a DataFrame in, DataFrame out transform) has nothing sensible to
+    put in a string except a reference to where it wrote the real artifact
+    (a parquet/joblib file path) — the sandbox never holds that payload
+    itself, same as it never holds an agent's full conversation, only its
+    final_output text."""
 
     kind: Literal["gate"] = "gate"
     step_id: str
     decision: str
     routed_to: str | None
+    output: str | None = None
 
 
 StepResult = Annotated[Union[PipelineStepResult, GateStepResult], Field(discriminator="kind")]

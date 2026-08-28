@@ -18,7 +18,9 @@ from .agent_loop import execute_run
 from .event_log import EventLog
 
 Runner = Callable[..., Awaitable[Event]]
-GateFn = Callable[[dict[str, str]], str]
+# A gate returns either a bare decision string, or a (decision, output) pair
+# when it also has data to hand forward — see execute_pipeline's gate branch.
+GateFn = Callable[[dict[str, str]], "str | tuple[str, str | None]"]
 
 
 def _render_task(template: str, *, seed_task: str, outputs: dict[str, str]) -> str:
@@ -65,7 +67,7 @@ def _resolve_gate(path: str) -> GateFn:
     return fn
 
 
-async def _run_gate(fn: GateFn, outputs: dict[str, str]) -> str:
+async def _run_gate(fn: GateFn, outputs: dict[str, str]) -> "str | tuple[str, str | None]":
     """Runs a resolved gate function, sync or async. Most real gates
     (agentic_ml.harness.*) are plain sync functions, so async is supported
     without forcing every gate to be one — mirrors the asyncio.to_thread
@@ -99,11 +101,20 @@ async def execute_pipeline(
     calling `runner` (normally agent_loop.execute_run) once per agent step
     and substituting each completed step's output into the next step's task.
     A gate step instead calls a resolved Python function with every
-    completed step's output and jumps to whatever step_id its decision maps
-    to via `on_result` (or ends the pipeline on the "__end__" sentinel) —
-    this is what lets a pipeline express a reject/retry loop, which a
-    strictly linear step list can't. `pipeline.max_steps` caps total step
-    executions so a gate that always routes backward can't loop forever.
+    completed step's output (plus the pipeline's seed task, under the
+    reserved key "__task__" — a gate has no {{task}} placeholder of its own
+    since it isn't rendering a template) and jumps to whatever step_id its
+    decision maps to via `on_result` (or ends the pipeline on the "__end__"
+    sentinel) — this is what lets a pipeline express a reject/retry loop,
+    which a strictly linear step list can't. A gate may also return
+    (decision, output) instead of a bare decision, feeding `output` into
+    later steps' `{{steps.<step_id>.output}}` exactly like an agent step's
+    final_output would — this is how a deterministic, non-LLM pipeline
+    stage (e.g. a DataFrame transform) hands its real result forward: not
+    as prose, but as a reference to wherever it actually wrote the data
+    (a file path), since the sandbox itself never holds that payload.
+    `pipeline.max_steps` caps total step executions so a gate that always
+    routes backward can't loop forever.
     Halts (returning a PipelineRunRecord with status="errored") at the
     first agent step that doesn't finish with AgentResultEvent, the first
     gate that fails to resolve/run or returns an unconfigured decision, or
@@ -157,11 +168,24 @@ async def execute_pipeline(
 
         else:  # GateStep
             assert isinstance(step, GateStep)
+            # A gate is where a pipeline's real (non-LLM) work lives — e.g. a
+            # DataFrame-in/DataFrame-out transform — so unlike an agent step's
+            # task_template it gets no {{task}} placeholder of its own; give
+            # it the same access via a reserved outputs key instead, so a
+            # gate can be the *first* step in a pipeline (no LLM call needed
+            # to just point a deterministic stage at its seed input).
+            gate_input = {**outputs, "__task__": run.task}
             try:
                 gate_fn = _resolve_gate(step.gate)
-                decision = await _run_gate(gate_fn, outputs)
+                result = await _run_gate(gate_fn, gate_input)
             except Exception as exc:
                 return halt(f"gate {step.step_id!r} ({step.gate!r}) failed: {exc}")
+
+            # A gate returns either a bare decision, or (decision, output) when
+            # it also has data to hand forward — same "output" concept a
+            # PipelineStepResult carries, just produced by Python instead of
+            # an agent's final_output.
+            decision, step_output = result if isinstance(result, tuple) else (result, None)
 
             if decision not in step.on_result:
                 return halt(
@@ -177,7 +201,10 @@ async def execute_pipeline(
                     f"does not exist in this pipeline (known step ids: {sorted(steps_by_id)})"
                 )
 
-            step_result = GateStepResult(step_id=step.step_id, decision=decision, routed_to=routed_to)
+            if step_output is not None:
+                outputs[step.step_id] = step_output
+
+            step_result = GateStepResult(step_id=step.step_id, decision=decision, routed_to=routed_to, output=step_output)
             step_results.append(step_result)
             if on_step is not None:
                 on_step(step_result)

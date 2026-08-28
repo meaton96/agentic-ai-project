@@ -123,7 +123,15 @@ function PipelineRunDetail({ pipelineRunId }: { pipelineRunId: string }) {
                     <td>{step.step_id}</td>
                     <td className="muted">gate</td>
                     <td className="muted">decision: {step.decision}</td>
-                    <td className="muted">→ routed to {step.routed_to ?? 'end'}</td>
+                    <td className="muted">
+                      → routed to {step.routed_to ?? 'end'}
+                      {step.output && (
+                        <>
+                          <br />
+                          output: <code>{step.output}</code>
+                        </>
+                      )}
+                    </td>
                   </tr>
                 ) : (
                   <tr key={step.step_id}>
