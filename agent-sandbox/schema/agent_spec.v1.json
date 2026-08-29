@@ -1,0 +1,177 @@
+{
+  "$defs": {
+    "McpServerBinding": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "transport": {
+          "enum": [
+            "stdio",
+            "http",
+            "sse"
+          ],
+          "title": "Transport",
+          "type": "string"
+        },
+        "connection": {
+          "additionalProperties": true,
+          "title": "Connection",
+          "type": "object"
+        },
+        "credential_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Credential Ref"
+        },
+        "allowed_tools": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allowed Tools"
+        },
+        "logging_policy": {
+          "default": "full",
+          "enum": [
+            "full",
+            "hashed",
+            "metadata"
+          ],
+          "title": "Logging Policy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "transport",
+        "connection"
+      ],
+      "title": "McpServerBinding",
+      "type": "object"
+    },
+    "ModelConfig": {
+      "properties": {
+        "base_url": {
+          "title": "Base Url",
+          "type": "string"
+        },
+        "model_name": {
+          "title": "Model Name",
+          "type": "string"
+        },
+        "api_key_ref": {
+          "title": "Api Key Ref",
+          "type": "string"
+        },
+        "temperature": {
+          "default": 0.0,
+          "title": "Temperature",
+          "type": "number"
+        },
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Tokens"
+        }
+      },
+      "required": [
+        "base_url",
+        "model_name",
+        "api_key_ref"
+      ],
+      "title": "ModelConfig",
+      "type": "object"
+    },
+    "SubAgentBinding": {
+      "properties": {
+        "agent_id": {
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "tool_description": {
+          "title": "Tool Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_id",
+        "tool_name",
+        "tool_description"
+      ],
+      "title": "SubAgentBinding",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "system_prompt": {
+      "title": "System Prompt",
+      "type": "string"
+    },
+    "model": {
+      "$ref": "#/$defs/ModelConfig"
+    },
+    "mcp_servers": {
+      "items": {
+        "$ref": "#/$defs/McpServerBinding"
+      },
+      "title": "Mcp Servers",
+      "type": "array"
+    },
+    "sub_agents": {
+      "items": {
+        "$ref": "#/$defs/SubAgentBinding"
+      },
+      "title": "Sub Agents",
+      "type": "array"
+    },
+    "max_turns": {
+      "default": 25,
+      "title": "Max Turns",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "system_prompt",
+    "model"
+  ],
+  "title": "AgentSpec",
+  "type": "object"
+}

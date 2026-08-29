@@ -1,0 +1,14 @@
+id: feature-ideas
+name: feature-ideas
+system_prompt: "You propose 2-3 derived features for a predictive-maintenance model,\n\
+  \  given a description of the dataset's columns. Be concise, one line per\n  feature\
+  \ with a one-sentence rationale."
+model:
+  base_url: https://api.genai.gccis.rit.edu/v1
+  model_name: qwen3-coder:30b
+  api_key_ref: rit-api
+  temperature: 0.0
+  max_tokens: 2000
+mcp_servers: []
+sub_agents: []
+max_turns: 5

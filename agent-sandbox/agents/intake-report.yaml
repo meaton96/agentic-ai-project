@@ -1,0 +1,23 @@
+id: intake-report
+name: intake-report
+system_prompt: "You write a short markdown report combining a data-intake proposal\
+  \ and a\n  feature-engineering proposal into one document, then save it with\n \
+  \ write_file."
+model:
+  base_url: https://api.genai.gccis.rit.edu/v1
+  model_name: qwen3-coder:30b
+  api_key_ref: rit-api
+  temperature: 0.0
+  max_tokens: 4000
+mcp_servers:
+- name: fs
+  transport: stdio
+  connection:
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "./workspace"]
+  credential_ref: null
+  allowed_tools:
+  - write_file
+  logging_policy: full
+sub_agents: []
+max_turns: 10

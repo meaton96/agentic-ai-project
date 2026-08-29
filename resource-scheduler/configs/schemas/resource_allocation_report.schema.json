@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ResourceAllocationReport",
+  "description": "The Resource Allocation agent's structured proposal. Validated by steps/resource_allocation_step.py against environment/allocation.py: validate_allocation_structure is a hard gate (assignments + rejected together must cover exactly the ranked task ids, each exactly once). check_constraints is a SEPARATE gate run only on structurally valid proposals -- a structurally valid assignment can still be environment-rejected for targeting a Maintenance machine or a saturated slice, independent of the agent's rationale.",
+  "type": "object",
+  "required": ["assignments", "rejected"],
+  "properties": {
+    "assignments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["task_id", "machine_id", "network_slice_id", "rationale"],
+        "properties": {
+          "task_id": {"type": "string"},
+          "machine_id": {"type": "string", "description": "Must match a machine_id from the tool's available_machines."},
+          "network_slice_id": {"type": "string", "description": "Must match a slice_id from the tool's available_slices."},
+          "rationale": {"type": "string"}
+        }
+      }
+    },
+    "rejected": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["task_id", "reason"],
+        "properties": {
+          "task_id": {"type": "string"},
+          "reason": {"type": "string"}
+        }
+      }
+    }
+  }
+}

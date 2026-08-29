@@ -1,0 +1,541 @@
+% ============================================================================
+% AI Agentic Sandbox -- paper outline draft
+% ============================================================================
+% Purpose: a discussion draft for Mike + PI, shared via Overleaf. This is an
+% OUTLINE, not a finished paper -- section/subsection headers are real, body
+% text is short scaffolding (what goes here + why) rather than final prose.
+% Replace \todo{...} markers and [SCAFFOLD] paragraphs as sections get
+% written for real.
+%
+% Focus, per PI discussion (2026-08-25): the Sandbox itself -- what it is,
+% how it currently functions, and the merit of the idea -- is the paper.
+% agentic-ml-classification and resource-scheduler are supporting case
+% studies / validation evidence, not the subject of the paper themselves.
+%
+% Format note: using IEEEtran (10pt, conference) because it is the required
+% template for 4 of the 6 venues under consideration (SANER, ICSE NIER,
+% ICSE SEIP, and likely SEAMS). If the target venue turns out to be FSE
+% (ACM acmart) or the EMSE journal (Springer template), the section
+% structure below carries over directly -- only the \documentclass and
+% front matter need to change. See docs/paper_outline.md for the full
+% venue-by-venue breakdown this draft was scoped from.
+% ============================================================================
+
+\documentclass[10pt,conference]{IEEEtran}
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{hyperref}
+
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+\newcommand{\scaffold}[1]{\textit{#1}}
+
+\begin{document}
+
+\title{The AI Agentic Sandbox: An Innovation Lab for Trustworthy,\\
+Bring-Your-Own-Agent Multi-Agent Systems in Manufacturing}
+
+\author{
+\IEEEauthorblockN{\todo{Author list -- vision paper still says ``Authors: to be added''; resolve with PI before any submission, including this draft's authorship order}}
+\IEEEauthorblockA{Rochester Institute of Technology, Rochester, NY, USA}
+}
+
+\maketitle
+
+% ----------------------------------------------------------------------------
+\begin{abstract}
+\scaffold{
+Draft last, once every section below is stable. Should state, in order:
+(1) the problem -- MAS design/evaluation/optimization for manufacturing is
+hard, and there is no shared infrastructure for university-industry
+co-innovation on agentic applications; (2) the proposed artifact -- the AI
+Agentic Sandbox, a MAS infrastructure with a schema-first foundation
+(AgentSpec/RunSpec), MCP-mediated tool access, an append-only observable
+event log, and a network isolation boundary, that lets partners bring their
+own agents (BYOA) and swap/compare them inside shared workflows; (3) what is
+actually built vs. proposed -- be precise: M0 (typed schemas) and M1
+(headless single-agent runtime) are implemented and tested; multi-agent
+orchestration, the service API, and the cross-institution MCP gateway are
+future work; (4) validating evidence -- two independent MAS implementations
+(a six-agent ML classification pipeline, and a direct-agent-to-agent
+resource scheduler) built against an equivalent design principle
+independently of the Sandbox codebase, used here as evidence the pattern
+generalizes rather than as the paper's contribution; (5) the intellectual
+merit -- one-sentence versions of each item in Section~\ref{sec:merit}.
+Target 200--250 words for IEEE venues; EMSE journal format can run longer.
+}
+\end{abstract}
+
+\begin{IEEEkeywords}
+agentic AI, multi-agent systems, trust boundary, manufacturing, Model
+Context Protocol, university-industry collaboration
+\end{IEEEkeywords}
+
+% ============================================================================
+\section{Introduction}
+\label{sec:intro}
+% ----------------------------------------------------------------------------
+\scaffold{Pull from vision-paper \S1 (Motivation), but reframe from a
+funding pitch into a paper's opening: state the trend (LLM-powered agentic
+AI moving from chat assistants to systems with direct access to code,
+filesystems, shells, external services; multi-agent systems as the next
+step, composing specialized agents for outcomes beyond a single agent's
+capability), then narrow immediately to the gap this paper addresses.}
+
+\begin{itemize}
+  \item \scaffold{Trend: agentic AI as digital workers; IDC's projected
+  scale (1B+ deployed agents by 2029, \textasciitilde217B actions/day,
+  \$1.3T of IT spend) -- cite from vision paper's reference list.}
+  \item \scaffold{MAS extend single-agent capability via distributed,
+  divided-labor, emergent-from-collective-behavior composition -- but
+  design, optimization, and evaluation of MAS applications remain
+  heuristic-driven, with no standardized design patterns or evaluation
+  schemes, especially unexplored in industrial/manufacturing contexts.}
+  \item \scaffold{The gap: university-industry MAS collaboration today is
+  transactional and one-off (upfront IP/licensing agreements before any
+  research happens) -- this doesn't scale to an era where every partner is
+  independently building agents.}
+  \item \scaffold{The proposal, in one sentence: a shared, safe
+  infrastructure -- the AI Agentic Sandbox -- where partners bring their
+  own agents, swap them into shared workflows, and evaluate system-level
+  behavior before any of it touches production.}
+\end{itemize}
+
+\todo{Contributions list -- 3-5 bullets, written last, each mapped to a
+section below. Draft candidates:}
+\begin{itemize}
+  \item A schema-first MAS infrastructure (AgentSpec/RunSpec) that makes
+  agent composition, tool access, and observability declarative rather
+  than bespoke orchestration code (\S\ref{sec:infra}).
+  \item A concrete Bring-Your-Own-Agent mechanism (\texttt{SWAP\_AGENT},
+  \texttt{ALTER\_MODEL}, \texttt{ALTER\_WORKFLOW}) validated against two
+  independently-built MAS applications (\S\ref{sec:casestudies}).
+  \item An honest implementation-status account distinguishing what is
+  built and tested (M0/M1) from what is proposed (\S\ref{sec:infra},
+  \S\ref{sec:limitations}).
+  \item A research agenda for the open problems the Sandbox surfaces:
+  cross-institution MCP governance, automated MAS harness engineering, and
+  MAS-specific cybersecurity threat modeling (\S\ref{sec:merit}).
+\end{itemize}
+
+% ============================================================================
+\section{Motivation and Background}
+\label{sec:motivation}
+% ----------------------------------------------------------------------------
+\scaffold{Vision-paper \S1's back half + general agentic-systems
+background. Establish vocabulary before \S\ref{sec:sandbox} introduces the
+Sandbox itself.}
+
+\subsection{Agentic Systems}
+\scaffold{Define an agent per NIST's definition (software that interacts
+with its environment, receives information, undertakes self-directed
+action toward an externally-specified goal). An agent = a model + a set of
+tools + a loop that runs until something decides to stop. Note the pairing
+this whole paper depends on: the generative power of a probabilistic LLM
+paired with the logical certainty of a symbolic harness (domain rules,
+hard constraints, human-operator validation or guards) -- research
+consistently shows that choosing the model is not enough; orchestration
+harness, memory strategy, context handling, validation path, and
+checkpointing design drive practical agent behavior. \todo{Reuse Fig.~2
+from the vision PDF (agent/environment interface diagram) or redraw it.}}
+
+\subsection{Multi-Agent Systems}
+\scaffold{When multiple agents coordinate or compete in a shared
+environment toward complex shared objectives, they form an agentic
+\emph{system}. Distinguish orchestrated MAS from peer-to-peer
+agent-to-agent (A2A) negotiation -- both appear later as design points in
+\S\ref{sec:casestudies}, not as a binary choice but as two ends of a
+spectrum this paper's case studies sit at.}
+
+\subsection{Manufacturing as the Driving Domain}
+\scaffold{Why manufacturing specifically: IIoT sensors, edge/cloud
+computing, and digital twins are already reshaping manufacturing from
+reactive/scheduled toward predictive, resilient, real-time decision-making
+-- MAS is an attractive fit given manufacturing's own distributed,
+divided-labor structure. \todo{cite vision paper's manufacturing-systems
+references (Farahani et al., Liao et al., etc.)}}
+
+% ============================================================================
+\section{The AI Agentic Sandbox}
+\label{sec:sandbox}
+% ----------------------------------------------------------------------------
+\scaffold{This is the paper's center of gravity -- expand well beyond the
+vision PDF's \S2. Open with the one-sentence definition: \emph{a MAS
+infrastructure where universities and industry partners can
+collaboratively develop, experiment with, and evaluate multi-agent AI
+applications to advance innovation in manufacturing systems.}}
+
+\subsection{Goals}
+\label{sec:goals}
+\scaffold{Reproduce and expand vision-paper \S2.1's four goals -- these are
+the paper's thesis statements, not just a proposal's goals list:}
+\begin{description}
+  \item[Goal 1 -- BYOA] Every partner can deploy proprietary agents and
+  multi-agentic workflows to experiment against other agents already in
+  the Sandbox.
+  \item[Goal 2 -- Holistic evaluation] What-if analysis and architecture
+  trade-off evaluation for specific MAS workflows, so partners understand
+  emergent system behavior and identify risk before deployment.
+  \item[Goal 3 -- Translation avenue] University-based AI research results,
+  implemented as specialized agents and workflows, get a path to industry
+  adoption via an \emph{agentic marketplace} rather than the traditional
+  one-off tech-transfer/licensing pipeline.
+  \item[Goal 4 -- RIT value-add] Cyber risk assessment/mitigation,
+  explainable agency, and safe-AI-in-MAS-context as capabilities RIT
+  specifically contributes.
+\end{description}
+
+\subsection{Sandbox Design}
+\label{sec:design}
+\scaffold{Reproduce vision-paper \S2.2's three foundations, each expanded
+with a sentence on how it's realized (or planned to be realized) in the
+actual infrastructure described in \S\ref{sec:infra}:}
+\begin{itemize}
+  \item \textbf{Partners} -- university, industry, and government entities,
+  each a team of humans \emph{and} agents, potentially operating under
+  different institutional priorities (fundamental research vs. market
+  outcomes vs. policy/societal impact).
+  \item \textbf{Agent Store} -- a curated set of specialized agents and MAS
+  workflows, contributed by partners or drawn from open sources, seeded
+  with foundational manufacturing applications (\S\ref{sec:casestudies}).
+  \item \textbf{Agentic Operations} -- utilities for building new
+  applications by adapting existing workflows: \texttt{SWAP\_AGENT} (swap
+  one agent in a workflow for a partner's proprietary version without
+  re-architecting the rest), \texttt{ALTER\_MODEL} (experiment with an
+  alternate LLM backing one agent), \texttt{ALTER\_WORKFLOW}. \todo{state
+  plainly: the complete operator list and semantics is still future work,
+  per the vision PDF; do not overclaim completeness here.}
+\end{itemize}
+
+\todo{Figure: reuse/redraw vision-PDF Fig.~1 (``AI Agentic Sandbox
+Vision'') -- Partner A/B, agent store, orchestration, SWAP\_AGENT /
+ALTER\_MODEL / ALTER\_WORKFLOW callouts.}
+
+\subsection{Seed Applications}
+\scaffold{Vision-paper \S2.3's three planned seed domains -- predictive
+maintenance, planning and scheduling, supply chains/virtual organization
+-- with a note that this paper's case studies (\S\ref{sec:casestudies})
+concretely realize the first two.}
+
+% ============================================================================
+\section{Sandbox Infrastructure}
+\label{sec:infra}
+% ----------------------------------------------------------------------------
+\scaffold{This section is new relative to the vision PDF -- it is the
+technical-foundation section a paper needs that a funding pitch doesn't:
+\emph{how does the Sandbox actually work, today, as code}. Draw from
+\texttt{agent-sandbox/} (M0 schemas, M1 headless runtime) and vision-PDF
+\S5. Be precise throughout about built-vs-proposed; see
+\S\ref{sec:status}.}
+
+\subsection{Schema-First Foundation: AgentSpec and RunSpec}
+\scaffold{Every capability an agent can reach is registered through one
+interface (MCP); every action is a typed, replayable event; every run is a
+declarative spec rather than bespoke orchestration code -- the same
+schema-first approach as Meta's Agents Research Environments (ARE),
+independently converged on. An \texttt{AgentSpec} declares an agent's model
+configuration, bound MCP servers, and any sub-agents it may delegate to; a
+\texttt{RunSpec} declares a task against one or more AgentSpecs. Because
+tools/model/sub-agent bindings are \emph{data}, not code, a partner's
+proprietary agent can replace a seed agent by swapping one binding --
+this is the concrete mechanism behind \texttt{SWAP\_AGENT} /
+\texttt{ALTER\_MODEL} from \S\ref{sec:design}.}
+
+\subsection{MCP-Mediated Tool Surface and Access Control}
+\scaffold{Agents never call tools directly; every capability is exposed
+through an MCP server binding with an explicit allowlist enforced before a
+call reaches the server. Credentials resolve through a dedicated
+credential layer -- a reference-only handoff that keeps raw secrets out of
+an agent's context entirely. This is the concrete mechanism proposed to
+extend MCP with institution-specific, policy-driven access control
+(\S\ref{sec:merit}).}
+
+\subsection{Observability: the Event Log}
+\scaffold{Every model call, tool call, and sub-agent spawn is written to
+an append-only, per-run typed event log, with a configurable redaction
+policy (full / hashed / metadata-only) applied per binding before
+persistence. This is the substrate for explainable agency (Goal 4,
+\S\ref{sec:goals}): because every agent's actions are captured uniformly
+regardless of model or tools used, a partner can audit or replay a run,
+including across agents using different LLMs.}
+
+\subsection{Isolation Boundary}
+\scaffold{Every MCP server registered in the Sandbox's agent store is
+local to the Sandbox; by default, no agent has outbound access to
+external networks, databases, or unregistered MCP servers. This is what
+makes the Sandbox a genuine ``safe space'' structurally, not just by
+policy convention -- enforced at the same boundary that mediates every
+tool call, not left to an agent's good behavior or a partner's
+configuration.}
+
+\subsection{Implementation Status}
+\label{sec:status}
+\scaffold{State this plainly and specifically -- this is a paper section,
+not a proposal, so ``future work'' claims need to be honestly separated
+from ``already works, here's the evidence.'' \todo{Verify current state
+against \texttt{agent-sandbox/} before submission; as of this outline:}}
+\begin{itemize}
+  \item \textbf{Built and tested:} a schema layer (agent/run/event
+  specifications, pydantic v2) and a headless single-agent runtime --
+  MCP client with allowlist enforcement, credential resolver, append-only
+  event log, CLI-drivable agent loop -- verified end-to-end against a
+  live MCP server.
+  \item \textbf{Not yet built:} multi-agent orchestration (the
+  \texttt{SWAP\_AGENT}/\texttt{ALTER\_MODEL} operators as runnable
+  infrastructure, not just design), a service layer exposing runs over an
+  API, and an MCP gateway enforcing cross-institution governance policy
+  (\S\ref{sec:merit}).
+\end{itemize}
+
+% ============================================================================
+\section{Validating the Design Pattern: Case Studies}
+\label{sec:casestudies}
+% ----------------------------------------------------------------------------
+\scaffold{IMPORTANT framing per PI discussion: these two projects are
+\emph{supporting evidence that the Sandbox's core design pattern
+generalizes}, not the paper's subject. Keep this section proportionate --
+enough detail to make the evidence credible, not a full system description
+of either (that content already exists in
+\texttt{agentic-ml-classification/docs/ml-classification.tex} and can be
+cited/summarized rather than reproduced). Open with the connecting claim:
+both were built independently of the Sandbox codebase, before Sandbox
+infrastructure existed to run them on, yet both converge on the same
+underlying principle -- an LLM agent's output is only ever a
+\emph{proposal} that a deterministic layer independently re-validates
+before it affects anything. That convergence, arrived at twice
+independently, is the evidence being offered here, not a claim that either
+system \emph{is} the Sandbox.}
+
+\subsection{Case Study I: Multi-Agentic Predictive Maintenance}
+\label{sec:casestudy1}
+\scaffold{Summarize, don't re-derive: six specialized agents (intake,
+feature engineering, profiler, modeling, verification, deep-dive) under a
+deterministic harness holding exclusive authority over splitting,
+metrics, leakage detection, and sandboxed execution. Every agent output is
+a JSON proposal the harness independently re-validates. A dynamic
+orchestrator variant replaces the fixed six-step sequence with a
+nine-entry agent catalog and a planning agent, itself subject to the same
+propose-then-verify discipline applied to control flow.}
+\begin{itemize}
+  \item \textbf{Validated on:} NGAFID aviation predictive-maintenance data
+  (22 sensor channels, \textasciitilde1\,Hz, 4.2\,GB source, streaming
+  bounded-memory featurization, entity-aware splitting by aircraft), plus
+  Titanic/Iris for binary/multiclass generalization.
+  \item \textbf{Relevant finding for this paper specifically:} real-LLM
+  evaluation (not just hermetic stubbed-client tests) surfaced two genuine
+  findings a purely architectural description wouldn't -- (1) the dynamic
+  orchestrator matched or exceeded the fixed baseline (e.g., autonomously
+  retrying a modeling step past a hardcoded candidate budget the baseline
+  couldn't get past), and (2) the harness's state bookkeeping held under
+  adversarial pressure (a prompt-injection string embedded in training
+  data could not make the system assert a model was finalized unless
+  finalization genuinely executed).
+  \item \textbf{What this validates about the Sandbox pattern:} a
+  MAS can give agents genuine judgment authority (target selection,
+  feature proposals, template choice, even control-flow sequencing) while
+  a non-agentic layer retains sole authority over everything
+  correctness-critical -- the same authority split \S\ref{sec:infra}
+  proposes at the infrastructure level (MCP allowlists, isolation
+  boundary) is shown here to work at the application level too.
+\end{itemize}
+\todo{Cite \texttt{agentic-ml-classification/docs/ml-classification.tex}
+directly once it exists as a standalone artifact/preprint, rather than
+inlining its content here.}
+
+\subsection{Case Study II: Direct Agent-to-Agent Resource Scheduling}
+\label{sec:casestudy2}
+\scaffold{Summarize the resource-scheduler (6G-enabled factory-floor
+scheduling, six agents: load monitor, task prioritization, resource
+allocation, failure recovery, optimization, human oversight). Key
+architectural contrast with Case Study I: this system deliberately tests
+\emph{direct} agent-to-agent (A2A) messaging for the negotiation-shaped
+parts of the workflow (task prioritization $\to$ resource allocation,
+failure recovery $\to$ resource allocation), instead of routing everything
+through a central orchestrator -- while still keeping a deterministic
+environment/state layer as the sole source of truth for machine/slice
+state and constraint arithmetic. Every A2A send is still logged as an
+event; ``direct'' does not mean ``unaudited.''}
+\begin{itemize}
+  \item \textbf{What this validates:} the propose/decide trust-boundary
+  pattern is not tied to one specific orchestration topology --
+  it holds whether agents communicate through a central orchestrator
+  (Case Study I) or negotiate peer-to-peer with a deterministic gate on
+  receipt (Case Study II). This is directly relevant to the Sandbox's
+  BYOA goal: partners' agents may not share one communication topology,
+  and the Sandbox's trust model needs to accommodate both.
+  \item \textbf{Status/scope caveat:} \todo{state current implementation
+  maturity honestly -- per repo state as of this outline, all six agents
+  are individually scaffolded and testable, but there is no orchestrator
+  tying all six into one run yet, and no live-model evaluation comparable
+  to Case Study I's. Decide before drafting whether this is presented as
+  full evaluation evidence or as a preliminary/architectural data point --
+  see open item in \texttt{docs/paper\_outline.md}.}
+\end{itemize}
+
+\subsection{What the Case Studies Show, Together}
+\scaffold{Close the section by pulling the thread back to the Sandbox
+explicitly: two independently-built systems, different domains, different
+orchestration topologies, arrived at the same authority split. That's the
+argument for why a shared Sandbox infrastructure (rather than each partner
+re-deriving this pattern independently) has real value -- the pattern is
+apparently not domain-specific, which is exactly the premise \S2's Goal 2
+(holistic evaluation across workflows) depends on.}
+
+% ============================================================================
+\section{Intellectual Merit}
+\label{sec:merit}
+% ----------------------------------------------------------------------------
+\scaffold{Reproduce and expand vision-paper \S4's five bullets as
+subsections -- these double as the paper's forward-looking research
+agenda and (if this becomes a journal/longer submission) as material for
+a dedicated Related Work + Future Work split.}
+
+\subsection{Enhanced MCP Architecture}
+\scaffold{MCP standardizes tool/data access but doesn't itself address
+multi-institutional data governance. Proposed extensions: (1) secure
+access to off-site/distributed data stores, (2) institution-specific
+policy-driven access control, (3) mechanisms to detect/prevent unintended
+data leakage across agents, tools, and institutional boundaries.}
+
+\subsection{Multi-Agent Harness Engineering}
+\scaffold{Harnesses mediate LLM$\leftrightarrow$tool/data/environment
+interaction to improve reliability, but harness engineering today is
+largely manual and requires deep domain expertise. In MAS specifically,
+an erroneous output from one agent can propagate to downstream agents,
+causing cascading failures. Research direction: automated, domain-aware
+harness engineering for MAS -- constraining agent actions, monitoring
+inter-agent interactions, detecting erroneous behavior, and mitigating
+error propagation across the workflow.}
+
+\subsection{Emergent Cybersecurity Challenges in MAS}
+\scaffold{MAS execute multi-step workflows, retain persistent state, and
+hold active credentials -- expanding the attack surface beyond
+conventional software vulnerabilities to include manipulation of
+reasoning processes, exploitation of inter-agent communication protocols,
+and unauthorized/unintended tool invocation. Existing cybersecurity
+frameworks, built for static human-directed software, don't adequately
+address this. \todo{Note explicitly: this is proposed research, not yet
+evaluated in this paper -- the adversarial prompt-injection result in
+\S\ref{sec:casestudy1} is a narrow, single-property test (state-bookkeeping
+integrity), not a general MAS security evaluation. Don't conflate the
+two.}}
+
+\subsection{System-Level Innovation in MAS}
+\scaffold{Even a modest set of agents admits an astronomically large space
+of possible configurations/architectures -- one that grows far faster
+than the capacity to evaluate it, and exhibits emergent behaviors
+(feedback loops, bottlenecks, critical thresholds, phase transitions)
+that can't be inferred from individual agents' designs. Draws on systems-
+thinking literature for rigorous system-level performance analysis,
+what-if evaluation, and optimization -- this is Goal 2 (\S\ref{sec:goals})
+made into a research problem, not just a platform feature.}
+
+\subsection{University-Industry Collaboration as an Innovation Lab}
+\scaffold{The traditional tech-transfer/licensing model requires upfront
+agreement on deliverables, IP sharing, and timelines before research
+happens -- often the actual blocker to collaboration, not a shortage of
+good ideas. The Sandbox's agentic-marketplace model instead lets
+collaboration happen through experimentation itself: partners showcase AI
+innovations as agents, connecting 2-sided or multi-sided based on
+complementary needs and competencies discovered \emph{during} use, not
+negotiated in advance.}
+
+% ============================================================================
+\section{Related Work}
+\label{sec:related}
+% ----------------------------------------------------------------------------
+\scaffold{\todo{Needs an actual literature search -- the vision PDF's
+58-entry reference list is mostly surveys/position papers on agentic AI
+generally, not competing \emph{systems}. This section needs three
+sub-literatures at minimum:}}
+\begin{itemize}
+  \item \textbf{Agent-environment/evaluation frameworks} -- e.g., Meta's
+  Agents Research Environments (ARE); how the Sandbox's schema-first
+  approach compares/contrasts.
+  \item \textbf{MAS platforms and marketplaces} -- prior agent
+  marketplace / agent-exchange proposals (vision PDF cites several --
+  Chaffer et al.'s ``Hybrid Marketplace of Ideas,'' Yang et al.'s ``Agent
+  Exchange''); position the Sandbox's manufacturing/university-industry
+  framing against these.
+  \item \textbf{MAS in manufacturing specifically} -- Leitão/Barbosa/
+  Bussmann-style bio-inspired and self-organizing manufacturing MAS
+  (pre-LLM), and recent LLM-agent-in-manufacturing work (Farahani et al.,
+  already cited in \texttt{ml-classification.tex}'s introduction --
+  reconcile the two drafts' citations here).
+  \item \textbf{University-industry innovation lab models} (non-AI-
+  specific) -- experimentation-based collaboration literature already
+  cited in the vision PDF (Criado \& Estalella; Garc\'ia Arteagoitia \&
+  Fuller).
+\end{itemize}
+
+% ============================================================================
+\section{Limitations and Future Work}
+\label{sec:limitations}
+% ----------------------------------------------------------------------------
+\begin{itemize}
+  \item \textbf{Infrastructure maturity} -- as stated in
+  \S\ref{sec:status}, multi-agent orchestration, the service API, and the
+  MCP governance gateway are not yet built. The paper's evidence for
+  Sandbox \emph{value} currently rests on the case studies
+  (\S\ref{sec:casestudies}) validating the underlying design pattern, not
+  on the Sandbox infrastructure itself running multi-partner workloads
+  yet -- be explicit about this gap rather than letting the two blur.
+  \item \textbf{Harness migration to Amazon Strands} -- \todo{flagged by
+  PI as planned, not yet started as of this outline. Once complete, this
+  is strong material either as a dedicated subsection here (what changed,
+  what the trust-boundary invariants required preserving, what a managed
+  framework provided for free) or as a separate practice-focused paper
+  (see \texttt{docs/paper\_outline.md}'s ICSE SEIP mapping). Decide
+  placement once the migration exists to write about.}
+  \item \textbf{Case-study generalization} -- two case studies, one
+  institution, one research team; no external partner has yet used the
+  Sandbox pattern independently. Directly relevant since Goal 3/Goal 1
+  (BYOA, marketplace) are unvalidated with a real second party.
+  \item \textbf{Security} -- \S\ref{sec:merit}'s cybersecurity agenda is
+  proposed, not evaluated at the system level.
+  \item \textbf{Remaining seed applications} -- planning/scheduling and
+  supply-chain/virtual-organization (vision PDF \S2.3) are not yet built.
+\end{itemize}
+
+% ============================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+% ----------------------------------------------------------------------------
+\scaffold{Close on the merit-of-the-idea framing the PI emphasized: MAS
+adoption in manufacturing will depend on shared infrastructure for safe
+experimentation as much as on any single application's performance. The
+Sandbox proposes a specific, schema-first answer to what that
+infrastructure looks like; two independently-built systems converging on
+its core trust-boundary pattern is early but real evidence the idea holds
+past a single implementation.}
+
+% ============================================================================
+% \section*{Data Availability}
+% \scaffold{Draft once decided: what's public vs. RIT-internal, dataset
+% licensing (NGAFID/Kaggle), whether case-study code/run logs are
+% shareable. Required-ish for SANER/FSE; good practice regardless.}
+% ============================================================================
+
+\bibliographystyle{IEEEtran}
+\begin{thebibliography}{1}
+\bibitem{visionpaper}
+\todo{Cite the internal vision document (``AI Agentic Sandbox Project
+Directions'') once it has a citable form, or fold its content in directly
+without a self-citation if it stays internal.}
+\bibitem{mlclassification}
+\todo{Cite \texttt{agentic-ml-classification/docs/ml-classification.tex}
+once that becomes a standalone preprint/paper.}
+\bibitem{farahani2026}
+M.~A. Farahani, M.~I. Khan, T.~Wuest, Hybrid Agentic AI and Multi-Agent
+Systems in Smart Manufacturing, preprint submitted to the 2026 NAMRC
+Conference (2026).
+\todo{Port the remaining relevant entries from the vision PDF's 58-item
+bibliography (ARE, NIST agent definition, marketplace papers, systems-
+thinking literature) once Related Work (\S\ref{sec:related}) is drafted.}
+\end{thebibliography}
+
+\end{document}

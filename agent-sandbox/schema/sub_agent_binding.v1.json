@@ -1,0 +1,23 @@
+{
+  "properties": {
+    "agent_id": {
+      "title": "Agent Id",
+      "type": "string"
+    },
+    "tool_name": {
+      "title": "Tool Name",
+      "type": "string"
+    },
+    "tool_description": {
+      "title": "Tool Description",
+      "type": "string"
+    }
+  },
+  "required": [
+    "agent_id",
+    "tool_name",
+    "tool_description"
+  ],
+  "title": "SubAgentBinding",
+  "type": "object"
+}

@@ -1,0 +1,9 @@
+id: titanic-intake-check
+name: titanic intake check (real agentic_ml harness function)
+steps:
+  - kind: gate
+    step_id: check_intake
+    gate: "agentic_ml_gates:validate_titanic_intake"
+    on_result:
+      valid: __end__
+      invalid: __end__

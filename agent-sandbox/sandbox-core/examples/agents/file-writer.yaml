@@ -1,0 +1,37 @@
+# Minimal end-to-end example: one agent, one MCP server (the official
+# reference filesystem server), scoped to examples/workspace/ and limited to
+# reading/writing files there. Run from `agent-sandbox/sandbox-core/`:
+#
+#   sandbox run examples/agents/file-writer.yaml \
+#     --task "Write a short haiku about agents to output.txt, then read it back to confirm."
+#
+# See examples/README.md for setup (credentials, env vars).
+
+id: file-writer
+name: File Writer
+system_prompt: >
+  You are a careful agent with access to a sandboxed workspace directory
+  through write_file and read_file tools. Use them to complete the task,
+  then summarize what you wrote in your final answer.
+
+model:
+  base_url: ${SANDBOX_MODEL_BASE_URL}
+  model_name: ${SANDBOX_MODEL_NAME}
+  api_key_ref: sandbox-model-api-key
+  temperature: 0.0
+
+mcp_servers:
+  - name: fs
+    transport: stdio
+    connection:
+      command: npx
+      args:
+        - "-y"
+        - "@modelcontextprotocol/server-filesystem"
+        - "./examples/workspace"
+    allowed_tools:
+      - write_file
+      - read_file
+    logging_policy: full
+
+max_turns: 10

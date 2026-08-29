@@ -17,8 +17,12 @@ kind of work, and the feature-engineering agent is not asked to either.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 import numpy as np
 import pandas as pd
+
+from agentic_ml.ablation import AblationConfig
 
 from .column_grouping import expand_grouped_columns
 
@@ -143,12 +147,17 @@ def validate_feature_proposal(
     group_column: str | None,
     time_column: str | None,
     proposal: dict,
+    ablation: Optional[AblationConfig] = None,
 ) -> list[str]:
     """Structural validation of a feature-engineering agent's proposal
     against the profiler's facts — mirrors modeling_step.py's
     _validate_candidate_columns. group_column/time_column may not be
     dropped (the split manager needs them) but ARE valid op inputs
-    (e.g. datetime_parts on the time_column is the expected use case)."""
+    (e.g. datetime_parts on the time_column is the expected use case).
+
+    ablation: research-only, see agentic_ml.ablation — every flag
+    defaults to False, so ablation=None is identical to omitting it."""
+    ablation = ablation or AblationConfig()
     if not isinstance(proposal, dict):
         return ["top-level response is not a JSON object"]
 
@@ -175,7 +184,7 @@ def validate_feature_proposal(
     for col in drop_columns:
         if col not in known_cols:
             errors.append(f"drop_columns references unknown column '{col}'")
-        elif col in protected_from_drop:
+        elif not ablation.skip_protected_drop_check and col in protected_from_drop:
             errors.append(f"drop_columns cannot include '{col}' (target/group/time column)")
 
     derived = proposal.get("derived_features")
@@ -191,11 +200,17 @@ def validate_feature_proposal(
             errors.append(f"derived_features[{i}] must be an object with an 'op_id'")
             continue
         op_id = feat["op_id"]
-        if op_id not in FEATURE_OPS:
+        if not ablation.skip_op_id_check and op_id not in FEATURE_OPS:
             errors.append(f"derived_features[{i}] references unknown op_id '{op_id}'")
             continue
 
-        spec = FEATURE_OPS[op_id]
+        spec = FEATURE_OPS.get(op_id)
+        if spec is None:
+            # only reachable with skip_op_id_check active on a genuinely
+            # unknown op_id — nothing left to validate params/dtype
+            # against; this proposal will reach apply_feature_op() and
+            # raise KeyError there instead of failing here with a message.
+            continue
         params = feat.get("params") or {}
         if not isinstance(params, dict):
             errors.append(f"derived_features[{i}] ({op_id}) 'params' must be an object")
@@ -207,16 +222,24 @@ def validate_feature_proposal(
 
         input_cols = [params[k] for k in ("col", "col_a", "col_b") if k in params]
         for col in input_cols:
-            if col == target_column:
+            if not ablation.skip_target_column_check and col == target_column:
                 errors.append(f"derived_features[{i}] ({op_id}) must not use the target_column '{col}' as input")
                 continue
             if col not in known_cols:
                 errors.append(f"derived_features[{i}] ({op_id}) references unknown column '{col}'")
                 continue
             entry = known_cols[col]
-            if spec["applicable_dtype"] == "numeric" and not _is_numeric_dtype(entry["dtype"]):
+            if (
+                spec["applicable_dtype"] == "numeric"
+                and not ablation.skip_numeric_dtype_check
+                and not _is_numeric_dtype(entry["dtype"])
+            ):
                 errors.append(f"derived_features[{i}] ({op_id}) requires a numeric column; '{col}' is not")
-            if spec["applicable_dtype"] == "datetime" and not entry["is_likely_datetime"]:
+            if (
+                spec["applicable_dtype"] == "datetime"
+                and not ablation.skip_datetime_dtype_check
+                and not entry["is_likely_datetime"]
+            ):
                 errors.append(f"derived_features[{i}] ({op_id}) requires a datetime-like column; '{col}' is not")
 
         if op_id == "datetime_parts":

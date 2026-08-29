@@ -1,0 +1,11 @@
+id: sensor-report
+name: sensor report
+steps:
+  - step_id: summarize
+    agent_id: summarizer
+    task_template: "Summarize this text in 2-3 sentences: {{task}}"
+  - step_id: write
+    agent_id: file-explorer
+    task_template: >-
+      Use write_file to save the following summary to output/pipeline-summary.md,
+      then read it back to confirm: {{steps.summarize.output}}

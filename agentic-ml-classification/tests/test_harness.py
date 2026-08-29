@@ -436,6 +436,131 @@ def test_resolve_split_columns_partial_override_only_fills_missing_one():
     assert "time_column" in notes[0]
 
 
+# --- ablation: Split Resolution (Phase 1e) ---
+# See docs/ablation_study_report.md and scripts/run_ablation_study.py.
+
+def test_ablation_strategy_validity_disabled_falls_through_to_assertion_error():
+    """Disabling the strategy check doesn't let a bogus strategy silently
+    proceed -- it falls through every elif branch to the guarded
+    'else: raise AssertionError' at the bottom of make_split, a
+    different (less informative) exception type than the normal
+    ValueError."""
+    from agentic_ml.ablation import AblationConfig
+
+    rng = np.random.RandomState(0)
+    df = pd.DataFrame({"x": rng.normal(size=50), "target": rng.randint(0, 2, size=50)})
+
+    with pytest.raises(ValueError, match="Unknown split strategy"):
+        make_split(df, target_column="target", data_hash="x", strategy="bogus", val_frac=0.2, test_frac=0.2, seed=0)
+
+    with pytest.raises(AssertionError):
+        make_split(df, target_column="target", data_hash="x", strategy="bogus", val_frac=0.2, test_frac=0.2, seed=0,
+                    ablation=AblationConfig(skip_strategy_validity_check=True))
+
+
+def test_ablation_group_required_disabled_crashes_with_confusing_keyerror():
+    """Disabling the group_column-required check doesn't let a group
+    split silently proceed with no group_column -- df[None] raises a
+    KeyError that gives no hint the real problem is a missing
+    group_column."""
+    from agentic_ml.ablation import AblationConfig
+
+    rng = np.random.RandomState(0)
+    df = pd.DataFrame({"x": rng.normal(size=50), "target": rng.randint(0, 2, size=50)})
+
+    with pytest.raises(ValueError, match="requires group_column"):
+        make_split(df, target_column="target", data_hash="x", strategy="group", group_column=None,
+                   val_frac=0.2, test_frac=0.2, seed=0)
+
+    with pytest.raises(KeyError):
+        make_split(df, target_column="target", data_hash="x", strategy="group", group_column=None,
+                   val_frac=0.2, test_frac=0.2, seed=0, ablation=AblationConfig(skip_group_required_check=True))
+
+
+def test_ablation_disabling_reconciliation_has_no_safety_cost():
+    """Unlike every other rule in this study, resolve_split_columns'
+    auto-fill logic is a recovery mechanism, not a reject gate --
+    disabling it doesn't create a leak or a crash-with-bad-data, it just
+    loses the auto-fill convenience. make_split's own required-column
+    check still catches the resulting None group_column cleanly."""
+    from agentic_ml.ablation import AblationConfig
+
+    rng = np.random.RandomState(0)
+    df = pd.DataFrame({"x": rng.normal(size=50), "target": rng.randint(0, 2, size=50)})
+    report = {"likely_group_columns": ["cust_id"], "likely_datetime_columns": []}
+
+    gc, tc, notes = resolve_split_columns("group", None, None, report,
+                                           ablation=AblationConfig(skip_split_column_reconciliation=True))
+    assert gc is None and notes == []
+
+    with pytest.raises(ValueError, match="requires group_column"):
+        make_split(df, target_column="target", data_hash="x", strategy="group", group_column=gc,
+                   val_frac=0.2, test_frac=0.2, seed=0)
+
+
+# --- ablation: Split-Level Leakage Checks (Phase 1f) ---
+# See docs/ablation_study_report.md and scripts/run_ablation_study.py.
+
+def test_ablation_duplicate_rows_check_has_no_backstop():
+    """Disabling the duplicate-rows check lets an exact-duplicate row
+    across train/val through with no other check catching it."""
+    from agentic_ml.ablation import AblationConfig
+
+    rng = np.random.RandomState(0)
+    df = pd.DataFrame({
+        "x": [1.0] * 2 + list(rng.normal(size=98)),
+        "target": [0, 0] + list(rng.randint(0, 2, size=98)),
+    })
+    train_idx = [0] + list(range(2, 70))
+    val_idx = [1] + list(range(70, 85))  # index 1 duplicates index 0's row content exactly
+    test_idx = list(range(85, 100))
+
+    baseline = run_all_split_leakage_checks(df, "target", None, None, train_idx, val_idx, test_idx, strategy="random")
+    dup = next(c for c in baseline if c.check_name == "duplicate_rows_across_splits")
+    assert not dup.passed
+
+    ablated = run_all_split_leakage_checks(df, "target", None, None, train_idx, val_idx, test_idx, strategy="random",
+                                            ablation=AblationConfig(skip_duplicate_rows_check=True))
+    assert all(c.passed for c in ablated), "no other check should catch this fault"
+
+
+def test_ablation_fold_class_presence_backstopped_only_by_nan_comparison_emergent_behavior():
+    """A single-class val fold slipping past the split-level check still
+    gets rejected by the downstream permutation gate -- but only because
+    'NaN <= threshold' is always False in Python/numpy, not because
+    anything was designed to catch this specific fault."""
+    from sklearn.base import clone
+    from sklearn.linear_model import LogisticRegression
+
+    from agentic_ml.ablation import AblationConfig
+    from agentic_ml.harness.metrics import roc_auc_any
+
+    rng = np.random.RandomState(0)
+    n = 90
+    df = pd.DataFrame({"x": rng.normal(size=n), "target": [0] * n})
+    df.loc[0:59, "target"] = rng.randint(0, 2, size=60)
+    train_idx, val_idx, test_idx = list(range(0, 60)), list(range(60, 75)), list(range(75, 90))
+
+    ablated = run_all_split_leakage_checks(df, "target", None, None, train_idx, val_idx, test_idx, strategy="random",
+                                            ablation=AblationConfig(skip_split_fold_class_presence_check=True))
+    assert all(c.passed for c in ablated), "the split-level check itself must be fully bypassed"
+
+    X, y = df[["x"]], df["target"]
+    clf = LogisticRegression()
+
+    def fit_and_score(X_tr, y_tr, X_va, y_va):
+        c = clone(clf)
+        c.fit(X_tr, y_tr)
+        return roc_auc_any(y_va, c.predict_proba(X_va))
+
+    real_score = fit_and_score(X.iloc[train_idx], y.iloc[train_idx], X.iloc[val_idx], y.iloc[val_idx])
+    assert np.isnan(real_score)
+
+    perm = label_permutation_test(fit_and_score, X.iloc[train_idx], y.iloc[train_idx], X.iloc[val_idx], y.iloc[val_idx],
+                                   metric_name="roc_auc", seed=42)
+    assert not perm.passed, "NaN comparisons are always False, so the permutation gate rejects this candidate anyway"
+
+
 # --- read_dataframe's size guard ---
 #
 # Regression coverage for a real incident: pointing a raw, long-format

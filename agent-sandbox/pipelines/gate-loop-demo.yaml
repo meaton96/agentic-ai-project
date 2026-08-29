@@ -1,0 +1,22 @@
+id: gate-loop-demo
+name: gate loop demo
+max_steps: 10
+steps:
+  - kind: agent
+    step_id: intake
+    agent_id: summarizer
+    task_template: "Summarize in one sentence: {{task}}"
+  - kind: agent
+    step_id: modeling
+    agent_id: feature-ideas
+    task_template: "Propose one feature idea for: {{steps.intake.output}}"
+  - kind: gate
+    step_id: verify
+    gate: "gates_demo:reject_once_then_approve"
+    on_result:
+      rejected: modeling
+      approved: finalize
+  - kind: agent
+    step_id: finalize
+    agent_id: summarizer
+    task_template: "Finalize this proposal in one sentence: {{steps.modeling.output}}"

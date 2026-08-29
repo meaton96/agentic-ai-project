@@ -1,0 +1,52 @@
+{
+  "description": "The outcome of one already-finished agent pipeline step. `run_id` is\nthe underlying agent run's own run_id \u2014 its full events.jsonl/trace is\nreachable through the exact same endpoints a standalone agent run is.",
+  "properties": {
+    "kind": {
+      "const": "agent",
+      "default": "agent",
+      "title": "Kind",
+      "type": "string"
+    },
+    "step_id": {
+      "title": "Step Id",
+      "type": "string"
+    },
+    "agent_id": {
+      "title": "Agent Id",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "completed",
+        "errored",
+        "truncated"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "output": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Output"
+    }
+  },
+  "required": [
+    "step_id",
+    "agent_id",
+    "run_id",
+    "status"
+  ],
+  "title": "PipelineStepResult",
+  "type": "object"
+}

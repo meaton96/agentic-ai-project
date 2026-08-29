@@ -56,6 +56,9 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
+
+from agentic_ml.ablation import AblationConfig
 
 
 FORBIDDEN_IMPORTS = {
@@ -153,6 +156,7 @@ def run_candidate_build(
     config: dict,
     timeout_seconds: int = 30,
     cpu_seconds: int = 20,
+    ablation: Optional[AblationConfig] = None,
 ) -> tuple[object | None, str | None]:
     """
     Static-checks then subprocess-executes build_pipeline(config) from
@@ -163,10 +167,18 @@ def run_candidate_build(
     timeout + CPU time limit + single-threaded BLAS are the actual
     containment here. For a hard memory ceiling on genuinely untrusted
     code, wrap this in a container/cgroup boundary instead.
+
+    ablation: research-only, see agentic_ml.ablation — every flag
+    defaults to False, so ablation=None is identical to omitting it.
+    skip_ast_check bypasses static_check() entirely (the candidate code
+    still runs inside the resource-limited subprocess — this ablates
+    only the pre-execution gate, not the process isolation itself).
     """
-    check = static_check(source_code)
-    if not check.passed:
-        return None, f"static check failed: {'; '.join(check.violations)}"
+    ablation = ablation or AblationConfig()
+    if not ablation.skip_ast_check:
+        check = static_check(source_code)
+        if not check.passed:
+            return None, f"static check failed: {'; '.join(check.violations)}"
 
     import json as _json
 

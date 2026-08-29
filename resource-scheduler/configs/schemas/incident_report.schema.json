@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "IncidentReportFact",
+  "description": "Deterministic tool output from get_incident_report. Computed entirely by environment/incidents.py, comparing two environment/state.py snapshots taken at different as_of_row replay cutoffs -- no field here is ever produced by an LLM. A status flip between the two snapshots may reflect genuine drift in the static replay data rather than a true live fault; see environment/incidents.py's module docstring.",
+  "type": "object",
+  "required": ["incidents", "affected_tasks", "current_machine_status", "synthetic_variance_injected"],
+  "properties": {
+    "incidents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["machine_id", "previous_status", "current_status", "detected_issue"],
+        "properties": {
+          "machine_id": {"type": "string"},
+          "previous_status": {"type": ["string", "null"]},
+          "current_status": {"enum": ["Maintenance", "Overloaded"]},
+          "detected_issue": {"type": "string"}
+        }
+      }
+    },
+    "affected_tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["task_id", "machine_id", "network_slice_id", "incident"],
+        "properties": {
+          "task_id": {"type": "string"},
+          "machine_id": {"type": "string"},
+          "network_slice_id": {"type": ["string", "null"]},
+          "incident": {"type": "string"}
+        }
+      }
+    },
+    "current_machine_status": {
+      "type": "object",
+      "additionalProperties": {"enum": ["Active", "Idle", "Maintenance", "Overloaded"]}
+    },
+    "synthetic_variance_injected": {
+      "type": "object",
+      "additionalProperties": {"type": "boolean"}
+    }
+  }
+}

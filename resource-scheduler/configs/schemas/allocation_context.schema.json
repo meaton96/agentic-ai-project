@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AllocationContextFact",
+  "description": "Deterministic tool output from get_allocation_context. Computed entirely by environment/allocation.py + environment/state.py, seeded by the ranking Task Prioritization sent over the A2A mailbox (a2a/mailbox.py) -- no field here is ever produced by an LLM.",
+  "type": "object",
+  "required": ["ranked_tasks", "available_machines", "available_slices", "synthetic_variance_injected"],
+  "properties": {
+    "ranked_tasks": {
+      "type": "array",
+      "description": "In priority order, as received from Task Prioritization -- the agent should respect this order.",
+      "items": {
+        "type": "object",
+        "required": ["task_id", "task_type", "final_score", "previously_recorded_machine_id", "previously_recorded_network_slice_id"],
+        "properties": {
+          "task_id": {"type": "string"},
+          "task_type": {"type": "string"},
+          "final_score": {"type": ["number", "null"]},
+          "previously_recorded_machine_id": {"type": ["string", "null"], "description": "Historical context only, not a placement constraint."},
+          "previously_recorded_network_slice_id": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "available_machines": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["machine_id", "status"],
+        "properties": {
+          "machine_id": {"type": "string"},
+          "status": {"enum": ["Active", "Idle", "Maintenance", "Overloaded"]}
+        }
+      }
+    },
+    "available_slices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["slice_id", "current_load", "capacity"],
+        "properties": {
+          "slice_id": {"type": "string"},
+          "current_load": {"type": "integer", "minimum": 0},
+          "capacity": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "synthetic_variance_injected": {
+      "type": "object",
+      "additionalProperties": {"type": "boolean"}
+    }
+  }
+}

@@ -1,0 +1,29 @@
+id: file-explorer
+name: file explorer
+system_prompt: >
+  You are an agent that investigates sensor log files in a workspace
+  directory. Use list_directory to see what's there, read_file to read each
+  log, and write_file to save a short written summary. For each log, call
+  out whether the trend looks normal or concerning, and why.
+model:
+  base_url: https://api.genai.gccis.rit.edu/v1
+  model_name: qwen3-coder:30b
+  api_key_ref: rit-api
+  temperature: 0.0
+  max_tokens: 32000
+mcp_servers:
+  - name: fs
+    transport: stdio
+    connection:
+      command: npx
+      args:
+        - "-y"
+        - "@modelcontextprotocol/server-filesystem"
+        - "./workspace"
+    allowed_tools:
+      - list_directory
+      - read_file
+      - write_file
+    logging_policy: full
+sub_agents: []
+max_turns: 25

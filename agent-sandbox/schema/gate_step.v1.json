@@ -1,0 +1,33 @@
+{
+  "description": "A deterministic, non-LLM step: `gate` (an importable `module:function`\npath) is called with every completed step's output so far and returns a\ndecision string, which `on_result` maps to the step_id to run next. The\nsentinel `\"__end__\"` in `on_result`'s values means \"pipeline completes\nsuccessfully here\". This is agentic_ml's \"agents propose, harness\ndecides\" pattern made generic \u2014 the gate function is operator-supplied,\nresolved by import path, and runs trusted, in-process Python only (no\nsandboxed/subprocess isolation; see docs/architecture.md's Known gaps).",
+  "properties": {
+    "kind": {
+      "const": "gate",
+      "title": "Kind",
+      "type": "string"
+    },
+    "step_id": {
+      "title": "Step Id",
+      "type": "string"
+    },
+    "gate": {
+      "title": "Gate",
+      "type": "string"
+    },
+    "on_result": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "On Result",
+      "type": "object"
+    }
+  },
+  "required": [
+    "kind",
+    "step_id",
+    "gate",
+    "on_result"
+  ],
+  "title": "GateStep",
+  "type": "object"
+}

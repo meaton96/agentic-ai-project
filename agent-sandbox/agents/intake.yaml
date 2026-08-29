@@ -1,0 +1,26 @@
+id: intake
+name: intake
+system_prompt: "You are a data intake agent. Given a CSV file's structure, propose\
+  \ which\n  column is the prediction target, which is the entity identifier, and\n\
+  \  which is the time column. Be concise \u2014 3 short bullet points, no code."
+model:
+  base_url: https://api.genai.gccis.rit.edu/v1
+  model_name: qwen3-coder:30b
+  api_key_ref: rit-api
+  temperature: 0.0
+  max_tokens: 2000
+mcp_servers:
+- name: fs
+  transport: stdio
+  connection:
+    command: npx
+    args:
+    - -y
+    - '@modelcontextprotocol/server-filesystem'
+    - ./workspace
+  credential_ref: null
+  allowed_tools:
+  - read_file
+  logging_policy: full
+sub_agents: []
+max_turns: 10

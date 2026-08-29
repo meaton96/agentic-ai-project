@@ -1,0 +1,49 @@
+{
+  "description": "The outcome of one already-finished gate step: no agent run backs it,\njust a decision and where it routed to. `routed_to` is None when the\ngate's decision resolved to the \"__end__\" sentinel.\n\n`output`, like PipelineStepResult.output, feeds `{{steps.<step_id>.output}}`\nfor later steps \u2014 a gate is deterministic Python, so this is deliberately\n*not* restricted to prose: a gate wrapping a real data-pipeline stage\n(e.g. a DataFrame in, DataFrame out transform) has nothing sensible to\nput in a string except a reference to where it wrote the real artifact\n(a parquet/joblib file path) \u2014 the sandbox never holds that payload\nitself, same as it never holds an agent's full conversation, only its\nfinal_output text.",
+  "properties": {
+    "kind": {
+      "const": "gate",
+      "default": "gate",
+      "title": "Kind",
+      "type": "string"
+    },
+    "step_id": {
+      "title": "Step Id",
+      "type": "string"
+    },
+    "decision": {
+      "title": "Decision",
+      "type": "string"
+    },
+    "routed_to": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Routed To"
+    },
+    "output": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Output"
+    }
+  },
+  "required": [
+    "step_id",
+    "decision",
+    "routed_to"
+  ],
+  "title": "GateStepResult",
+  "type": "object"
+}

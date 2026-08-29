@@ -1,0 +1,28 @@
+{
+  "description": "Mirrors RunSpec, one level up: the seed request for one pipeline\nexecution, before any of its steps have run.",
+  "properties": {
+    "pipeline_run_id": {
+      "title": "Pipeline Run Id",
+      "type": "string"
+    },
+    "pipeline_id": {
+      "title": "Pipeline Id",
+      "type": "string"
+    },
+    "task": {
+      "title": "Task",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "pipeline_id",
+    "task"
+  ],
+  "title": "PipelineRunSpec",
+  "type": "object"
+}

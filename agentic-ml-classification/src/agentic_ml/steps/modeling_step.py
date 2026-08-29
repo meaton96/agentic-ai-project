@@ -6,24 +6,35 @@ sandbox/scoring logic. The harness never trusts the agent's proposal
 blindly: every proposed column is re-validated against the profiler's
 facts, the template source is static-checked + sandbox-built with the
 agent's config, the resulting pipeline is fit/scored on the caller-
-supplied train/val split, and TWO independent leakage gates must both
+supplied train/val split, and THREE independent leakage gates must all
 pass before ok=True — that, not just "no errors", is what callers
 should treat as "safe to use":
 
-  1. label_permutation_test — catches pipeline-level leakage (e.g. a
-     preprocessing step fit on data outside its proper fold).
+  1. label_permutation_test — catches pipeline-level leakage where the
+     model's output does not legitimately depend on the labels fit()
+     receives at every stage (e.g. a component reading state outside
+     its fit(X, y) arguments).
   2. check_suspicious_feature_correlation, re-run scoped to exactly the
      columns THIS candidate selected — catches raw feature-level
      leakage (a near-copy of the target) among the agent's actual
      choices, which is a stronger check than the profiler's dataset-
      wide pass since the profiler doesn't know which columns any given
-     candidate will pick. See priors/general/leakage_rules.md Rule 4:
-     these two checks are complementary, not redundant, and both must
-     run on every candidate.
+     candidate will pick.
+  3. train_cv_consistency_check — catches a component that IS properly
+     scoped to its fit() arguments but is internally self-referential
+     (not cross-fitted), so a training row's own label leaks into its
+     own encoded feature. Added after an ablation study
+     (docs/ablation_study_report.md) found this specific gap: gate 1
+     alone does not catch it, because refitting on a different
+     (shuffled) y never inspects the pipeline's in-sample behavior on
+     the SAME data it was fit on, which is exactly where this bug
+     shows up. See priors/general/leakage_rules.md Rule 4 and
+     docs/harness_pseudocode.md for how these three are complementary,
+     not redundant — all three must run on every candidate.
 
-A candidate that passes both gates still isn't automatically promoted
-— see steps/verification_step.py for the second-opinion LLM audit that
-runs on gate-passing candidates before promotion.
+A candidate that passes all three gates still isn't automatically
+promoted — see steps/verification_step.py for the second-opinion LLM
+audit that runs on gate-passing candidates before promotion.
 """
 from __future__ import annotations
 
@@ -34,10 +45,16 @@ from typing import Callable, Optional
 import pandas as pd
 from sklearn.base import clone
 
+from agentic_ml.ablation import AblationConfig
 from agentic_ml.agent_runtime import ToolCallingAgent
 from agentic_ml.events import emit_event
 from agentic_ml.harness.column_grouping import expand_grouped_columns
-from agentic_ml.harness.leakage import check_suspicious_feature_correlation, label_permutation_test
+from agentic_ml.harness.leakage import (
+    LeakageCheckResult,
+    check_suspicious_feature_correlation,
+    label_permutation_test,
+    train_cv_consistency_check,
+)
 from agentic_ml.harness.sandbox import run_candidate_build
 from agentic_ml.harness.metrics import compute_metrics, roc_auc_any
 from agentic_ml.mcp_facts.provider import LocalToolProvider, ToolProvider
@@ -109,6 +126,7 @@ class ModelingStepResult:
     metrics: Optional[dict]
     label_permutation_check: Optional[dict]
     feature_correlation_check: Optional[dict]
+    train_cv_consistency_check: Optional[dict]
     errors: list[str] = field(default_factory=list)
     stopped_reason: str = ""
     turns_used: int = 0
@@ -135,9 +153,11 @@ def run_modeling_step(
     prompt_override_dir: Optional[str] = None,
     tool_provider: Optional[ToolProvider] = None,
     previous_error: Optional[str] = None,
+    ablation: Optional[AblationConfig] = None,
 ) -> ModelingStepResult:
     if metric_names is None:
         metric_names = ["roc_auc", "pr_auc", "f1", "accuracy"]
+    ablation = ablation or AblationConfig()
 
     resolved_override_dir = resolve_prompt_override_dir(prompt_override_dir)
     prompt_src, prompt_path = prompt_source("modeling", resolved_override_dir)
@@ -206,7 +226,7 @@ def run_modeling_step(
             candidate_id=extra.get("candidate_id"), template_id=extra.get("template_id"),
             config=extra.get("config"), explanation=extra.get("explanation"),
             pipeline=None, metrics=None, label_permutation_check=None,
-            feature_correlation_check=None, errors=errors,
+            feature_correlation_check=None, train_cv_consistency_check=None, errors=errors,
             stopped_reason=result.stopped_reason, turns_used=result.turns_used,
             messages=result.messages,
         )
@@ -219,9 +239,12 @@ def run_modeling_step(
     except json.JSONDecodeError:
         return fail([f"agent's final response did not parse as JSON: {result.final_text[:500]}"])
 
-    shape_errors = _validate_candidate_spec_shape(candidate)
+    shape_errors = [] if ablation.skip_candidate_shape_check else _validate_candidate_spec_shape(candidate)
     if shape_errors:
         return fail(shape_errors)
+    # if skip_candidate_shape_check is active on a genuinely malformed
+    # candidate (e.g. missing 'template_id'), the KeyError two lines down
+    # is deliberate — that's the ablation.
 
     template_id = candidate["template_id"]
     config = dict(candidate["config"])
@@ -231,26 +254,41 @@ def run_modeling_step(
     explanation = candidate.get("explanation", "")
     candidate_id = candidate["candidate_id"]
 
-    try:
-        template_errors = validate_config(template_id, config)
-    except KeyError as e:
-        return fail([str(e)], candidate_id=candidate_id, template_id=template_id,
-                    config=config, explanation=explanation)
+    template_errors = []
+    if not ablation.skip_template_config_check:
+        try:
+            template_errors = validate_config(template_id, config)
+        except KeyError as e:
+            return fail([str(e)], candidate_id=candidate_id, template_id=template_id,
+                        config=config, explanation=explanation)
+    # if skip_template_config_check is active on an unknown template_id,
+    # get_template() a few lines down (via run_candidate_build) raises
+    # instead — deliberate. On a valid template_id with a missing
+    # required config key, build_pipeline(config) inside the sandbox
+    # raises instead, which run_candidate_build already converts into a
+    # normal "sandbox build error" fail() — a real backstop, not a crash.
 
-    column_errors = (
-        _validate_candidate_columns(profile_report, target_column, group_column, time_column, config)
-        if profile_report else ["profiler was never called — cannot validate proposed columns"]
-    )
+    if ablation.skip_candidate_column_check:
+        column_errors = []
+    elif profile_report:
+        column_errors = _validate_candidate_columns(profile_report, target_column, group_column, time_column, config)
+    else:
+        column_errors = ["profiler was never called — cannot validate proposed columns"]
     all_errors = template_errors + column_errors
     if all_errors:
         return fail(all_errors, candidate_id=candidate_id, template_id=template_id,
                     config=config, explanation=explanation)
 
     template = get_template(template_id)
-    pipeline, build_error = run_candidate_build(template.read_source(), config, timeout_seconds=60)
-    if build_error:
+    pipeline, build_error = run_candidate_build(
+        template.read_source(), config, timeout_seconds=60, ablation=ablation,
+    )
+    if build_error and not ablation.skip_build_error_check:
         return fail([f"sandbox build error: {build_error}"], candidate_id=candidate_id,
                     template_id=template_id, config=config, explanation=explanation)
+    # if skip_build_error_check is active and the sandbox genuinely
+    # failed (build_error is set but ignored), pipeline is still None —
+    # pipeline.fit() below raises AttributeError, deliberately.
 
     pipeline.fit(X.iloc[train_idx], y.iloc[train_idx])
     y_pred = pipeline.predict(X.iloc[val_idx])
@@ -267,21 +305,42 @@ def run_modeling_step(
         p = candidate_pipeline.predict_proba(X_va)
         return roc_auc_any(y_va, p)
 
-    permutation_check = label_permutation_test(
-        fit_and_score, X.iloc[train_idx], y.iloc[train_idx], X.iloc[val_idx], y.iloc[val_idx],
-        metric_name="roc_auc", seed=seed,
-    )
+    if ablation.skip_label_permutation_gate:
+        permutation_check = LeakageCheckResult(
+            "label_permutation_test", True, "SKIPPED (ablation: skip_label_permutation_gate)",
+        )
+    else:
+        permutation_check = label_permutation_test(
+            fit_and_score, X.iloc[train_idx], y.iloc[train_idx], X.iloc[val_idx], y.iloc[val_idx],
+            metric_name="roc_auc", seed=seed,
+        )
     emit_event(on_event, "modeling", "leakage_gate_result",
                 {"candidate_id": candidate_id, **permutation_check.to_dict()})
 
     selected_cols = [c for c in config.get("numeric_cols", []) + config.get("categorical_cols", []) if c in X.columns]
-    correlation_check = check_suspicious_feature_correlation(
-        X[selected_cols].iloc[train_idx], y.iloc[train_idx],
-    )
+    if ablation.skip_feature_correlation_gate:
+        correlation_check = LeakageCheckResult(
+            "suspicious_feature_correlation", True, "SKIPPED (ablation: skip_feature_correlation_gate)",
+        )
+    else:
+        correlation_check = check_suspicious_feature_correlation(
+            X[selected_cols].iloc[train_idx], y.iloc[train_idx],
+        )
     emit_event(on_event, "modeling", "leakage_gate_result",
                 {"candidate_id": candidate_id, **correlation_check.to_dict()})
 
-    passed_both_gates = permutation_check.passed and correlation_check.passed
+    if ablation.skip_train_cv_consistency_gate:
+        cv_consistency_check = LeakageCheckResult(
+            "train_cv_consistency", True, "SKIPPED (ablation: skip_train_cv_consistency_gate)",
+        )
+    else:
+        cv_consistency_check = train_cv_consistency_check(
+            fit_and_score, X.iloc[train_idx], y.iloc[train_idx], metric_name="roc_auc", seed=seed,
+        )
+    emit_event(on_event, "modeling", "leakage_gate_result",
+                {"candidate_id": candidate_id, **cv_consistency_check.to_dict()})
+
+    passed_all_gates = permutation_check.passed and correlation_check.passed and cv_consistency_check.passed
     # The numeric detail (e.g. "mean roc_auc on shuffled labels = 0.6234
     # (chance ~= 0.5, tolerance = 0.08)") already exists on the check
     # result — appending it here, not just the generic gate name, is what
@@ -296,18 +355,21 @@ def run_modeling_step(
         gate_errors.append(f"failed label_permutation_test leakage gate ({permutation_check.detail})")
     if not correlation_check.passed:
         gate_errors.append(f"failed feature-correlation leakage gate ({correlation_check.detail})")
+    if not cv_consistency_check.passed:
+        gate_errors.append(f"failed train_cv_consistency leakage gate ({cv_consistency_check.detail})")
 
     emit_event(on_event, "modeling", "candidate_scored", {
         "candidate_id": candidate_id, "template_id": template_id, "metrics": metrics_dict,
-        "passed_gate": passed_both_gates,
+        "passed_gate": passed_all_gates,
     })
 
     return ModelingStepResult(
-        ok=passed_both_gates,
+        ok=passed_all_gates,
         candidate_id=candidate_id, template_id=template_id, config=config, explanation=explanation,
         pipeline=pipeline, metrics=metrics_dict,
         label_permutation_check=permutation_check.to_dict(),
         feature_correlation_check=correlation_check.to_dict(),
+        train_cv_consistency_check=cv_consistency_check.to_dict(),
         errors=gate_errors,
         stopped_reason=result.stopped_reason, turns_used=result.turns_used,
         messages=result.messages,

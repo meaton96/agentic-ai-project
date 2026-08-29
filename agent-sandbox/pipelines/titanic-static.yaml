@@ -1,0 +1,38 @@
+id: titanic-static
+name: titanic static orchestrator (agentic_ml)
+max_steps: 10
+steps:
+  - kind: gate
+    step_id: intake
+    gate: "agentic_ml_static:run_intake"
+    on_result:
+      ok: feature_engineering
+      failed: __end__
+  - kind: gate
+    step_id: feature_engineering
+    gate: "agentic_ml_static:run_feature_engineering"
+    on_result:
+      ok: profiler_and_split
+      failed: __end__
+  - kind: gate
+    step_id: profiler_and_split
+    gate: "agentic_ml_static:run_profiler_and_split"
+    on_result:
+      ok: modeling_and_verification
+      failed: __end__
+  - kind: gate
+    step_id: modeling_and_verification
+    gate: "agentic_ml_static:run_modeling_and_verification"
+    on_result:
+      selected: finalize
+      no_candidate: __end__
+  - kind: gate
+    step_id: finalize
+    gate: "agentic_ml_static:run_finalize"
+    on_result:
+      done: summarize
+  - kind: gate
+    step_id: summarize
+    gate: "agentic_ml_static:run_summarize"
+    on_result:
+      done: __end__

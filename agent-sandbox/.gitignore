@@ -1,0 +1,19 @@
+# credential store — never commit resolved secrets, whether at the default
+# ~/.sandbox/credentials.yaml or a repo-local override via SANDBOX_CREDENTIALS_PATH
+.sandbox/
+credentials.yaml
+
+# event logs produced by `sandbox run`
+runs/
+
+# pipeline-run manifests produced by `sandbox pipeline run` / PipelineRunManager
+pipeline-runs/
+
+# scratch output written by the example agents (e.g. examples/agents/file-writer.yaml)
+sandbox-core/examples/workspace/*
+!sandbox-core/examples/workspace/.gitkeep
+
+# generated output from agents/file-explorer.yaml — workspace/docs/ is committed
+# seed data for it to read, workspace/output/ is scratch it writes to
+workspace/output/*
+!workspace/output/.gitkeep

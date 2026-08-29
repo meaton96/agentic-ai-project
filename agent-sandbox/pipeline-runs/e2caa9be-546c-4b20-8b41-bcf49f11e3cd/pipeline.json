@@ -1,0 +1,24 @@
+{
+  "pipeline_run_id": "e2caa9be-546c-4b20-8b41-bcf49f11e3cd",
+  "pipeline_id": "sensor-report",
+  "task": "- 2026-08-18 06:00 — Discharge temp 88°C (baseline), pressure 142 psi\n- 2026-08-19 06:00 — Discharge temp 89°C, pressure 141 psi\n- 2026-08-20 06:00 — Discharge temp 87°C, pressure 143 psi\n- 2026-08-21 06:00 — Discharge temp 90°C, pressure 140 psi\n- 2026-08-22 06:00 — Discharge temp 88°C, pressure 142 psi\n\nMaintenance note: all readings within normal operating range. No action\nneeded.\n",
+  "created_at": "2026-08-26T15:53:08.751369Z",
+  "status": "completed",
+  "steps": [
+    {
+      "step_id": "summarize",
+      "agent_id": "summarizer",
+      "run_id": "4c11f65a-6cd8-4ac3-80d0-cf1869c45728",
+      "status": "completed",
+      "output": "The discharge temperature ranged from 87°C to 90°C and pressure varied between 140 psi and 143 psi over six days. All readings remained within the normal operating range. No maintenance action was required."
+    },
+    {
+      "step_id": "write",
+      "agent_id": "file-explorer",
+      "run_id": "6e0151b0-a8a2-42df-ba5d-4c2b8b846f18",
+      "status": "completed",
+      "output": "The summary has been successfully saved to `output/pipeline-summary.md` and read back correctly. Here's the content of the file:\n\n---\n\nThe discharge temperature ranged from 87°C to 90°C and pressure varied between 140 psi and 143 psi over six days. All readings remained within the normal operating range. No maintenance action was required.\n\n---"
+    }
+  ],
+  "error": null
+}

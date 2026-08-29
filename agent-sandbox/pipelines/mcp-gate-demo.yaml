@@ -1,0 +1,13 @@
+id: mcp-gate-demo
+name: mcp gate demo
+steps:
+  - kind: agent
+    step_id: intake
+    agent_id: summarizer
+    task_template: "Summarize this in one sentence: {{task}}"
+  - kind: gate
+    step_id: review
+    gate: "mcp_gate_demo.client_gate:review_via_mcp"
+    on_result:
+      approved: __end__
+      rejected: __end__

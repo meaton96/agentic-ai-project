@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FailureRecoveryReport",
+  "description": "The Failure Recovery agent's structured proposal. Validated by steps/failure_recovery_step.py against environment/incidents.py: validate_recovery_proposal is a hard gate (reroute_proposals must cover exactly the affected task ids, each exactly once); reroutes_avoid_source_machine is a soft flag (a reroute back onto the same machine a task was just displaced from fixes nothing, but isn't itself a structural error). On success this is sent as a reroute_request message to the resource_allocation mailbox for re-validation against the same constraint gate Resource Allocation's own proposals use (steps/resource_allocation_step.py::run_reroute_validation_step) -- no second LLM negotiation on that side.",
+  "type": "object",
+  "required": ["incidents", "reroute_proposals"],
+  "properties": {
+    "incidents": {
+      "type": "array",
+      "description": "Must be copied exactly from IncidentReportFact.incidents."
+    },
+    "reroute_proposals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["task_id", "new_machine_id", "new_network_slice_id", "reasoning"],
+        "properties": {
+          "task_id": {"type": "string"},
+          "new_machine_id": {"type": "string", "description": "Should differ from the task's current (incident) machine_id."},
+          "new_network_slice_id": {"type": "string"},
+          "reasoning": {"type": "string"}
+        }
+      }
+    }
+  }
+}
