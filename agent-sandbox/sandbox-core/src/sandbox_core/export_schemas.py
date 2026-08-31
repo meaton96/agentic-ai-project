@@ -23,6 +23,13 @@ from sandbox_core.schemas.events import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from sandbox_core.schemas.operations import (
+    AlterModelOperation,
+    AlterWorkflowOperation,
+    Operation,
+    OperationRecord,
+    SwapAgentOperation,
+)
 from sandbox_core.schemas.pipeline_run import (
     GateStepResult,
     PipelineRunRecord,
@@ -60,6 +67,10 @@ MODELS = {
     "pipeline_run_record": PipelineRunRecord,
     "pipeline_step_result": PipelineStepResult,
     "gate_step_result": GateStepResult,
+    "swap_agent_operation": SwapAgentOperation,
+    "alter_model_operation": AlterModelOperation,
+    "alter_workflow_operation": AlterWorkflowOperation,
+    "operation_record": OperationRecord,
 }
 
 
@@ -73,7 +84,7 @@ def export_schemas(output_dir: Path = DEFAULT_OUTPUT_DIR) -> list[Path]:
         written.append(path)
 
     # Discriminated Unions aren't BaseModels, so they need a TypeAdapter.
-    for stem, union_type in {"event": Event, "step": Step, "step_result": StepResult}.items():
+    for stem, union_type in {"event": Event, "step": Step, "step_result": StepResult, "operation": Operation}.items():
         path = output_dir / f"{stem}.v{SCHEMA_VERSION}.json"
         path.write_text(json.dumps(TypeAdapter(union_type).json_schema(), indent=2) + "\n")
         written.append(path)

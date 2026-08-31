@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "ModelConfig": {
+      "properties": {
+        "base_url": {
+          "title": "Base Url",
+          "type": "string"
+        },
+        "model_name": {
+          "title": "Model Name",
+          "type": "string"
+        },
+        "api_key_ref": {
+          "title": "Api Key Ref",
+          "type": "string"
+        },
+        "temperature": {
+          "default": 0.0,
+          "title": "Temperature",
+          "type": "number"
+        },
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Tokens"
+        }
+      },
+      "required": [
+        "base_url",
+        "model_name",
+        "api_key_ref"
+      ],
+      "title": "ModelConfig",
+      "type": "object"
+    }
+  },
+  "description": "Replaces an AgentSpec's model configuration wholesale.",
+  "properties": {
+    "type": {
+      "const": "alter_model",
+      "default": "alter_model",
+      "title": "Type",
+      "type": "string"
+    },
+    "model": {
+      "$ref": "#/$defs/ModelConfig"
+    }
+  },
+  "required": [
+    "model"
+  ],
+  "title": "AlterModelOperation",
+  "type": "object"
+}
