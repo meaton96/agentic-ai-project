@@ -55,9 +55,38 @@ from resource_scheduler.model_client import ModelClient
 from resource_scheduler.steps.failure_recovery_step import run_failure_recovery_step
 from resource_scheduler.steps.load_monitor_step import run_load_monitor_step
 from resource_scheduler.steps.optimization_step import run_optimization_step
-from resource_scheduler.steps.oversight_step import run_oversight_step
+from resource_scheduler.steps.oversight_step import run_decision_oversight_step, run_oversight_step
 from resource_scheduler.steps.resource_allocation_step import run_reroute_validation_step, run_resource_allocation_step
 from resource_scheduler.steps.task_prioritization_step import run_task_prioritization_step
+
+
+def _review_risky_decisions(
+    client, mailbox, model, trace, emit, prompt_override_dir, run_dir, write_transcript, report, label,
+):
+    """Shared by both trigger points (after Resource Allocation, after
+    reroute validation) -- each may have sent a risky_decision batch to
+    Human Oversight's mailbox; this runs the review, writes its own
+    report file (numbered so the two calls in one run don't clobber
+    each other), and folds the outcome into the master report."""
+    print(f"  reviewing risky decisions from {label}...")
+    do_result = run_decision_oversight_step(
+        client, mailbox, model=model, trace_fn=lambda record: trace(**record), on_event=emit,
+        prompt_override_dir=prompt_override_dir,
+    )
+    write_transcript(f"human_oversight_decision_{label}", do_result.messages)
+    (run_dir / f"human_oversight_decision_{label}_report.json").write_text(json.dumps({
+        "ok": do_result.ok, "verdict": do_result.verdict, "concerns": do_result.concerns,
+        "reasoning": do_result.reasoning, "review_bundle": do_result.review_bundle,
+        "decision_source": do_result.decision_source, "n_decisions_reviewed": do_result.n_decisions_reviewed,
+    }, indent=2, default=str))
+    print(f"    verdict={do_result.verdict} (reviewed {do_result.n_decisions_reviewed} decision(s))")
+    if do_result.verdict in ("rejected", "flagged"):
+        report["issues"].append(
+            f"human_oversight ({label} decisions): verdict={do_result.verdict} — {do_result.concerns}"
+        )
+    report.setdefault("human_oversight_decisions", {})[label] = {
+        "verdict": do_result.verdict, "n_decisions_reviewed": do_result.n_decisions_reviewed,
+    }
 
 
 def main(on_event: Optional[Callable[[dict], None]] = None, prompt_override_dir: Optional[str] = None):
@@ -210,6 +239,11 @@ def main(on_event: Optional[Callable[[dict], None]] = None, prompt_override_dir:
         "n_environment_rejected": len(ra_result.environment_rejected),
         "n_agent_rejected": len(ra_result.agent_rejected), "stopped_reason": ra_result.stopped_reason,
     }
+    if ra_result.sent_risky_decisions_to_human_oversight:
+        _review_risky_decisions(
+            client, mailbox, default_model, trace, emit, effective_prompt_override_dir,
+            run_dir, write_transcript, report, "resource_allocation",
+        )
 
     # --- 4. Failure Recovery (uses Resource Allocation's own accepted
     # assignments as "currently committed"; may send a reroute_request) ---
@@ -236,6 +270,11 @@ def main(on_event: Optional[Callable[[dict], None]] = None, prompt_override_dir:
         if reroute_result.environment_rejected:
             report["issues"].append(
                 f"failure_recovery: {len(reroute_result.environment_rejected)} reroute(s) environment-rejected"
+            )
+        if reroute_result.sent_risky_decisions_to_human_oversight:
+            _review_risky_decisions(
+                client, mailbox, default_model, trace, emit, effective_prompt_override_dir,
+                run_dir, write_transcript, report, "failure_recovery",
             )
 
     (run_dir / "failure_recovery_report.json").write_text(json.dumps({

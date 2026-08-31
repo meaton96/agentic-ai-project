@@ -1,15 +1,20 @@
 """
 Agent #6: Human Oversight. Deterministic code
-(environment/oversight.py::build_oversight_review_bundle) assembles the
-facts; the LLM's verdict is the point of this agent -- there is no
-"correct" answer to check it against, unlike every other gate in this
-project. parse_oversight_verdict enforces only one rule: an unparseable
-or malformed response must degrade to "flagged", never silently pass as
-"approved".
+(environment/oversight.py) assembles the facts; the LLM's verdict is
+the point of this agent -- there is no "correct" answer to check it
+against, unlike every other gate in this project. parse_oversight_verdict
+enforces only one rule: an unparseable or malformed response must
+degrade to "flagged", never silently pass as "approved".
 
-Reads Optimization's policy_update_proposal from its own mailbox
-(message_type "policy_update_proposal") -- the third A2A hop, no
-orchestrator in between.
+Two review paths, two step functions in this file:
+- run_oversight_step: reads Optimization's policy_update_proposal
+  (the original A2A hop).
+- run_decision_oversight_step: reads a risky_decision batch sent by
+  Resource Allocation or Failure Recovery -- an already-accepted
+  assignment/reroute landing on an Overloaded machine (see
+  environment/allocation.py::identify_risky_assignments). Advisory
+  only: the decision is already committed by the time this runs;
+  the verdict is logged, not a gate on anything.
 """
 from __future__ import annotations
 
@@ -19,11 +24,15 @@ from typing import Callable, Optional
 
 from resource_scheduler.a2a.mailbox import Mailbox
 from resource_scheduler.agent_runtime import ToolCallingAgent
-from resource_scheduler.environment.oversight import build_oversight_review_bundle, parse_oversight_verdict
+from resource_scheduler.environment.oversight import (
+    build_decision_review_bundle,
+    build_oversight_review_bundle,
+    parse_oversight_verdict,
+)
 from resource_scheduler.events import emit_event
 from resource_scheduler.model_client import ModelClient
 from resource_scheduler.prompt_loader import load_prompt, prompt_source, resolve_prompt_override_dir
-from resource_scheduler.tools.oversight_tool import make_oversight_tool
+from resource_scheduler.tools.oversight_tool import make_decision_oversight_tool, make_oversight_tool
 
 
 @dataclass
@@ -98,6 +107,88 @@ def run_oversight_step(
         review_bundle=review_bundle,
         llm_raw_text=result.final_text,
         proposal_source=message.sender,
+        stopped_reason=result.stopped_reason,
+        turns_used=result.turns_used,
+        messages=result.messages,
+    )
+
+
+@dataclass
+class DecisionOversightStepResult:
+    ok: bool  # a risky-decision batch was available to review
+    verdict: Optional[str] = None
+    concerns: list[str] = field(default_factory=list)
+    reasoning: str = ""
+    review_bundle: Optional[dict] = None
+    llm_raw_text: Optional[str] = None
+    decision_source: Optional[str] = None  # "resource_allocation" or "failure_recovery"
+    n_decisions_reviewed: int = 0
+    stopped_reason: str = "completed"
+    turns_used: int = 0
+    messages: list[dict] = field(default_factory=list)
+
+
+def run_decision_oversight_step(
+    client: ModelClient,
+    mailbox: Mailbox,
+    model: Optional[str] = None,
+    max_turns: int = 4,
+    trace_fn: Optional[Callable[[dict], None]] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
+    prompt_override_dir: Optional[str] = None,
+) -> DecisionOversightStepResult:
+    inbox = mailbox.inbox_for("human_oversight", message_type="risky_decision")
+    if not inbox:
+        emit_event(on_event, "human_oversight", "no_risky_decision_available", {})
+        return DecisionOversightStepResult(ok=False, stopped_reason="no_risky_decision_available")
+
+    message = inbox[-1]  # MVP assumes one risky-decision batch in flight at a time
+    payload = message.payload
+    emit_event(on_event, "human_oversight", "risky_decision_received", {
+        "sender": message.sender, "n_decisions": len(payload.get("risky_decisions", [])),
+    })
+
+    resolved_override_dir = resolve_prompt_override_dir(prompt_override_dir)
+    prompt_src, prompt_path = prompt_source("human_oversight_decision", resolved_override_dir)
+    system_prompt = load_prompt("human_oversight_decision", resolved_override_dir)
+    emit_event(on_event, "human_oversight", "prompt_loaded", {"source": prompt_src, "path": str(prompt_path)})
+
+    review_bundle = build_decision_review_bundle(payload)
+    tool = make_decision_oversight_tool(review_bundle)
+    agent = ToolCallingAgent(
+        model_client=client, tools=[tool], system_prompt=system_prompt,
+        model=model, max_turns=max_turns,
+    )
+    result = agent.run(
+        "Review the flagged risky scheduling decisions and issue your verdict.",
+        trace_fn=trace_fn,
+    )
+
+    for entry in result.tool_call_log:
+        emit_event(on_event, "human_oversight", "tool_called", {"tool": entry["tool"], "result": entry["result"]})
+
+    llm_parsed = None
+    if result.final_text:
+        try:
+            llm_parsed = json.loads(result.final_text)
+        except json.JSONDecodeError:
+            llm_parsed = None
+
+    verdict = parse_oversight_verdict(llm_parsed)
+
+    emit_event(on_event, "human_oversight", "decision_oversight_report", {
+        "verdict": verdict["verdict"], "n_concerns": len(verdict["concerns"]),
+    })
+
+    return DecisionOversightStepResult(
+        ok=True,
+        verdict=verdict["verdict"],
+        concerns=verdict["concerns"],
+        reasoning=verdict["reasoning"],
+        review_bundle=review_bundle,
+        llm_raw_text=result.final_text,
+        decision_source=message.sender,
+        n_decisions_reviewed=len(payload.get("risky_decisions", [])),
         stopped_reason=result.stopped_reason,
         turns_used=result.turns_used,
         messages=result.messages,

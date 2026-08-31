@@ -22,3 +22,21 @@ def make_oversight_tool(review_bundle: dict) -> Tool:
         parameters={"type": "object", "properties": {}, "required": []},
         handler=handler,
     )
+
+
+def make_decision_oversight_tool(review_bundle: dict) -> Tool:
+    def handler() -> dict:
+        return review_bundle
+
+    return Tool(
+        name="get_decision_review_bundle",
+        description=(
+            "Get a batch of risky scheduling decisions flagged by Resource "
+            "Allocation or Failure Recovery — each one already passed the "
+            "deterministic constraint gate and has been committed; it's "
+            "flagged here only because it targets a machine currently "
+            "Overloaded. Call this once — it takes no arguments."
+        ),
+        parameters={"type": "object", "properties": {}, "required": []},
+        handler=handler,
+    )
