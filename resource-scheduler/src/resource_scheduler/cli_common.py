@@ -51,6 +51,19 @@ def resolve_model_endpoint(
     return base_url, api_key, default_model
 
 
+def make_retry_logger() -> Callable[[int, int, float, BaseException], None]:
+    """Prints a visible line whenever ModelClient retries a transient
+    failure (504s, rate limits, connection drops -- see
+    model_client.py's _RETRYABLE_EXCEPTIONS). Without this, a retry loop
+    is silent from the caller's side: a script would just appear to hang
+    for the backoff duration with no explanation, which is exactly the
+    wrong thing to have happen mid-demo. Pass as ModelClient's on_retry."""
+    def log_retry(attempt: int, max_retries: int, wait_seconds: float, exc: BaseException) -> None:
+        print(f"  model call failed ({type(exc).__name__}), retrying in {wait_seconds:.1f}s "
+              f"(attempt {attempt + 1}/{max_retries + 1})...")
+    return log_retry
+
+
 def make_run_dir(run_id: Optional[str]) -> tuple[str, Path]:
     run_id = run_id or f"run_{datetime.now().strftime('%y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
     run_dir = resolve_run_dir(run_id)

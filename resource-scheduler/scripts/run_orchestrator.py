@@ -48,7 +48,7 @@ from typing import Callable, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from resource_scheduler.a2a.mailbox import Mailbox
-from resource_scheduler.cli_common import make_run_dir, make_tracer, make_transcript_writer, resolve_model_endpoint
+from resource_scheduler.cli_common import make_retry_logger, make_run_dir, make_tracer, make_transcript_writer, resolve_model_endpoint
 from resource_scheduler.environment.state import load_task_table
 from resource_scheduler.events import make_event_emitter, make_event_logger
 from resource_scheduler.model_client import ModelClient
@@ -106,7 +106,7 @@ def main(on_event: Optional[Callable[[dict], None]] = None, prompt_override_dir:
         args.use_gateway, args.model, "qwen3:8b", "rit-qwen3-8b",
         use_local=args.use_local,
     )
-    client = ModelClient(base_url=base_url, api_key=api_key, default_model=default_model)
+    client = ModelClient(base_url=base_url, api_key=api_key, default_model=default_model, on_retry=make_retry_logger())
     mailbox = Mailbox(on_event=emit)
 
     report: dict = {"run_id": run_id, "model": default_model, "status": "in_progress", "issues": []}
