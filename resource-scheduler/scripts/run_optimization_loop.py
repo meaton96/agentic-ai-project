@@ -234,9 +234,22 @@ def main():
         print(f"\nIteration {i + 1}/{args.max_iterations}: evaluating {candidate}"
               + (" (search converged on a local optimum)" if converged else ""))
 
-        evidence = evaluate_candidate(df, variance_injected, client, candidate, args.synthetic, default_model, trace, None)
-        score = compute_score(evidence)
-        print(f"  score={score} (evidence: {evidence})")
+        try:
+            evidence = evaluate_candidate(df, variance_injected, client, candidate, args.synthetic, default_model, trace, None)
+            score = compute_score(evidence)
+            print(f"  score={score} (evidence: {evidence})")
+        except Exception as e:
+            # A background loop meant to run unattended must survive one
+            # bad iteration -- confirmed live: an exhausted-retries 504
+            # (ModelClient already tried 3 times) previously crashed the
+            # whole process here instead of just failing this one probe.
+            # Recorded as score=None -- exactly what propose_next_candidate
+            # already treats as "no evidence either way", not "this
+            # candidate is bad" -- so the search moves on to a different
+            # neighbor next iteration instead of either crashing or
+            # looping forever re-attempting the same failing request.
+            print(f"  evaluation failed ({type(e).__name__}: {e}) -- recording as inconclusive, moving on.")
+            score = None
 
         history.append({"params": candidate, "score": score, "iteration": len(history)})
         save_history(history)
