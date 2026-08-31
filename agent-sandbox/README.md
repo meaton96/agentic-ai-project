@@ -142,6 +142,98 @@ sandbox-core/.venv/bin/sandbox pipeline run pipelines/sensor-report.yaml \
   --task "..." --agents-dir ./agents
 ```
 
+## Porting your own Python package in for gates (e.g. `resource-scheduler`)
+
+A `GateStep`'s `gate` field (`"module.path:function_name"`) is resolved by
+an ordinary Python `import` — see `_resolve_gate()` in
+`sandbox-core/src/sandbox_core/runtime/pipeline_runner.py`. That means
+whatever process runs the pipeline (the server, or the `sandbox` CLI) needs
+your package importable in **its own Python environment** —
+`sandbox-core/.venv`, the same one `start.sh` uses. `docs/architecture.md`'s
+"Known gaps" section is blunt about this: a gate runs trusted, in-process,
+with no sandboxing — fine for your own code, not for anything untrusted.
+
+This is exactly the pattern already proven for `agentic_ml`
+(`docs/phase3-gates-handoff.md`), and it works the same way for
+`resource-scheduler`. Two pieces:
+
+### 1. Install the package (editable) into `sandbox-core`'s venv
+
+```bash
+sandbox-core/.venv/bin/python -m pip install -e ../resource-scheduler
+# or, if that venv has no pip (uv-managed):
+uv pip install --python sandbox-core/.venv -e ../resource-scheduler
+```
+
+`resource-scheduler`'s `pyproject.toml` pulls its runtime deps from
+`requirements.txt` automatically on install, so this one command is
+enough — no separate `pip install -r requirements.txt` step needed. Once
+installed, `import resource_scheduler` works from anywhere in that venv,
+independent of process cwd — no `SANDBOX_GATES_PYTHONPATH` entry required
+for the package itself.
+
+### 2. Write a thin gate-adapter module
+
+Your existing `resource_scheduler.steps.*` / `resource_scheduler.tools.*`
+functions almost certainly don't match the shape a gate needs, so don't
+call them directly from a `GateStep` — write a small wrapper, one function
+per gate, following `gates/agentic_ml_static.py` as the template. The
+contract (`GateFn` in `pipeline_runner.py`):
+
+```python
+def my_gate(outputs: dict[str, str]) -> str | tuple[str, str | None]:
+    """outputs["__task__"] is the pipeline's seed task; every other key is
+    a prior step_id -> that step's output. Returns either a bare decision
+    string, or (decision, output_to_pass_forward) if the gate has data for
+    the next step. Async def works too (both are supported by _run_gate)."""
+    seed_task = outputs["__task__"]
+    prior = outputs.get("some_step_id")
+    # call into resource_scheduler.* here, unmodified
+    ...
+    return "approved", json.dumps({"...": "..."})
+```
+
+Put this adapter in `agent-sandbox/gates/` (e.g.
+`gates/resource_scheduler_gates.py`) rather than inside the
+`resource_scheduler` package itself — keeps sandbox-specific glue out of
+your package, mirroring how `agentic_ml_static.py` wraps `agentic_ml`
+without either package depending on the other. Since `gates/` is already
+on the default `SANDBOX_GATES_PYTHONPATH=workspace:gates` (see "Repo-root
+`.env`" above), the module is importable as-is:
+
+```yaml
+# in a pipelines/*.yaml step
+- kind: gate
+  step_id: my_gate_step
+  gate: "resource_scheduler_gates:my_gate"
+  on_result:
+    approved: next_step_id
+    rejected: __end__
+```
+
+### Data flow between steps
+
+A `GateStepResult.output` is a plain string (like an agent step's
+`final_output`), not a live Python object — if a gate needs to hand a
+DataFrame, fitted model, etc. to the next step, write it to disk (or reuse
+`resource_scheduler`'s own `paths.py` run-directory convention if it has
+one, same as `agentic_ml_static.py` does via `agentic_ml.cli_common.make_run_dir()`)
+and pass the *path* forward in the output string — see the docstring at
+the top of `gates/agentic_ml_static.py` for the manifest-JSON pattern this
+repo already uses for that.
+
+### Model/API-key config
+
+`resource-scheduler` reads its own `.env` today via
+`cli_common.py`'s `load_dotenv()` (`resource-scheduler/.env.example` —
+`RIT_API_KEY`/`RIT_BASE_URL`, etc.), which does the same upward search
+`sandbox_core.env`/`agentic_ml.cli_common` use — so if you don't keep a
+`resource-scheduler/.env`, it'll walk up and pick up the repo-root
+`.env` agent-sandbox already reads (see "Repo-root `.env`" above)
+automatically. Simplest option once you're running inside a gate: delete
+`resource-scheduler/.env` and keep one copy of these values at the repo
+root instead of two in sync.
+
 ## Where things live
 
 | Path | What |
