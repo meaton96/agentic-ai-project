@@ -35,6 +35,24 @@ class GateStep(BaseModel):
 Step = Annotated[Union[PipelineStep, GateStep], Field(discriminator="kind")]
 
 
+def default_step_kind_to_agent(steps):
+    """Backfills "kind": "agent" onto step dicts that omit it. A
+    discriminated union's tag must be present in the raw input — pydantic
+    does not fall back to PipelineStep.kind's default during tag lookup,
+    only afterwards — so any step dict omitting "kind" (every pre-existing
+    pipeline YAML, and any API caller relying on the documented default)
+    would otherwise fail validation before it ever reaches PipelineStep.
+    Shared by PipelineSpec and AlterWorkflowOperation, the two places a bare
+    list[Step] is validated from raw input. Already-constructed Step
+    instances pass through untouched."""
+    if not isinstance(steps, list):
+        return steps
+    return [
+        {**step, "kind": step.get("kind", "agent")} if isinstance(step, dict) else step
+        for step in steps
+    ]
+
+
 class PipelineSpec(BaseModel):
     """A deterministic, harness-driven sequence of agent/gate steps. Each
     agent step is an ordinary agent run (its own run_id/events.jsonl,
@@ -51,6 +69,11 @@ class PipelineSpec(BaseModel):
     # backward would otherwise loop forever. The pipeline-level analog of
     # AgentSpec.max_turns.
     max_steps: int = 50
+
+    @field_validator("steps", mode="before")
+    @classmethod
+    def _default_step_kind_to_agent(cls, steps):
+        return default_step_kind_to_agent(steps)
 
     @field_validator("steps")
     @classmethod

@@ -1,14 +1,31 @@
 from fastapi import APIRouter, HTTPException, Request, Response
+from pydantic import BaseModel
 
+from sandbox_core.runtime.operation_log import read_operations
+from sandbox_core.schemas.operations import Operation, OperationError, OperationRecord
 from sandbox_core.schemas.pipeline_spec import PipelineSpec
 
+from ..operations import apply_pipeline_operation
 from ..pipeline_specs import delete_pipeline_spec, list_pipeline_specs, read_pipeline_spec, write_pipeline_spec
 
 router = APIRouter(prefix="/pipelines", tags=["pipelines"])
 
 
+class PipelineOperationResult(BaseModel):
+    spec: PipelineSpec
+    record: OperationRecord
+
+
 def _pipelines_dir(request: Request):
     return request.app.state.pipelines_dir
+
+
+def _specs_dir(request: Request):
+    return request.app.state.specs_dir
+
+
+def _operations_root(request: Request):
+    return request.app.state.operations_root
 
 
 @router.get("")
@@ -47,3 +64,28 @@ def delete_pipeline(pipeline_id: str, request: Request) -> Response:
     if not found:
         raise HTTPException(404, f"pipeline {pipeline_id!r} not found")
     return Response(status_code=204)
+
+
+@router.post("/{pipeline_id}/operations", status_code=201)
+def apply_pipeline_operation_route(pipeline_id: str, operation: Operation, request: Request) -> PipelineOperationResult:
+    try:
+        spec, record = apply_pipeline_operation(
+            pipelines_dir=_pipelines_dir(request),
+            specs_dir=_specs_dir(request),
+            operations_root=_operations_root(request),
+            pipeline_id=pipeline_id,
+            operation=operation,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except OperationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return PipelineOperationResult(spec=spec, record=record)
+
+
+@router.get("/{pipeline_id}/operations")
+def list_pipeline_operations(pipeline_id: str, request: Request) -> list[OperationRecord]:
+    if read_pipeline_spec(_pipelines_dir(request), pipeline_id) is None:
+        raise HTTPException(404, f"pipeline {pipeline_id!r} not found")
+    path = _operations_root(request) / "pipeline" / f"{pipeline_id}.jsonl"
+    return read_operations(path)

@@ -40,6 +40,7 @@ def create_app(
     pipelines_dir: Optional[Path] = None,
     output_root: Optional[Path] = None,
     pipeline_runs_root: Optional[Path] = None,
+    operations_root: Optional[Path] = None,
     runner: Optional[Runner] = None,
 ) -> FastAPI:
     """specs_dir/output_root/runner are exposed here (not just read from env
@@ -49,6 +50,7 @@ def create_app(
     app = FastAPI(title="sandbox-server")
     app.state.specs_dir = Path(specs_dir) if specs_dir is not None else config.specs_dir()
     app.state.pipelines_dir = Path(pipelines_dir) if pipelines_dir is not None else config.pipelines_dir()
+    app.state.operations_root = Path(operations_root) if operations_root is not None else config.operations_root()
     resolved_output_root = Path(output_root) if output_root is not None else config.output_root()
 
     run_manager_kwargs = {"output_root": resolved_output_root}

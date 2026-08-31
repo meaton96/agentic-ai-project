@@ -13,6 +13,15 @@ from .events import (
     TokenUsage,
     redact_result,
 )
+from .operations import (
+    AlterModelOperation,
+    AlterWorkflowOperation,
+    Operation,
+    OperationError,
+    OperationRecord,
+    SwapAgentOperation,
+    apply_operation,
+)
 from .pipeline_run import GateStepResult, PipelineRunRecord, PipelineRunSpec, PipelineStepResult, StepResult
 from .pipeline_spec import GateStep, PipelineSpec, PipelineStep, Step
 from .run_spec import RunSpec
@@ -46,4 +55,11 @@ __all__ = [
     "PipelineStepResult",
     "GateStepResult",
     "StepResult",
+    "Operation",
+    "SwapAgentOperation",
+    "AlterModelOperation",
+    "AlterWorkflowOperation",
+    "OperationRecord",
+    "OperationError",
+    "apply_operation",
 ]

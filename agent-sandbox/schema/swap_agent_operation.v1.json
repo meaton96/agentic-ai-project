@@ -1,0 +1,25 @@
+{
+  "description": "Repoints one pipeline step at a different agent, leaving everything\nelse about the step (its task_template, its position) unchanged.",
+  "properties": {
+    "type": {
+      "const": "swap_agent",
+      "default": "swap_agent",
+      "title": "Type",
+      "type": "string"
+    },
+    "step_id": {
+      "title": "Step Id",
+      "type": "string"
+    },
+    "new_agent_id": {
+      "title": "New Agent Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "step_id",
+    "new_agent_id"
+  ],
+  "title": "SwapAgentOperation",
+  "type": "object"
+}

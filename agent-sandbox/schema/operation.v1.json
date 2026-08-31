@@ -1,0 +1,219 @@
+{
+  "$defs": {
+    "AlterModelOperation": {
+      "description": "Replaces an AgentSpec's model configuration wholesale.",
+      "properties": {
+        "type": {
+          "const": "alter_model",
+          "default": "alter_model",
+          "title": "Type",
+          "type": "string"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelConfig"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "AlterModelOperation",
+      "type": "object"
+    },
+    "AlterWorkflowOperation": {
+      "description": "Replaces a PipelineSpec's step list (and optionally its max_steps)\nwholesale \u2014 the general-purpose edit behind add/remove/rewire-node UIs\n(Phase 6), of which SwapAgentOperation is a common, narrower special\ncase.",
+      "properties": {
+        "type": {
+          "const": "alter_workflow",
+          "default": "alter_workflow",
+          "title": "Type",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "agent": "#/$defs/PipelineStep",
+                "gate": "#/$defs/GateStep"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/PipelineStep"
+              },
+              {
+                "$ref": "#/$defs/GateStep"
+              }
+            ]
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "max_steps": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Steps"
+        }
+      },
+      "required": [
+        "steps"
+      ],
+      "title": "AlterWorkflowOperation",
+      "type": "object"
+    },
+    "GateStep": {
+      "description": "A deterministic, non-LLM step: `gate` (an importable `module:function`\npath) is called with every completed step's output so far and returns a\ndecision string, which `on_result` maps to the step_id to run next. The\nsentinel `\"__end__\"` in `on_result`'s values means \"pipeline completes\nsuccessfully here\". This is agentic_ml's \"agents propose, harness\ndecides\" pattern made generic \u2014 the gate function is operator-supplied,\nresolved by import path, and runs trusted, in-process Python only (no\nsandboxed/subprocess isolation; see docs/architecture.md's Known gaps).",
+      "properties": {
+        "kind": {
+          "const": "gate",
+          "title": "Kind",
+          "type": "string"
+        },
+        "step_id": {
+          "title": "Step Id",
+          "type": "string"
+        },
+        "gate": {
+          "title": "Gate",
+          "type": "string"
+        },
+        "on_result": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "On Result",
+          "type": "object"
+        }
+      },
+      "required": [
+        "kind",
+        "step_id",
+        "gate",
+        "on_result"
+      ],
+      "title": "GateStep",
+      "type": "object"
+    },
+    "ModelConfig": {
+      "properties": {
+        "base_url": {
+          "title": "Base Url",
+          "type": "string"
+        },
+        "model_name": {
+          "title": "Model Name",
+          "type": "string"
+        },
+        "api_key_ref": {
+          "title": "Api Key Ref",
+          "type": "string"
+        },
+        "temperature": {
+          "default": 0.0,
+          "title": "Temperature",
+          "type": "number"
+        },
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Tokens"
+        }
+      },
+      "required": [
+        "base_url",
+        "model_name",
+        "api_key_ref"
+      ],
+      "title": "ModelConfig",
+      "type": "object"
+    },
+    "PipelineStep": {
+      "description": "One step in a PipelineSpec: run `agent_id` with a task rendered from\n`task_template`. `task_template` supports two placeholders \u2014 `{{task}}`\n(the pipeline run's seed task) and `{{steps.<step_id>.output}}` (a prior\nstep's AgentResultEvent.final_output) \u2014 deliberately plain string\nsubstitution, not a templating engine; typed step output is future work.",
+      "properties": {
+        "kind": {
+          "const": "agent",
+          "default": "agent",
+          "title": "Kind",
+          "type": "string"
+        },
+        "step_id": {
+          "title": "Step Id",
+          "type": "string"
+        },
+        "agent_id": {
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "task_template": {
+          "title": "Task Template",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_id",
+        "agent_id",
+        "task_template"
+      ],
+      "title": "PipelineStep",
+      "type": "object"
+    },
+    "SwapAgentOperation": {
+      "description": "Repoints one pipeline step at a different agent, leaving everything\nelse about the step (its task_template, its position) unchanged.",
+      "properties": {
+        "type": {
+          "const": "swap_agent",
+          "default": "swap_agent",
+          "title": "Type",
+          "type": "string"
+        },
+        "step_id": {
+          "title": "Step Id",
+          "type": "string"
+        },
+        "new_agent_id": {
+          "title": "New Agent Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_id",
+        "new_agent_id"
+      ],
+      "title": "SwapAgentOperation",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "alter_model": "#/$defs/AlterModelOperation",
+      "alter_workflow": "#/$defs/AlterWorkflowOperation",
+      "swap_agent": "#/$defs/SwapAgentOperation"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/SwapAgentOperation"
+    },
+    {
+      "$ref": "#/$defs/AlterModelOperation"
+    },
+    {
+      "$ref": "#/$defs/AlterWorkflowOperation"
+    }
+  ]
+}
