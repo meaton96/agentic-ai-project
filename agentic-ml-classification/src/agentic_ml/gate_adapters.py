@@ -38,8 +38,16 @@ import pandas as pd
 from sklearn.base import clone
 
 from agentic_ml.cli_common import make_run_dir, resolve_model_endpoint
+from agentic_ml.events import emit_event, make_event_emitter, make_event_logger
 from agentic_ml.harness.attribution import compute_background
-from agentic_ml.harness.dataset import DatasetSpec, LoadedDataset, load_dataset, read_dataframe, write_dataset_spec
+from agentic_ml.harness.dataset import (
+    DatasetSpec,
+    LoadedDataset,
+    load_dataset,
+    read_dataframe,
+    resolve_dataset_path,
+    write_dataset_spec,
+)
 from agentic_ml.harness.leakage import run_all_split_leakage_checks
 from agentic_ml.harness.metrics import compute_metrics
 from agentic_ml.harness.splits import SplitManifest, make_split, resolve_split_columns
@@ -116,9 +124,23 @@ def _load_engineered(manifest: dict) -> LoadedDataset:
 
 
 def run_intake(outputs: dict[str, str]) -> tuple[str, str]:
-    csv_path = outputs["__task__"]
+    task = outputs["__task__"]
     run_id, run_dir = make_run_dir(None)
     manifest_path = run_dir / "intake_manifest.json"
+    on_event = make_event_emitter(run_id, persist_fn=make_event_logger(run_dir))
+
+    # task may be a local CSV path or an http(s) URL (e.g. a raw GitHub
+    # dataset link) — resolve_dataset_path downloads the latter once, into
+    # this run's own directory, and hands back a plain local path. Doing
+    # this here, before any other gate reads csv_path off the manifest,
+    # means every downstream stage (feature_engineering, profiler_and_split,
+    # ...) re-reads a stable local file exactly as it already does today —
+    # no repeat network calls, and no risk of a mutable remote resource
+    # changing mid-run and silently breaking split reproducibility.
+    csv_path = resolve_dataset_path(
+        task, cache_dir=run_dir,
+        on_network_fetch=lambda meta: emit_event(on_event, "intake", "network_fetch", meta),
+    )
 
     client, model = _make_client(_DEFAULT_MODEL_DIRECT, _DEFAULT_MODEL_GATEWAY)
     raw_df = read_dataframe(csv_path)

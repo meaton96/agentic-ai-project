@@ -10,11 +10,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
+from urllib.parse import urlparse
 
 import pandas as pd
+import requests
 
 # read_dataframe() is the single entry point every script/notebook/step
 # uses to load a dataset — a raw long-format time-series file (one row
@@ -186,6 +189,112 @@ def detect_dataset_shape(
         "avg_run_length": best_avg_run,
         "looks_long_format": looks_long_format,
     }
+
+
+_ALLOWED_URL_SCHEMES = ("http", "https")
+NETWORK_FETCH_TIMEOUT_SECONDS = 30
+_NETWORK_CHUNK_BYTES = 1_000_000
+
+
+def is_network_source(path: str | Path) -> bool:
+    """True for anything read_dataframe() can't open directly off disk —
+    i.e. an http(s) URL. Any other scheme (file://, ftp://, data:, ...) is
+    deliberately NOT treated as a network source here: resolve_dataset_path
+    raises on those rather than silently trying to fetch them, since this
+    is the one place raw dataset bytes can enter the pipeline from outside
+    the filesystem agents/harness code already trusts."""
+    return urlparse(str(path)).scheme in _ALLOWED_URL_SCHEMES
+
+
+def resolve_dataset_path(
+    path: str,
+    cache_dir: str | Path,
+    max_bytes: Optional[int] = None,
+    on_network_fetch: Optional[Callable[[dict], None]] = None,
+    timeout: float = NETWORK_FETCH_TIMEOUT_SECONDS,
+) -> str:
+    """Downloads `path` into `cache_dir` when it's an http(s) URL,
+    returning the local path a caller should use instead; returns `path`
+    unchanged for a plain local path (no network touched, on_network_fetch
+    never called). This is the only network-facing code path anywhere in
+    the harness/agent boundary — kept separate from read_dataframe() so
+    every existing local-file caller (there are many) stays byte-for-byte
+    unaffected, and so the one caller that does hit the network (the
+    intake gate) gets back a plain local path to persist in its manifest:
+    every downstream stage then re-reads that local file exactly as it
+    already does today, with no awareness the dataset ever touched the
+    network and, just as importantly, no repeat fetches of a remote
+    resource that could change between stages and silently break the
+    run's data_hash / split reproducibility.
+
+    Streamed rather than downloaded whole so a missing or understated
+    Content-Length can't exhaust memory before the size guard below gets a
+    chance to fire — the same OOM concern read_dataframe() already guards
+    against for local files (see DEFAULT_MAX_DATASET_BYTES), just applied
+    to a source outside our control instead of a stat()-able local file.
+
+    Callers that want the fetch logged (e.g. to a run's events.jsonl) pass
+    on_network_fetch; this function has no opinion on where a fetch record
+    goes, matching the rest of the harness staying free of I/O side
+    channels beyond the dataset itself (see events.py's emit_event).
+    """
+    scheme = urlparse(path).scheme
+    if not scheme:
+        return str(path)
+    if scheme not in _ALLOWED_URL_SCHEMES:
+        raise ValueError(
+            f"Unsupported dataset source scheme {scheme!r} in {path!r} — only http/https "
+            "URLs or local filesystem paths are allowed."
+        )
+
+    limit = max_bytes if max_bytes is not None else _max_dataset_bytes()
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    suffix = Path(urlparse(path).path).suffix.lower()
+    if suffix not in (".csv", ".parquet", ".pq"):
+        suffix = ".csv"
+    dest_path = cache_dir / f"source_dataset{suffix}"
+
+    started = time.time()
+    with requests.get(path, stream=True, timeout=timeout) as response:
+        response.raise_for_status()
+        content_length = response.headers.get("Content-Length")
+        if content_length is not None and int(content_length) > limit:
+            raise ValueError(
+                f"Dataset at {path} reports {int(content_length) / 1e6:.0f}MB via "
+                f"Content-Length, over the {limit / 1e6:.0f}MB limit for a single "
+                "in-memory load — refusing to download it."
+            )
+
+        bytes_downloaded = 0
+        try:
+            with open(dest_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=_NETWORK_CHUNK_BYTES):
+                    bytes_downloaded += len(chunk)
+                    if bytes_downloaded > limit:
+                        raise ValueError(
+                            f"Dataset at {path} exceeded the {limit / 1e6:.0f}MB download "
+                            "limit (Content-Length was missing or understated) — aborted "
+                            "mid-download."
+                        )
+                    f.write(chunk)
+        except Exception:
+            dest_path.unlink(missing_ok=True)
+            raise
+
+        metadata = {
+            "url": path,
+            "local_path": str(dest_path),
+            "status_code": response.status_code,
+            "content_type": response.headers.get("Content-Type"),
+            "bytes_downloaded": bytes_downloaded,
+            "elapsed_seconds": round(time.time() - started, 3),
+        }
+
+    if on_network_fetch is not None:
+        on_network_fetch(metadata)
+    return str(dest_path)
 
 
 def read_dataframe(path: str | Path, max_bytes: Optional[int] = None) -> pd.DataFrame:

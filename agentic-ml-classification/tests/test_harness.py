@@ -2,11 +2,21 @@
 Run with: pytest tests/ -v
 (from repo root, with src/ on PYTHONPATH — see conftest.py)
 """
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
+import requests
 
-from agentic_ml.harness.dataset import DatasetSpec, detect_dataset_shape, load_dataset, read_dataframe
+from agentic_ml.harness.dataset import (
+    DatasetSpec,
+    detect_dataset_shape,
+    is_network_source,
+    load_dataset,
+    read_dataframe,
+    resolve_dataset_path,
+)
 from agentic_ml.harness.splits import make_split, resolve_split_columns
 from agentic_ml.harness.leakage import (
     check_duplicate_rows_across_splits,
@@ -594,6 +604,97 @@ def test_read_dataframe_size_limit_overridable_via_env_var(tmp_path, monkeypatch
     monkeypatch.setenv("AGENTIC_ML_MAX_DATASET_BYTES", "100")
     with pytest.raises(ValueError, match="over the"):
         read_dataframe(path)  # no explicit max_bytes -> falls back to the env var
+
+
+# --- resolve_dataset_path: the one network-facing code path in the harness ---
+
+class _FakeStreamedResponse:
+    """Enough of requests.Response's streaming interface for
+    resolve_dataset_path to exercise: used as a `with ... as response:`
+    context manager, iter_content() in chunks, headers/status_code."""
+
+    def __init__(self, content: bytes, headers: dict, status_code: int = 200):
+        self._content = content
+        self.headers = headers
+        self.status_code = status_code
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(f"status {self.status_code}")
+
+    def iter_content(self, chunk_size):
+        for i in range(0, len(self._content), chunk_size):
+            yield self._content[i:i + chunk_size]
+
+
+def test_is_network_source_true_for_http_and_https():
+    assert is_network_source("https://example.com/data.csv")
+    assert is_network_source("http://example.com/data.csv")
+
+
+def test_is_network_source_false_for_local_paths():
+    assert not is_network_source("datasets/raw/titanic.csv")
+    assert not is_network_source("/abs/path/to/file.csv")
+
+
+def test_resolve_dataset_path_passes_through_local_paths_untouched(tmp_path, monkeypatch):
+    called = []
+    monkeypatch.setattr(requests, "get", lambda *a, **k: called.append(1) or _FakeStreamedResponse(b"", {}))
+    result = resolve_dataset_path("datasets/raw/titanic.csv", cache_dir=tmp_path)
+    assert result == "datasets/raw/titanic.csv"
+    assert called == []  # no network call for a local path
+
+
+def test_resolve_dataset_path_rejects_disallowed_scheme(tmp_path):
+    with pytest.raises(ValueError, match="scheme"):
+        resolve_dataset_path("file:///etc/passwd", cache_dir=tmp_path)
+
+
+def test_resolve_dataset_path_downloads_url_and_reports_the_fetch(tmp_path, monkeypatch):
+    csv_bytes = b"a,b,target\n1,2,0\n3,4,1\n"
+    url = "https://raw.githubusercontent.com/example/dataset/master/titanic.csv"
+
+    def fake_get(got_url, stream, timeout):
+        assert got_url == url
+        return _FakeStreamedResponse(csv_bytes, {"Content-Length": str(len(csv_bytes)), "Content-Type": "text/csv"})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    fetches = []
+    local_path = resolve_dataset_path(url, cache_dir=tmp_path, on_network_fetch=fetches.append)
+
+    assert Path(local_path).read_bytes() == csv_bytes
+    assert Path(local_path).parent == tmp_path
+    assert len(fetches) == 1
+    assert fetches[0]["url"] == url
+    assert fetches[0]["bytes_downloaded"] == len(csv_bytes)
+    assert fetches[0]["local_path"] == local_path
+
+
+def test_resolve_dataset_path_rejects_content_length_over_limit(tmp_path, monkeypatch):
+    url = "https://example.com/huge.csv"
+    monkeypatch.setattr(
+        requests, "get",
+        lambda *a, **k: _FakeStreamedResponse(b"irrelevant", {"Content-Length": "1000"}),
+    )
+    with pytest.raises(ValueError, match="over the"):
+        resolve_dataset_path(url, cache_dir=tmp_path, max_bytes=100)
+    assert list(tmp_path.iterdir()) == []  # nothing left behind
+
+
+def test_resolve_dataset_path_aborts_mid_download_past_limit_without_content_length(tmp_path, monkeypatch):
+    url = "https://example.com/lying-about-size.csv"
+    body = b"x" * 500
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeStreamedResponse(body, {}))
+    with pytest.raises(ValueError, match="download"):
+        resolve_dataset_path(url, cache_dir=tmp_path, max_bytes=100)
+    assert list(tmp_path.iterdir()) == []  # partial download cleaned up, not left behind
 
 
 # --- detect_dataset_shape: the routing decision upstream of the size guard ---
