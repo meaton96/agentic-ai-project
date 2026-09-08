@@ -14,3 +14,10 @@ dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Ships agentic_ml/prompts/*.md inside the built package (wheel/sdist and
+# `pip install --target`) rather than relying on them sitting at the repo
+# root — see prompt_loader.py's module docstring for why that mattered:
+# a `--target` install only ever carries this package's own file tree.
+[tool.setuptools.package-data]
+agentic_ml = ["prompts/*.md"]

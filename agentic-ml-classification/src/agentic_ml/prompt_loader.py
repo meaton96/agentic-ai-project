@@ -1,10 +1,11 @@
 """
-Loads agent system prompts from prompts/<agent_name>.md at the repo
-root, with an optional per-agent override directory. Overrides are
-per-agent, not all-or-nothing: if override_dir is given but doesn't
-contain a particular agent's file, that agent silently falls back to
-the shipped default — this is what lets a UI let someone edit ONE
-agent's prompt without having to supply files for every agent.
+Loads agent system prompts from agentic_ml/prompts/<agent_name>.md,
+shipped as package data alongside this module, with an optional
+per-agent override directory. Overrides are per-agent, not
+all-or-nothing: if override_dir is given but doesn't contain a
+particular agent's file, that agent silently falls back to the shipped
+default — this is what lets a UI let someone edit ONE agent's prompt
+without having to supply files for every agent.
 
 Resolution of override_dir follows the same "explicit parameter, env-
 var-backed default" pattern M0's data-root config (agentic_ml.paths)
@@ -12,14 +13,23 @@ and cli_common.resolve_model_endpoint already use: an explicit argument
 wins if given, else AGENTIC_ML_PROMPT_OVERRIDE_DIR, else no override
 (shipped defaults only).
 
-This module lives under src/agentic_ml/ (not literally inside prompts/)
-so it's importable everywhere agentic_ml already is — every script,
-notebook, and test in this repo already puts src/ on sys.path before
-importing anything from this package, but none of them put the repo
-root itself on sys.path. Resolving DEFAULT_PROMPTS_DIR via Path(__file__)
-means the actual prompts/*.md text files still live at the repo root
-exactly as specified, without requiring every entry point to be updated
-just to keep importing steps/*_step.py working.
+DEFAULT_PROMPTS_DIR resolves relative to this module's own file
+location (a sibling `prompts/` directory), not the repo root. That's
+deliberate, not a convenience: `pip install <this repo> --target ...`
+(the mechanism agent-sandbox's Docker-isolated gate execution uses to
+import this package directly, see its runner/README.md and
+docs/docker.md) installs only this package's own file tree into the
+target — it does not carry along anything living outside src/agentic_ml/
+in the source checkout. A repo-root prompts/ directory (this module's
+original layout) would silently vanish under that install mode with no
+error, just a FileNotFoundError deep inside load_prompt() the first
+time a gate actually ran — which is exactly what happened. Resolving
+via Path(__file__).parent instead means the prompt files travel with
+the package under every install mode: editable install, sdist/wheel,
+or `--target`. See pyproject.toml's [tool.setuptools.package-data] for
+the packaging half of this fix — moving the files alone isn't enough,
+setuptools also has to be told to actually include them in a built
+wheel.
 """
 from __future__ import annotations
 
@@ -27,7 +37,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
+DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 PROMPT_OVERRIDE_DIR_ENV_VAR = "AGENTIC_ML_PROMPT_OVERRIDE_DIR"
 
