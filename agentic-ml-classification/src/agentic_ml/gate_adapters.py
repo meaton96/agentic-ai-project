@@ -20,6 +20,18 @@ be set (see repo-root .env) so that run_dir lands under
 agentic-ml-classification/ instead of agent-sandbox/runs/, which
 RunManager.list_runs() scans for agent runs.
 
+Every gate below builds one `on_event` (via `make_event_emitter`/
+`make_event_logger`, same as run_orchestrator.py's own CLI path) and passes
+it into every `*_step`/`run_split_step` call it makes, appending to that
+run's single `events.jsonl` — this is what makes `prompt_loaded`,
+`tool_called`, `leakage_gate_result`, `candidate_scored`,
+`candidate_rejected`, and `verification_verdict` events show up there at
+all. Before 2026-09-08 only run_intake ever wired this (its one
+`network_fetch` event, via resolve_dataset_path's own callback, not a step
+function's on_event) — every other gate silently dropped this data, making
+a `no_candidate` result from agent-sandbox's pipeline UI undiagnosable
+without reproducing the run by hand through this module's own CLI sibling.
+
 v1 scope: no --target/--skip-feature-engineering equivalents (intake and
 feature_engineering always run), no natural-language --goal (the seed
 task is just a bare CSV path, intake infers everything from schema alone).
@@ -48,26 +60,41 @@ from agentic_ml.harness.dataset import (
     resolve_dataset_path,
     write_dataset_spec,
 )
-from agentic_ml.harness.leakage import run_all_split_leakage_checks
 from agentic_ml.harness.metrics import compute_metrics
-from agentic_ml.harness.splits import SplitManifest, make_split, resolve_split_columns
+from agentic_ml.harness.splits import SplitManifest
 from agentic_ml.harness.verification import build_review_bundle
 from agentic_ml.model_client import ModelClient
 from agentic_ml.steps.feature_engineering_step import run_feature_engineering_step
 from agentic_ml.steps.intake_step import run_intake_step
 from agentic_ml.steps.modeling_step import run_modeling_step
 from agentic_ml.steps.profiler_step import run_profiler_step
+from agentic_ml.steps.split_step import run_split_step
 from agentic_ml.steps.verification_step import run_verification_step
 from agentic_ml.templates.registry import get_template
 
-# Same defaults run_orchestrator.py itself uses (lines 116, 340, 395).
+# Same defaults run_orchestrator.py itself uses (lines 116, 340, 395),
+# except _DEFAULT_MAX_CANDIDATES (see its own comment below) — unlike
+# run_orchestrator.py's CLI, this module has no per-call override for it
+# (no `--max-candidates` equivalent), so its one hardcoded value has to
+# work for every gate-driven run.
 _DEFAULT_MODEL_DIRECT = "qwen3-coder:30b"
 _DEFAULT_MODEL_GATEWAY = "rit-qwen3-coder-30b"
 _DEFAULT_VERIFICATION_MODEL_DIRECT = "gemma4:latest"
 _DEFAULT_VERIFICATION_MODEL_GATEWAY = "rit-gemma4-latest"
 _DEFAULT_SEED = 42
 _DEFAULT_METRIC_NAMES = ["roc_auc", "pr_auc", "f1", "accuracy"]
-_DEFAULT_MAX_CANDIDATES = 2
+# 2 (run_orchestrator.py's own --max-candidates default) turned out too
+# thin a retry budget here: label_permutation_test is a real statistical
+# boundary call with per-candidate variance, not a hard leakage check, so
+# 2-for-2 rejections happen by chance more often than "no usable model
+# exists" would suggest — confirmed 2026-09-08 reproducing a sandbox
+# titanic-static-copy run's no_candidate result via this same CLI: one
+# candidate failed label_permutation_test at 0.5903 vs a ~0.58 boundary
+# (tolerance 0.08 around chance=0.5), the other passed cleanly. Raised to
+# 4 to cut the odds of a bad-luck no_candidate outcome; costs up to 2 more
+# LLM round trips (time/$) per modeling_and_verification gate call when
+# earlier candidates keep failing.
+_DEFAULT_MAX_CANDIDATES = 4
 
 
 def _make_client(model_default: str, gateway_default: str) -> tuple[ModelClient, str]:
@@ -171,12 +198,14 @@ def run_feature_engineering(outputs: dict[str, str]) -> tuple[str, str]:
     intake = _read_manifest(outputs["intake"])
     run_dir = Path(intake["run_dir"])
     manifest_path = run_dir / "feature_engineering_manifest.json"
+    on_event = make_event_emitter(intake["run_id"], persist_fn=make_event_logger(run_dir))
 
     client, model = _make_client(_DEFAULT_MODEL_DIRECT, _DEFAULT_MODEL_GATEWAY)
     raw_df = read_dataframe(intake["csv_path"])
     result = run_feature_engineering_step(
         raw_df, intake["target_column"], client,
         group_column=intake["group_column"], time_column=intake["time_column"], model=model,
+        on_event=on_event,
     )
 
     if not result.ok:
@@ -205,6 +234,7 @@ def run_profiler_and_split(outputs: dict[str, str]) -> tuple[str, str]:
     fe = _read_manifest(outputs["feature_engineering"])
     run_dir = Path(fe["run_dir"])
     manifest_path = run_dir / "profiler_and_split_manifest.json"
+    on_event = make_event_emitter(fe["run_id"], persist_fn=make_event_logger(run_dir))
 
     engineered_df = pd.read_parquet(fe["features_path"])
     spec = _rebuild_dataset_spec(fe)
@@ -216,31 +246,35 @@ def run_profiler_and_split(outputs: dict[str, str]) -> tuple[str, str]:
     profiler_result = run_profiler_step(
         loaded.df, fe["target_column"], client,
         group_column=fe["group_column"], time_column=fe["time_column"], model=model,
+        on_event=on_event,
     )
     if not profiler_result.ok:
         return "failed", _write_manifest(
             manifest_path, {**fe, "errors": ["ProfilerAgent never called get_dataset_profile"]}
         )
 
-    strategy = profiler_result.deterministic_report["recommended_split_strategy"]
-    group_column, time_column, _notes = resolve_split_columns(
-        strategy, fe["group_column"], fe["time_column"], profiler_result.deterministic_report
-    )
-
-    split_manifest = make_split(
+    # run_split_step (steps/split_step.py) bundles resolve_split_columns +
+    # make_split + run_all_split_leakage_checks + per-check event emission
+    # in one call — used here instead of duplicating that sequence by hand
+    # (which is what this function did before 2026-09-08) since
+    # run_all_split_leakage_checks itself has no on_event parameter of its
+    # own to wire; run_split_step is the only way to get leakage_gate_result
+    # events out of the split stage at all.
+    split_result = run_split_step(
         df=loaded.df, target_column=fe["target_column"], data_hash=loaded.data_hash,
-        strategy=strategy, seed=_DEFAULT_SEED, group_column=group_column, time_column=time_column,
+        profiler_report=profiler_result.deterministic_report,
+        group_column=fe["group_column"], time_column=fe["time_column"],
+        seed=_DEFAULT_SEED, on_event=on_event,
     )
-    split_manifest.write(run_dir / "split_manifest.json")
+    split_result.manifest.write(run_dir / "split_manifest.json")
 
-    leakage_checks = run_all_split_leakage_checks(
-        df=loaded.df, target_column=fe["target_column"], group_column=group_column, time_column=time_column,
-        train_idx=split_manifest.train_idx, val_idx=split_manifest.val_idx, test_idx=split_manifest.test_idx,
-        strategy=strategy,
-    )
-    if not all(c.passed for c in leakage_checks):
+    if not split_result.ok:
+        # Same shape as before the run_split_step switch (a list of failed-
+        # check dicts, not run_split_step's own formatted `errors` strings)
+        # so profiler_and_split_manifest.json's "errors" field doesn't
+        # change shape for anything already reading it.
         return "failed", _write_manifest(
-            manifest_path, {**fe, "errors": [c.to_dict() for c in leakage_checks if not c.passed]}
+            manifest_path, {**fe, "errors": [c for c in split_result.leakage_checks if not c["passed"]]}
         )
 
     manifest = {
@@ -249,12 +283,12 @@ def run_profiler_and_split(outputs: dict[str, str]) -> tuple[str, str]:
         "csv_path": fe["csv_path"],
         "target_column": fe["target_column"],
         "id_columns": fe["id_columns"],
-        "group_column": group_column,
-        "time_column": time_column,
+        "group_column": split_result.group_column,
+        "time_column": split_result.time_column,
         "features_path": fe["features_path"],
         "data_hash": loaded.data_hash,
         "split_manifest_path": str(run_dir / "split_manifest.json"),
-        "strategy": strategy,
+        "strategy": split_result.strategy_used,
         "profiler_report": profiler_result.deterministic_report,
     }
     return "ok", _write_manifest(manifest_path, manifest)
@@ -267,6 +301,7 @@ def run_modeling_and_verification(outputs: dict[str, str]) -> tuple[str, str]:
     prof = _read_manifest(outputs["profiler_and_split"])
     run_dir = Path(prof["run_dir"])
     manifest_path = run_dir / "modeling_manifest.json"
+    on_event = make_event_emitter(prof["run_id"], persist_fn=make_event_logger(run_dir))
 
     loaded = _load_engineered(prof)
     split_manifest = _rebuild_split_manifest(json.loads(Path(prof["split_manifest_path"]).read_text()))
@@ -283,7 +318,7 @@ def run_modeling_and_verification(outputs: dict[str, str]) -> tuple[str, str]:
             group_column=prof["group_column"], time_column=prof["time_column"],
             train_idx=split_manifest.train_idx, val_idx=split_manifest.val_idx,
             client=client, model=model, metric_names=metric_names, seed=_DEFAULT_SEED,
-            already_tried_template_ids=tried_template_ids,
+            already_tried_template_ids=tried_template_ids, on_event=on_event,
         )
         if step_result.template_id:
             tried_template_ids.append(step_result.template_id)
@@ -312,7 +347,7 @@ def run_modeling_and_verification(outputs: dict[str, str]) -> tuple[str, str]:
             feature_correlation_check=candidate.feature_correlation_check,
             profiler_report=prof["profiler_report"],
         )
-        v_result = run_verification_step(bundle, verification_client, model=verification_model)
+        v_result = run_verification_step(bundle, verification_client, model=verification_model, on_event=on_event)
         if v_result.verdict == "rejected":
             continue
         best = candidate
@@ -355,6 +390,11 @@ def run_finalize(outputs: dict[str, str]) -> tuple[str, str]:
     modeling = _read_manifest(outputs["modeling_and_verification"])
     run_dir = Path(modeling["run_dir"])
     manifest_path = run_dir / "finalize_manifest.json"
+    on_event = make_event_emitter(modeling["run_id"], persist_fn=make_event_logger(run_dir))
+    # No *_step function here to wire on_event into (this stage is plain
+    # sklearn/joblib, no LLM call) — a couple of manual milestone events
+    # instead, so the timeline doesn't have a gap here.
+    emit_event(on_event, "finalize", "finalize_started", {"candidate_id": modeling["candidate_id"]})
 
     loaded = _load_engineered(modeling)
     split_manifest = _rebuild_split_manifest(json.loads(Path(modeling["split_manifest_path"]).read_text()))
@@ -395,6 +435,7 @@ def run_finalize(outputs: dict[str, str]) -> tuple[str, str]:
         "test_metrics": test_metrics,
         "model_path": str(model_path) if model_path else None,
     }
+    emit_event(on_event, "finalize", "finalize_completed", {"test_metrics": test_metrics})
     return "done", _write_manifest(manifest_path, manifest)
 
 
@@ -404,7 +445,11 @@ def run_finalize(outputs: dict[str, str]) -> tuple[str, str]:
 def run_summarize(outputs: dict[str, str]) -> tuple[str, str]:
     final = _read_manifest(outputs["finalize"])
     run_dir = Path(final["run_dir"])
+    on_event = make_event_emitter(final["run_id"], persist_fn=make_event_logger(run_dir))
     client, model = _make_client(_DEFAULT_MODEL_DIRECT, _DEFAULT_MODEL_GATEWAY)
+    # Bare client.call, no *_step wrapper of its own — manual milestone
+    # events, same reasoning as run_finalize above.
+    emit_event(on_event, "summarize", "summarize_started", {"candidate_id": final["candidate_id"]})
 
     messages = [
         {"role": "system", "content": (
@@ -429,4 +474,5 @@ def run_summarize(outputs: dict[str, str]) -> tuple[str, str]:
 
     summary_path = run_dir / "summary.txt"
     summary_path.write_text(response.text)
+    emit_event(on_event, "summarize", "summarize_completed", {"summary_path": str(summary_path)})
     return "done", str(summary_path)
