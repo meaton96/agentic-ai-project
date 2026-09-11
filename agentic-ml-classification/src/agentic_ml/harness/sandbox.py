@@ -202,6 +202,16 @@ def run_candidate_build(
         # legitimate need for multi-threaded parallelism inside the sandbox.
         env = {
             "PATH": os.environ.get("PATH", ""),
+            # Without this, the child (same sys.executable, but a stripped
+            # environment) can't see any of sklearn/lightgbm/xgboost/etc.
+            # when the parent process itself only finds them via
+            # PYTHONPATH rather than the interpreter's own site-packages —
+            # exactly the shape `pip install --target ... ` + a PYTHONPATH
+            # env var gives you (e.g. agent-sandbox's per-user gate
+            # execution containers). build_pipeline() is documented above
+            # as expecting these to be "already-importable" — this is what
+            # actually makes that true rather than assuming a normal venv.
+            "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
             "OPENBLAS_NUM_THREADS": "1",
             "OMP_NUM_THREADS": "1",
             "MKL_NUM_THREADS": "1",
