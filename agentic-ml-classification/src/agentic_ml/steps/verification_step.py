@@ -15,7 +15,7 @@ check, because it is never shown one.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Optional
 
 from agentic_ml.agent_runtime import ToolCallingAgent
@@ -68,6 +68,21 @@ def run_verification_step(
     for entry in result.tool_call_log:
         emit_event(on_event, "verification", "tool_called", {"tool": entry["tool"], "result": entry["result"]})
 
+    decision = interpret_verification_verdict(result.final_text, bundle.get("candidate_id"), on_event=on_event)
+    return replace(
+        decision, stopped_reason=result.stopped_reason, turns_used=result.turns_used, messages=result.messages,
+    )
+
+
+def interpret_verification_verdict(
+    final_text: Optional[str],
+    candidate_id: Optional[str],
+    on_event: Optional[Callable[[dict], None]] = None,
+) -> VerificationStepResult:
+    """The deterministic half of the verification step: parse a verdict,
+    degrading anything malformed to "flagged". No LLM involved — shared by
+    run_verification_step and gate_adapters.verification_decide so an
+    external verifier's output is held to exactly the same rules."""
     def unparseable(reason: str) -> VerificationStepResult:
         # Defensive default: a formatting glitch from the LLM shouldn't silently
         # promote a candidate (that would be treating unparseable as "approved"),
@@ -75,21 +90,19 @@ def run_verification_step(
         # gates over an LLM output-formatting issue. "flagged" is the conservative
         # middle ground — proceed, but make sure a human sees why.
         emit_event(on_event, "verification", "verification_verdict", {
-            "candidate_id": bundle.get("candidate_id"), "verdict": "flagged", "concerns": [reason],
+            "candidate_id": candidate_id, "verdict": "flagged", "concerns": [reason],
             "reasoning": None, "unparseable": True,
         })
         return VerificationStepResult(
             ok=False, verdict="flagged", concerns=[reason], reasoning=None,
-            llm_raw_text=result.final_text,
-            stopped_reason=result.stopped_reason, turns_used=result.turns_used,
-            messages=result.messages,
+            llm_raw_text=final_text, stopped_reason="", turns_used=0, messages=[],
         )
 
-    if result.final_text is None:
+    if final_text is None:
         return unparseable("verification agent never produced a final verdict")
 
     try:
-        parsed = json.loads(result.final_text)
+        parsed = json.loads(final_text)
     except json.JSONDecodeError:
         return unparseable("verification agent's response did not parse as JSON")
 
@@ -98,7 +111,7 @@ def run_verification_step(
         return unparseable(f"verification agent returned an invalid verdict: {verdict!r}")
 
     emit_event(on_event, "verification", "verification_verdict", {
-        "candidate_id": bundle.get("candidate_id"), "verdict": verdict,
+        "candidate_id": candidate_id, "verdict": verdict,
         "concerns": parsed.get("concerns") or [], "reasoning": parsed.get("reasoning"),
         "unparseable": False,
     })
@@ -107,8 +120,8 @@ def run_verification_step(
         verdict=verdict,
         concerns=parsed.get("concerns") or [],
         reasoning=parsed.get("reasoning"),
-        llm_raw_text=result.final_text,
-        stopped_reason=result.stopped_reason,
-        turns_used=result.turns_used,
-        messages=result.messages,
+        llm_raw_text=final_text,
+        stopped_reason="",
+        turns_used=0,
+        messages=[],
     )

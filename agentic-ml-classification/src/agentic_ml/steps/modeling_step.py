@@ -39,7 +39,7 @@ audit that runs on gate-passing candidates before promotion.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Optional
 
 import pandas as pd
@@ -216,6 +216,41 @@ def run_modeling_step(
             profile_report = entry["result"]
         emit_event(on_event, "modeling", "tool_called", {"tool": entry["tool"], "result": entry["result"]})
 
+    decision = evaluate_modeling_candidate(
+        result.final_text, profile_report, X=X, y=y, target_column=target_column,
+        group_column=group_column, time_column=time_column, train_idx=train_idx, val_idx=val_idx,
+        metric_names=metric_names, seed=seed, on_event=on_event, ablation=ablation,
+    )
+    return replace(
+        decision, stopped_reason=result.stopped_reason, turns_used=result.turns_used, messages=result.messages,
+    )
+
+
+def evaluate_modeling_candidate(
+    final_text: Optional[str],
+    profile_report: Optional[dict],
+    X: pd.DataFrame,
+    y: pd.Series,
+    target_column: str,
+    group_column: Optional[str],
+    time_column: Optional[str],
+    train_idx: list[int],
+    val_idx: list[int],
+    metric_names: Optional[list[str]] = None,
+    seed: int = 42,
+    on_event: Optional[Callable[[dict], None]] = None,
+    ablation: Optional[AblationConfig] = None,
+) -> ModelingStepResult:
+    """The deterministic half of the modeling step, for exactly one
+    proposed candidate: shape -> template config -> column validation ->
+    sandbox build -> fit/score -> all three leakage gates. No LLM involved —
+    shared by run_modeling_step and gate_adapters.modeling_decide so a
+    candidate from an external agent faces the identical gauntlet. LLM-loop
+    fields are left at their defaults."""
+    if metric_names is None:
+        metric_names = ["roc_auc", "pr_auc", "f1", "accuracy"]
+    ablation = ablation or AblationConfig()
+
     def fail(errors: list[str], **extra) -> ModelingStepResult:
         emit_event(on_event, "modeling", "candidate_rejected", {
             "candidate_id": extra.get("candidate_id"), "template_id": extra.get("template_id"),
@@ -227,17 +262,15 @@ def run_modeling_step(
             config=extra.get("config"), explanation=extra.get("explanation"),
             pipeline=None, metrics=None, label_permutation_check=None,
             feature_correlation_check=None, train_cv_consistency_check=None, errors=errors,
-            stopped_reason=result.stopped_reason, turns_used=result.turns_used,
-            messages=result.messages,
         )
 
-    if result.final_text is None:
+    if final_text is None:
         return fail(["agent never produced a final candidate proposal"])
 
     try:
-        candidate = json.loads(result.final_text)
+        candidate = json.loads(final_text)
     except json.JSONDecodeError:
-        return fail([f"agent's final response did not parse as JSON: {result.final_text[:500]}"])
+        return fail([f"agent's final response did not parse as JSON: {final_text[:500]}"])
 
     shape_errors = [] if ablation.skip_candidate_shape_check else _validate_candidate_spec_shape(candidate)
     if shape_errors:
@@ -371,6 +404,4 @@ def run_modeling_step(
         feature_correlation_check=correlation_check.to_dict(),
         train_cv_consistency_check=cv_consistency_check.to_dict(),
         errors=gate_errors,
-        stopped_reason=result.stopped_reason, turns_used=result.turns_used,
-        messages=result.messages,
     )

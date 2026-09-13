@@ -572,6 +572,38 @@ in-process runtime without touching the trust boundary):**
   agent sequence and final metrics, with the facts persisted along the
   way readable back off disk afterward.
 
+**Deterministic gates (agent-sandbox Phase 9, agentic_ml half):**
+- `src/agentic_ml/gate_adapters.py` — every agent-sandbox gate is now
+  pure harness logic, no LLM call anywhere. Each judgment-call stage is a
+  `prepare_<stage>` gate (computes and publishes the stage's facts via
+  `fact_store.write_fact`, then returns a manifest naming the MCP tools
+  to read) and a `<stage>_decide` gate (takes the proposal an external
+  agent produced in between and runs the stage's unchanged post-LLM
+  logic). The step ids a pipeline must use are the `STEP_*` constants;
+  decide gates keep the old single-call step ids so `run_finalize` is
+  untouched. `run_summarize` just returns the facts JSON to narrate.
+- `steps/*_step.py` — each stage's post-LLM logic moved into a pure
+  function (`decide_intake_proposal`, `apply_feature_engineering_proposal`,
+  `record_profiler_narrative`, `evaluate_modeling_candidate`,
+  `interpret_verification_verdict`) that both `run_*_step` and the decide
+  gates call, so the in-process agents and an external one are judged by
+  one code path. Every existing step test passes unmodified.
+- Modeling is one candidate per `modeling_decide` call. Attempts go into a
+  `modeling_attempts` fact, served by the new `get_modeling_attempts` MCP
+  tool (empty before the first attempt). The gate itself enforces the
+  4-attempt budget. Behavior change: a verification rejection sends the
+  run back to proposing a new candidate, rather than on to the
+  next-ranked one from a pre-built batch.
+- `mcp_facts/server.py` `build_http_app()` — a bearer-token check
+  (`AGENTIC_ML_MCP_AUTH_TOKEN`), which `scripts/run_mcp_server.py` now
+  serves. Without a token it refuses to start on a non-loopback host.
+- `tests/test_gate_adapters.py` — the whole pipeline runs with
+  `ModelClient.call`/`ToolCallingAgent.run` patched to raise. The tests
+  check that the legacy manifest shapes are kept, that the budget holds
+  even when the caller keeps proposing, and that verification can't be
+  run on a rejected candidate or re-run to override its own rejection.
+  `tests/test_mcp_server_auth.py` covers the attempts tool and the 401 path.
+
 **Not yet built:** priors/evidence reuse (Phase 6), parallelization
 (Phase 7). The streaming/drift scenario discussed for a later phase
 (simulate incoming data, a monitoring agent decides when to trigger a

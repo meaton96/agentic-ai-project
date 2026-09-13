@@ -12,6 +12,7 @@ the in-process tool handlers already return.
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 from pathlib import Path
@@ -65,3 +66,21 @@ def read_fact(run_id: str, name: str) -> dict:
         raise FactNotFoundError(run_id, name)
     with open(path) as f:
         return json.load(f)
+
+
+# Facts with a well-defined "nothing has happened yet" state, rather than
+# "not computed yet" (which stays a FactNotFoundError). modeling_attempts is
+# appended to by gate_adapters.modeling_decide / verification_decide; before
+# the first attempt there is genuinely nothing tried, which is an answer.
+FACT_DEFAULTS: dict[str, dict] = {
+    "modeling_attempts": {"tried_template_ids": [], "rejections": [], "attempts": []},
+}
+
+
+def read_fact_or_default(run_id: str, name: str) -> dict:
+    try:
+        return read_fact(run_id, name)
+    except FactNotFoundError:
+        if name not in FACT_DEFAULTS:
+            raise
+        return copy.deepcopy(FACT_DEFAULTS[name])

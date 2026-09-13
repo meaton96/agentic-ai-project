@@ -15,7 +15,7 @@ only on the training fold, unchanged by this step.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Optional
 
 import pandas as pd
@@ -101,22 +101,43 @@ def run_feature_engineering_step(
         emit_event(on_event, "feature_engineering", "tool_called",
                     {"tool": entry["tool"], "result": entry["result"]})
 
+    decision = apply_feature_engineering_proposal(
+        df, target_column, result.final_text, profile_report,
+        group_column=group_column, time_column=time_column, on_event=on_event,
+    )
+    return replace(
+        decision, stopped_reason=result.stopped_reason, turns_used=result.turns_used, messages=result.messages,
+    )
+
+
+def apply_feature_engineering_proposal(
+    df: pd.DataFrame,
+    target_column: str,
+    final_text: Optional[str],
+    profile_report: Optional[dict],
+    group_column: Optional[str] = None,
+    time_column: Optional[str] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
+) -> FeatureEngineeringStepResult:
+    """The deterministic half of the feature engineering step: parse,
+    re-validate against `profile_report`, then apply each vetted op to a
+    copy of `df`. No LLM involved — shared by run_feature_engineering_step
+    and gate_adapters.feature_engineering_decide so both judge and apply a
+    proposal identically. LLM-loop fields are left at their defaults."""
     def fail(errors: list[str]) -> FeatureEngineeringStepResult:
         emit_event(on_event, "feature_engineering", "proposal_rejected", {"errors": errors})
         return FeatureEngineeringStepResult(
             ok=False, df=None, drop_columns=[], new_columns=[], applied_ops=[],
             explanation=None, errors=errors,
-            stopped_reason=result.stopped_reason, turns_used=result.turns_used,
-            messages=result.messages,
         )
 
-    if result.final_text is None:
+    if final_text is None:
         return fail(["agent never produced a final proposal"])
 
     try:
-        proposal = json.loads(result.final_text)
+        proposal = json.loads(final_text)
     except json.JSONDecodeError:
-        return fail([f"agent's final response did not parse as JSON: {result.final_text[:500]}"])
+        return fail([f"agent's final response did not parse as JSON: {final_text[:500]}"])
 
     if profile_report is None:
         return fail(["profiler was never called — cannot validate proposed columns"])
@@ -148,6 +169,4 @@ def run_feature_engineering_step(
     return FeatureEngineeringStepResult(
         ok=True, df=new_df, drop_columns=drop_columns, new_columns=new_columns,
         applied_ops=applied_ops, explanation=explanation, errors=[],
-        stopped_reason=result.stopped_reason, turns_used=result.turns_used,
-        messages=result.messages,
     )

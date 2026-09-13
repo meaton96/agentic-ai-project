@@ -10,7 +10,7 @@ validate_dataset_spec_proposal) before anything downstream ever runs.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Optional
 
 import pandas as pd
@@ -72,28 +72,44 @@ def run_intake_step(
             raw_schema = entry["result"]
         emit_event(on_event, "intake", "tool_called", {"tool": entry["tool"], "result": entry["result"]})
 
-    if result.final_text is None:
+    decision = decide_intake_proposal(df, result.final_text, on_event=on_event)
+    return replace(
+        decision, raw_schema=raw_schema,
+        stopped_reason=result.stopped_reason, turns_used=result.turns_used, messages=result.messages,
+    )
+
+
+def decide_intake_proposal(
+    df: pd.DataFrame,
+    final_text: Optional[str],
+    on_event: Optional[Callable[[dict], None]] = None,
+) -> IntakeStepResult:
+    """The deterministic half of the intake step: parse + re-validate a
+    proposed DatasetSpec, no LLM involved. Shared by run_intake_step
+    (proposal from its own ToolCallingAgent) and gate_adapters.intake_decide
+    (proposal from an external agent), so both judge a proposal identically.
+    LLM-loop fields (raw_schema, stopped_reason, turns_used, messages) are
+    left empty for the caller to fill in, if it has any."""
+    if final_text is None:
         emit_event(on_event, "intake", "proposal_rejected",
                     {"errors": ["agent never produced a proposal"]})
         return IntakeStepResult(
             ok=False, dataset_spec_proposal=None,
             validation_errors=["agent never produced a proposal"],
-            raw_schema=raw_schema, llm_raw_text=None,
-            stopped_reason=result.stopped_reason, turns_used=result.turns_used,
-            messages=result.messages,
+            raw_schema=None, llm_raw_text=None,
+            stopped_reason="", turns_used=0, messages=[],
         )
 
     try:
-        proposal = json.loads(result.final_text)
+        proposal = json.loads(final_text)
     except json.JSONDecodeError:
         emit_event(on_event, "intake", "proposal_rejected",
                     {"errors": ["agent's final response did not parse as JSON"]})
         return IntakeStepResult(
             ok=False, dataset_spec_proposal=None,
             validation_errors=["agent's final response did not parse as JSON"],
-            raw_schema=raw_schema, llm_raw_text=result.final_text,
-            stopped_reason=result.stopped_reason, turns_used=result.turns_used,
-            messages=result.messages,
+            raw_schema=None, llm_raw_text=final_text,
+            stopped_reason="", turns_used=0, messages=[],
         )
 
     errors = validate_dataset_spec_proposal(df, proposal)
@@ -103,7 +119,6 @@ def run_intake_step(
     )
     return IntakeStepResult(
         ok=len(errors) == 0, dataset_spec_proposal=proposal, validation_errors=errors,
-        raw_schema=raw_schema, llm_raw_text=result.final_text,
-        stopped_reason=result.stopped_reason, turns_used=result.turns_used,
-        messages=result.messages,
+        raw_schema=None, llm_raw_text=final_text,
+        stopped_reason="", turns_used=0, messages=[],
     )

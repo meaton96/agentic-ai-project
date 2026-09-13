@@ -7,7 +7,7 @@ fact; the LLM only narrates and recommends.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Optional
 
 import pandas as pd
@@ -66,10 +66,25 @@ def run_profiler_step(
         if entry["tool"] == "get_dataset_profile" and deterministic_report is None:
             deterministic_report = entry["result"]
 
+    decision = record_profiler_narrative(deterministic_report, result.final_text, on_event=on_event)
+    return replace(
+        decision, stopped_reason=result.stopped_reason, turns_used=result.turns_used, messages=result.messages,
+    )
+
+
+def record_profiler_narrative(
+    deterministic_report: Optional[dict],
+    final_text: Optional[str],
+    on_event: Optional[Callable[[dict], None]] = None,
+) -> ProfilerStepResult:
+    """The deterministic half of the profiler step. The narrative has no
+    decision impact — it's parsed best-effort and carried for the record;
+    `ok` depends only on the harness-computed report existing. Shared by
+    run_profiler_step and gate_adapters.profiler_and_split_decide."""
     llm_parsed = None
-    if result.final_text:
+    if final_text:
         try:
-            llm_parsed = json.loads(result.final_text)
+            llm_parsed = json.loads(final_text)
         except json.JSONDecodeError:
             llm_parsed = None
 
@@ -84,8 +99,8 @@ def run_profiler_step(
         ok=deterministic_report is not None,
         deterministic_report=deterministic_report,
         llm_narrative=llm_parsed,
-        llm_raw_text=result.final_text,
-        stopped_reason=result.stopped_reason,
-        turns_used=result.turns_used,
-        messages=result.messages,
+        llm_raw_text=final_text,
+        stopped_reason="",
+        turns_used=0,
+        messages=[],
     )
