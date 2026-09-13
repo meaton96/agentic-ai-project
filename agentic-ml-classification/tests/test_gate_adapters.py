@@ -11,13 +11,17 @@ exercising:
    over a real in-memory MCP session), and each *_decide gate judges a
    proposal by the step functions' rules and writes the manifest shape the
    old single-call gates wrote (LEGACY_*_KEYS below).
-3. The modeling budget is enforced by modeling_decide itself: once it's
+3. What an agent step can receive from a gate — every prepare_* output, and
+   modeling_decide's on "accepted" — is only the bare run_id, never a path
+   or manifest content. The gate after the agent finds the manifest from
+   run_id alone.
+4. The modeling budget is enforced by modeling_decide itself: once it's
    spent, a valid candidate is refused without being built, however many
    proposals the caller keeps sending.
-4. Verification stays a one-way ratchet across separate gate calls: it
-   refuses a candidate modeling_decide rejected, and a candidate it
-   rejected can't be re-verified into "approved".
-5. The profiler stage profiles the engineered frame, so derived feature
+5. Verification stays a one-way ratchet across separate gate calls: it
+   refuses when nothing was accepted, and a candidate it rejected can't be
+   re-verified into "approved".
+6. The profiler stage profiles the engineered frame, so derived feature
    columns are visible downstream — reusing feature engineering's raw-CSV
    profile would hide them.
 """
@@ -37,6 +41,7 @@ from agentic_ml.mcp_facts.fact_store import FACT_DEFAULTS, FactNotFoundError, re
 from agentic_ml.mcp_facts.server import build_server
 from agentic_ml.mcp_facts.transport import InMemoryMcpTransport
 from agentic_ml.model_client import ModelClient
+from agentic_ml.paths import run_dir as resolve_run_dir
 
 LEGACY_INTAKE_KEYS = {"run_id", "run_dir", "csv_path", "target_column", "group_column", "time_column", "id_columns"}
 LEGACY_FEATURE_ENGINEERING_KEYS = LEGACY_INTAKE_KEYS | {"features_path"}
@@ -103,8 +108,12 @@ def dataset_csv(tmp_path):
     return path
 
 
-def _manifest(path: str) -> dict:
+def _manifest(path) -> dict:
     return json.loads(Path(path).read_text())
+
+
+def _prepare_manifest(run_id: str, stage: str) -> dict:
+    return _manifest(resolve_run_dir(run_id) / f"prepare_{stage}_manifest.json")
 
 
 def _mcp(tool: str, run_id: str) -> dict:
@@ -151,15 +160,16 @@ def _verify(outputs: dict, verdict: str) -> str:
     return decision
 
 
-# --- 1 + 2: intake ---
+# --- 2: intake ---
 
 def test_prepare_intake_publishes_raw_schema_over_mcp_and_awaits_a_proposal(dataset_csv):
-    decision, path = ga.prepare_intake({"__task__": str(dataset_csv)})
-    prep = _manifest(path)
+    decision, run_id = ga.prepare_intake({"__task__": str(dataset_csv)})
+    prep = _prepare_manifest(run_id, "intake")
     assert decision == "ready"
+    assert prep["run_id"] == run_id
     assert prep["prepare"] == {"stage": "intake", "mcp_tools": ["get_raw_schema"]}
     expected = json.loads(json.dumps(raw_schema_summary(read_dataframe(str(dataset_csv))), default=str))
-    assert _mcp("get_raw_schema", prep["run_id"]) == expected
+    assert _mcp("get_raw_schema", run_id) == expected
 
 
 def test_intake_decide_ok_writes_legacy_manifest_shape(dataset_csv):
@@ -184,6 +194,38 @@ def test_intake_decide_rejects_bad_proposals(dataset_csv, proposal, expected_err
     assert expected_error in manifest["errors"][0]
 
 
+# --- 3: what an agent step can see ---
+
+def test_every_agent_facing_output_is_the_bare_run_id(dataset_csv):
+    """An agent step gets a prior output substituted verbatim into its
+    prompt, can't read the gates' filesystem, and must never see raw paths.
+    run_id is the one argument every run-scoped MCP tool takes."""
+    outputs = _through_prepare_modeling(dataset_csv)
+    run_id = _manifest(outputs[ga.STEP_INTAKE])["run_id"]
+    assert "/" not in run_id
+    for step in (ga.STEP_PREPARE_INTAKE, ga.STEP_PREPARE_FEATURE_ENGINEERING,
+                 ga.STEP_PREPARE_PROFILER_AND_SPLIT, ga.STEP_PREPARE_MODELING):
+        assert outputs[step] == run_id
+    assert "columns" in _mcp("get_dataset_profile", outputs[ga.STEP_PREPARE_MODELING])
+
+
+def test_accepted_candidate_is_found_for_verification_from_run_id_alone(dataset_csv):
+    outputs = _through_prepare_modeling(dataset_csv)
+    run_id = outputs[ga.STEP_PREPARE_MODELING]
+    run_dir = resolve_run_dir(run_id)
+
+    # accept attempt 1, not 0, so the pointer can't be right by coincidence
+    assert _propose_candidate(outputs, BAD_COLUMN_CANDIDATE) == "rejected"
+    assert _propose_candidate(outputs, CANDIDATE_A) == "accepted"
+    assert outputs[ga.STEP_MODELING] == run_id
+    assert _manifest(run_dir / "pending_verification_manifest.json") == {"attempt_index": 1}
+    assert _manifest(run_dir / "modeling_attempt_1_manifest.json")["modeling_attempt"]["candidate_id"] == "candidate_a"
+
+    decision, path = ga.verification_decide({ga.STEP_MODELING: run_id, ga.STEP_PROPOSE_VERIFICATION: APPROVED})
+    assert decision == "selected"
+    assert _manifest(path)["candidate_id"] == "candidate_a"
+
+
 # --- 2: feature engineering ---
 
 def test_feature_engineering_decide_applies_ops_and_merges_drop_columns(dataset_csv):
@@ -193,8 +235,10 @@ def test_feature_engineering_decide_applies_ops_and_merges_drop_columns(dataset_
         "explanation": "drop region, flag missing age",
     })
     outputs = _through_intake(dataset_csv)
-    _, prep_path = ga.prepare_feature_engineering(outputs)
-    assert _manifest(prep_path)["prepare"]["mcp_tools"] == ["get_dataset_profile", "list_feature_ops"]
+    _, run_id = ga.prepare_feature_engineering(outputs)
+    assert _prepare_manifest(run_id, "feature_engineering")["prepare"]["mcp_tools"] == [
+        "get_dataset_profile", "list_feature_ops",
+    ]
 
     manifest = _manifest(_through_feature_engineering(outputs, proposal)[ga.STEP_FEATURE_ENGINEERING])
     assert set(manifest) == LEGACY_FEATURE_ENGINEERING_KEYS
@@ -213,7 +257,7 @@ def test_feature_engineering_decide_invalid_proposal_fails_with_intake_manifest(
     assert any("target/group/time" in e for e in manifest["errors"])
 
 
-# --- 2 + 5: profiler + split ---
+# --- 2 + 6: profiler + split ---
 
 def test_profiler_stage_profiles_the_engineered_frame_not_the_raw_csv(dataset_csv):
     proposal = json.dumps({
@@ -239,20 +283,21 @@ def test_profiler_and_split_decide_writes_legacy_shape_and_keeps_the_narrative(d
     assert manifest["profiler_report"]["recommended_split_strategy"] == manifest["strategy"]
 
 
-# --- 3: modeling attempts + budget ---
+# --- 4: modeling attempts + budget ---
 
 def test_prepare_modeling_advertises_attempts_tool_which_starts_empty(dataset_csv):
     outputs = _through_prepare_modeling(dataset_csv)
-    prep = _manifest(outputs[ga.STEP_PREPARE_MODELING])
+    run_id = outputs[ga.STEP_PREPARE_MODELING]
+    prep = _prepare_manifest(run_id, "modeling")
     assert prep["prepare"]["mcp_tools"] == ["get_dataset_profile", "list_templates", "get_modeling_attempts"]
     assert prep["prepare"]["attempts_used"] == 0
     assert prep["prepare"]["max_candidates"] == ga._DEFAULT_MAX_CANDIDATES
-    assert _mcp("get_modeling_attempts", prep["run_id"]) == FACT_DEFAULTS["modeling_attempts"]
+    assert _mcp("get_modeling_attempts", run_id) == FACT_DEFAULTS["modeling_attempts"]
 
 
 def test_modeling_rejection_is_recorded_for_the_next_proposer(dataset_csv):
     outputs = _through_prepare_modeling(dataset_csv)
-    run_id = _manifest(outputs[ga.STEP_PREPARE_MODELING])["run_id"]
+    run_id = outputs[ga.STEP_PREPARE_MODELING]
 
     assert _propose_candidate(outputs, BAD_COLUMN_CANDIDATE) == "rejected"
     attempts = _mcp("get_modeling_attempts", run_id)
@@ -263,12 +308,14 @@ def test_modeling_rejection_is_recorded_for_the_next_proposer(dataset_csv):
     # nothing for a verifier to see: the bundle only exists for accepted candidates
     with pytest.raises(FactNotFoundError):
         read_fact(run_id, "review_bundle")
-    assert _manifest(ga.prepare_modeling(outputs)[1])["prepare"]["attempts_used"] == 1
+    ga.prepare_modeling(outputs)
+    assert _prepare_manifest(run_id, "modeling")["prepare"]["attempts_used"] == 1
 
 
 def test_modeling_budget_is_enforced_by_the_gate_not_the_caller(dataset_csv):
     outputs = _through_prepare_modeling(dataset_csv)
-    run_dir = Path(_manifest(outputs[ga.STEP_PREPARE_MODELING])["run_dir"])
+    run_id = outputs[ga.STEP_PREPARE_MODELING]
+    run_dir = resolve_run_dir(run_id)
 
     decisions = [_propose_candidate(outputs, BAD_COLUMN_CANDIDATE) for _ in range(ga._DEFAULT_MAX_CANDIDATES)]
     assert decisions == ["rejected"] * (ga._DEFAULT_MAX_CANDIDATES - 1) + ["no_candidate"]
@@ -276,15 +323,16 @@ def test_modeling_budget_is_enforced_by_the_gate_not_the_caller(dataset_csv):
 
     # a perfectly valid candidate past the budget is refused, never built
     assert _propose_candidate(outputs, CANDIDATE_A) == "no_candidate"
-    assert len(read_fact(run_dir.name, "modeling_attempts")["attempts"]) == ga._DEFAULT_MAX_CANDIDATES
+    assert len(read_fact(run_id, "modeling_attempts")["attempts"]) == ga._DEFAULT_MAX_CANDIDATES
     assert not list(run_dir.glob("candidate_attempt_*.joblib"))
+    assert not (run_dir / "pending_verification_manifest.json").exists()
 
 
 # --- 1 + 2: end to end ---
 
 def test_full_pipeline_runs_without_any_llm_call_and_writes_legacy_shapes(dataset_csv):
     outputs = _through_prepare_modeling(dataset_csv)
-    run_id = _manifest(outputs[ga.STEP_PREPARE_MODELING])["run_id"]
+    run_id = outputs[ga.STEP_PREPARE_MODELING]
 
     assert _propose_candidate(outputs, CANDIDATE_A) == "accepted"
     assert _mcp("get_candidate_review_bundle", run_id)["candidate_id"] == "candidate_a"
@@ -320,27 +368,27 @@ def test_unparseable_verdict_degrades_to_flagged_never_approved(dataset_csv):
     assert "did not parse" in selected["verification_concerns"][0]
 
 
-# --- 4: verification ratchet ---
+# --- 5: verification ratchet ---
 
-def test_verification_refuses_a_candidate_modeling_rejected(dataset_csv):
+def test_verification_refuses_when_modeling_never_accepted_anything(dataset_csv):
     outputs = _through_prepare_modeling(dataset_csv)
     assert _propose_candidate(outputs, BAD_COLUMN_CANDIDATE) == "rejected"
+    outputs[ga.STEP_MODELING] = outputs[ga.STEP_PREPARE_MODELING]  # the run_id an accepted output would carry
     with pytest.raises(ValueError, match="refuses"):
         _verify(outputs, APPROVED)
 
 
 def test_verification_rejection_cannot_be_overridden_and_counts_toward_the_budget(dataset_csv):
     outputs = _through_prepare_modeling(dataset_csv)
-    run_id = _manifest(outputs[ga.STEP_PREPARE_MODELING])["run_id"]
+    run_id = outputs[ga.STEP_PREPARE_MODELING]
 
     assert _propose_candidate(outputs, CANDIDATE_A) == "accepted"
-    accepted_manifest = outputs[ga.STEP_MODELING]
     assert _verify(outputs, REJECTED) == "rejected"
     rejection = _mcp("get_modeling_attempts", run_id)["rejections"][-1]
     assert (rejection["stage"], rejection["candidate_id"]) == ("verification", "candidate_a")
 
-    # re-running verification on the same accepted manifest with a friendlier verdict
-    outputs[ga.STEP_MODELING] = accepted_manifest
+    # re-running verification for the same run with a friendlier verdict
+    outputs[ga.STEP_MODELING] = run_id
     with pytest.raises(ValueError, match="refuses"):
         _verify(outputs, APPROVED)
 

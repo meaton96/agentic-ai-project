@@ -576,8 +576,9 @@ in-process runtime without touching the trust boundary):**
 - `src/agentic_ml/gate_adapters.py` — every agent-sandbox gate is now
   pure harness logic, no LLM call anywhere. Each judgment-call stage is a
   `prepare_<stage>` gate (computes and publishes the stage's facts via
-  `fact_store.write_fact`, then returns a manifest naming the MCP tools
-  to read) and a `<stage>_decide` gate (takes the proposal an external
+  `fact_store.write_fact`, writes a manifest naming the MCP tools to
+  read, and outputs only the run id — all an agent step needs, and no raw
+  paths) and a `<stage>_decide` gate (takes the proposal an external
   agent produced in between and runs the stage's unchanged post-LLM
   logic). The step ids a pipeline must use are the `STEP_*` constants;
   decide gates keep the old single-call step ids so `run_finalize` is

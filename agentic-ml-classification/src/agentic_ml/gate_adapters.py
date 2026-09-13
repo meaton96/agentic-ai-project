@@ -10,11 +10,12 @@ with an agent step, owned entirely outside agentic_ml, in between:
 
 prepare_<stage> computes the stage's harness facts with the same calls
 McpToolProvider makes (mcp_facts/provider.py), persists them via
-fact_store.write_fact so mcp_facts/server.py can serve them, and returns a
-manifest carrying run_id and the MCP tools the proposer should read. It
-never waits for or produces a proposal.
+fact_store.write_fact so mcp_facts/server.py can serve them, writes a
+manifest naming the MCP tools the proposer should read, and outputs only the
+bare run_id. It never waits for or produces a proposal.
 
-<stage>_decide takes that manifest plus the proposal text (the agent step's
+<stage>_decide re-reads that manifest from disk by run_id, and takes the
+proposal text (the agent step's
 raw output, held to exactly the JSON contract the stage's own LLM output had)
 and runs the stage's post-proposal logic — the same steps/*_step.py functions
 run_*_step uses (decide_intake_proposal, apply_feature_engineering_proposal,
@@ -43,10 +44,17 @@ pre-built, pre-ranked batch any more. A verification rejection returns
 candidate (not to the next-best already-built one), and the first accepted
 candidate is the one verified rather than the best of N by roc_auc.
 
-Data flow: every gate reads a JSON "manifest" (paths + small JSON-safe
-fields) from a prior step's output and writes its own manifest for the next
-step to read — never a bare DataFrame/fitted pipeline in `outputs`, since
-GateStepResult.output is a plain string. Fitted pipelines cross stage
+Data flow: every gate writes a JSON "manifest" (paths + small JSON-safe
+fields) under run_dir. A gate whose output feeds an agent step (prepare_*,
+and modeling_decide on "accepted") outputs only the bare run_id: an agent
+step substitutes a prior output into its prompt verbatim, can't read this
+filesystem, and must never see raw paths — and run_id is the one argument
+every run-scoped MCP tool takes. The gate after the agent re-derives the
+manifest path from run_id (verification_decide via the fixed-name
+pending_verification_manifest.json pointer, since attempt manifests are
+numbered). Every other gate outputs its manifest's path, as before. Never a
+bare DataFrame/fitted pipeline in `outputs`, since GateStepResult.output is
+a plain string. Fitted pipelines cross stage
 boundaries via joblib, referenced by path in the manifest — same pattern
 agentic_ml's own artifacts/models/*.joblib already uses. prepare_* manifests
 are the upstream manifest plus one "prepare" key; decide gates strip it, so
@@ -95,6 +103,7 @@ from agentic_ml.harness.splits import SplitManifest
 from agentic_ml.harness.verification import build_review_bundle
 from agentic_ml.mcp_facts.fact_store import read_fact, read_fact_or_default, write_fact
 from agentic_ml.mcp_facts.server import FACT_TOOL_NAMES
+from agentic_ml.paths import run_dir as resolve_run_dir
 from agentic_ml.steps.feature_engineering_step import apply_feature_engineering_proposal
 from agentic_ml.steps.intake_step import decide_intake_proposal
 from agentic_ml.steps.modeling_step import evaluate_modeling_candidate
@@ -284,13 +293,14 @@ def prepare_intake(outputs: dict[str, str]) -> tuple[str, str]:
     raw_df = read_dataframe(csv_path)
     prepare = _publish_facts(run_id, on_event, "intake", {"raw_schema": raw_schema_summary(raw_df)})
 
-    return "ready", _write_manifest(manifest_path, {
+    _write_manifest(manifest_path, {
         "run_id": run_id, "run_dir": str(run_dir), "csv_path": csv_path, _PREPARE_KEY: prepare,
     })
+    return "ready", run_id
 
 
 def intake_decide(outputs: dict[str, str]) -> tuple[str, str]:
-    prep = _read_manifest(outputs[STEP_PREPARE_INTAKE])
+    prep = _read_manifest(resolve_run_dir(outputs[STEP_PREPARE_INTAKE]) / "prepare_intake_manifest.json")
     run_id, run_dir = prep["run_id"], Path(prep["run_dir"])
     manifest_path = run_dir / "intake_manifest.json"
     on_event = make_event_emitter(run_id, persist_fn=make_event_logger(run_dir))
@@ -331,11 +341,14 @@ def prepare_feature_engineering(outputs: dict[str, str]) -> tuple[str, str]:
         intake["run_id"], on_event, "feature_engineering", {"dataset_profile": profile},
         extra_tools=("list_feature_ops",),
     )
-    return "ready", _write_manifest(manifest_path, {**intake, _PREPARE_KEY: prepare})
+    _write_manifest(manifest_path, {**intake, _PREPARE_KEY: prepare})
+    return "ready", intake["run_id"]
 
 
 def feature_engineering_decide(outputs: dict[str, str]) -> tuple[str, str]:
-    intake = _without(_read_manifest(outputs[STEP_PREPARE_FEATURE_ENGINEERING]), _PREPARE_KEY)
+    intake = _without(_read_manifest(
+        resolve_run_dir(outputs[STEP_PREPARE_FEATURE_ENGINEERING]) / "prepare_feature_engineering_manifest.json"
+    ), _PREPARE_KEY)
     run_dir = Path(intake["run_dir"])
     manifest_path = run_dir / "feature_engineering_manifest.json"
     on_event = make_event_emitter(intake["run_id"], persist_fn=make_event_logger(run_dir))
@@ -384,11 +397,14 @@ def prepare_profiler_and_split(outputs: dict[str, str]) -> tuple[str, str]:
     engineered_df = pd.read_parquet(fe["features_path"])
     profile = build_profile_fact(engineered_df, fe["target_column"], fe["group_column"], fe["time_column"])
     prepare = _publish_facts(fe["run_id"], on_event, "profiler", {"dataset_profile": profile})
-    return "ready", _write_manifest(manifest_path, {**fe, _PREPARE_KEY: prepare})
+    _write_manifest(manifest_path, {**fe, _PREPARE_KEY: prepare})
+    return "ready", fe["run_id"]
 
 
 def profiler_and_split_decide(outputs: dict[str, str]) -> tuple[str, str]:
-    fe = _without(_read_manifest(outputs[STEP_PREPARE_PROFILER_AND_SPLIT]), _PREPARE_KEY)
+    fe = _without(_read_manifest(
+        resolve_run_dir(outputs[STEP_PREPARE_PROFILER_AND_SPLIT]) / "prepare_profiler_and_split_manifest.json"
+    ), _PREPARE_KEY)
     run_dir = Path(fe["run_dir"])
     manifest_path = run_dir / "profiler_and_split_manifest.json"
     on_event = make_event_emitter(fe["run_id"], persist_fn=make_event_logger(run_dir))
@@ -465,14 +481,17 @@ def prepare_modeling(outputs: dict[str, str]) -> tuple[str, str]:
     attempts = read_fact_or_default(prof["run_id"], _ATTEMPTS_FACT)
     prepare["attempts_used"] = len(attempts["attempts"])
     prepare["max_candidates"] = _DEFAULT_MAX_CANDIDATES
-    return "ready", _write_manifest(manifest_path, {**prof, _PREPARE_KEY: prepare})
+    _write_manifest(manifest_path, {**prof, _PREPARE_KEY: prepare})
+    return "ready", prof["run_id"]
 
 
 def modeling_decide(outputs: dict[str, str]) -> tuple[str, str]:
     """Judges exactly one proposed candidate. Decisions: "accepted" (every
     check passed; review_bundle fact written for verification), "rejected"
     (try another), or "no_candidate" (budget spent with nothing accepted)."""
-    prof = _without(_read_manifest(outputs[STEP_PREPARE_MODELING]), _PREPARE_KEY)
+    prof = _without(_read_manifest(
+        resolve_run_dir(outputs[STEP_PREPARE_MODELING]) / "prepare_modeling_manifest.json"
+    ), _PREPARE_KEY)
     run_id, run_dir = prof["run_id"], Path(prof["run_dir"])
     on_event = make_event_emitter(run_id, persist_fn=make_event_logger(run_dir))
 
@@ -525,7 +544,7 @@ def modeling_decide(outputs: dict[str, str]) -> tuple[str, str]:
     ))
     _record_modeling_attempt(run_id, attempts, result, accepted=True, reason=None)
 
-    return "accepted", _write_manifest(manifest_path, {**prof, _ATTEMPT_KEY: {
+    _write_manifest(manifest_path, {**prof, _ATTEMPT_KEY: {
         "attempt_index": attempt_index,
         "candidate_attempt_path": str(candidate_attempt_path),
         "candidate_id": result.candidate_id,
@@ -537,14 +556,22 @@ def modeling_decide(outputs: dict[str, str]) -> tuple[str, str]:
         "feature_correlation_check": result.feature_correlation_check,
         "train_cv_consistency_check": result.train_cv_consistency_check,
     }})
+    # Attempt manifests are numbered, so verification_decide (given only
+    # run_id) finds this one through a fixed-name pointer.
+    _write_manifest(run_dir / "pending_verification_manifest.json", {"attempt_index": attempt_index})
+    return "accepted", run_id
 
 
 def verification_decide(outputs: dict[str, str]) -> tuple[str, str]:
     """Decisions: "selected" (approved or flagged — the candidate proceeds
     to finalize), "rejected" (propose a fresh modeling candidate), or
     "no_candidate" (rejected with the modeling budget spent)."""
-    decided = _read_manifest(outputs[STEP_MODELING])
-    run_id, run_dir = decided["run_id"], Path(decided["run_dir"])
+    run_id = outputs[STEP_MODELING]
+    pointer_path = resolve_run_dir(run_id) / "pending_verification_manifest.json"
+    decided = {}
+    if pointer_path.is_file():  # no pointer = nothing ever accepted; refused by the ratchet below
+        attempt_index = _read_manifest(pointer_path)["attempt_index"]
+        decided = _read_manifest(resolve_run_dir(run_id) / f"modeling_attempt_{attempt_index}_manifest.json")
     candidate = decided.get(_ATTEMPT_KEY)
     attempts = read_fact_or_default(run_id, _ATTEMPTS_FACT)
 
@@ -560,6 +587,7 @@ def verification_decide(outputs: dict[str, str]) -> tuple[str, str]:
         )
 
     prof = _without(decided, _ATTEMPT_KEY)
+    run_dir = Path(decided["run_dir"])
     on_event = make_event_emitter(run_id, persist_fn=make_event_logger(run_dir))
     verification = interpret_verification_verdict(
         outputs[STEP_PROPOSE_VERIFICATION], candidate["candidate_id"], on_event=on_event,
