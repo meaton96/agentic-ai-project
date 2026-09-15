@@ -276,6 +276,7 @@ def test_data_root_env_var_redirects_run_artifacts(dataset_csv, tmp_path, monkey
 
 def test_data_root_unset_reproduces_default_cwd_relative_paths(dataset_csv, tmp_path, monkeypatch):
     monkeypatch.delenv("AGENTIC_ML_DATA_ROOT", raising=False)
+    monkeypatch.delenv("GATE_SCRATCH_DIR", raising=False)
     monkeypatch.delenv("AGENTIC_ML_RUNS_DIR", raising=False)
     monkeypatch.delenv("AGENTIC_ML_ARTIFACTS_DIR", raising=False)
     monkeypatch.setattr(ModelClient, "call", static_fake_call)

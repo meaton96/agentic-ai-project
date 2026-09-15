@@ -14,7 +14,13 @@ defaults exactly as before):
      _DATASETS_DIR), if set.
   2. AGENTIC_ML_DATA_ROOT/<runs|artifacts|datasets>, if AGENTIC_ML_DATA_ROOT
      is set.
-  3. "<runs|artifacts|datasets>" relative to the current working
+  3. GATE_SCRATCH_DIR/<runs|artifacts|datasets>, if GATE_SCRATCH_DIR is set
+     and AGENTIC_ML_DATA_ROOT isn't — the generic per-account scratch-volume
+     path agent-sandbox's Docker-isolated gate execution sets on every call,
+     regardless of package. Checked after AGENTIC_ML_DATA_ROOT so the
+     in-process/CLI path (which sets AGENTIC_ML_DATA_ROOT via .env) and any
+     explicit override keep winning.
+  4. "<runs|artifacts|datasets>" relative to the current working
      directory — today's exact behavior when nothing is set.
 """
 from __future__ import annotations
@@ -27,7 +33,7 @@ def _resolve_root(specific_env: str, subdir_name: str) -> Path:
     specific = os.environ.get(specific_env)
     if specific:
         return Path(specific)
-    data_root = os.environ.get("AGENTIC_ML_DATA_ROOT")
+    data_root = os.environ.get("AGENTIC_ML_DATA_ROOT") or os.environ.get("GATE_SCRATCH_DIR")
     if data_root:
         return Path(data_root) / subdir_name
     return Path(subdir_name)

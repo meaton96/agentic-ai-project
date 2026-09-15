@@ -31,7 +31,7 @@ _MCP_HEADERS = {"Accept": "application/json, text/event-stream", "Content-Type":
 def isolated_runs_dir(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv(AUTH_TOKEN_ENV, raising=False)
-    for var in ("AGENTIC_ML_DATA_ROOT", "AGENTIC_ML_RUNS_DIR"):
+    for var in ("AGENTIC_ML_DATA_ROOT", "GATE_SCRATCH_DIR", "AGENTIC_ML_RUNS_DIR"):
         monkeypatch.delenv(var, raising=False)
 
 

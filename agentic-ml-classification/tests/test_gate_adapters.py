@@ -78,7 +78,7 @@ REJECTED = json.dumps({"verdict": "rejected", "concerns": ["explanation doesn't 
 
 @pytest.fixture(autouse=True)
 def isolated_run_root(tmp_path, monkeypatch):
-    for var in ("AGENTIC_ML_DATA_ROOT", "AGENTIC_ML_RUNS_DIR", "AGENTIC_ML_ARTIFACTS_DIR", "AGENTIC_ML_DATASETS_DIR"):
+    for var in ("AGENTIC_ML_DATA_ROOT", "GATE_SCRATCH_DIR", "AGENTIC_ML_RUNS_DIR", "AGENTIC_ML_ARTIFACTS_DIR", "AGENTIC_ML_DATASETS_DIR"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.chdir(tmp_path)
 
