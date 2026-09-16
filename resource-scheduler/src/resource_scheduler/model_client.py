@@ -14,7 +14,25 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+import openai
 from openai import OpenAI
+
+# Confirmed live against the RIT GenAI endpoint: 504 Gateway Time-out
+# (surfaces as InternalServerError, since the openai SDK maps any >=500
+# response to that class) hit every Task Prioritization call at
+# queue_size=15, correlating with request size/generation time, not a
+# one-off fluke. RateLimitError (429) and the connection/timeout errors
+# below are the same story on a shared, rate-limited academic endpoint --
+# all transient, all worth one more attempt. Deliberately NOT retrying
+# anything else (bad model name, bad auth, malformed request): those are
+# real problems retrying won't fix, and silently retrying them would just
+# hide a bug behind extra latency.
+_RETRYABLE_EXCEPTIONS = (
+    openai.InternalServerError,
+    openai.RateLimitError,
+    openai.APITimeoutError,
+    openai.APIConnectionError,
+)
 
 
 @dataclass
@@ -45,10 +63,25 @@ class ModelClient:
         api_key: str,
         default_model: str,
         timeout_seconds: float = 120.0,
+        max_retries: int = 3,
+        retry_backoff_seconds: float = 2.0,
+        on_retry: Optional[Any] = None,
     ):
         self.base_url = base_url
         self.default_model = default_model
         self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout_seconds)
+        # max_retries=3 means up to 4 total attempts. Backoff doubles each
+        # time (2s, 4s, 8s) -- long enough that a genuinely transient
+        # gateway hiccup has a real chance to clear, short enough that a
+        # live demo isn't stuck waiting minutes on an endpoint that's
+        # actually down. on_retry, if given, is called with
+        # (attempt, max_retries, wait_seconds, exception) before each
+        # sleep -- lets a caller surface "retrying..." in its own trace/
+        # print output instead of this class assuming stdout is the right
+        # place for it.
+        self.max_retries = max_retries
+        self.retry_backoff_seconds = retry_backoff_seconds
+        self.on_retry = on_retry
 
     @classmethod
     def from_env(cls, prefix: str = "RIT", default_model: Optional[str] = None) -> "ModelClient":
@@ -78,7 +111,24 @@ class ModelClient:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        response = self._client.chat.completions.create(**kwargs)
+        response = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self._client.chat.completions.create(**kwargs)
+                break
+            except _RETRYABLE_EXCEPTIONS as e:
+                if attempt == self.max_retries:
+                    raise
+                wait_seconds = self.retry_backoff_seconds * (2 ** attempt)
+                if self.on_retry:
+                    self.on_retry(attempt, self.max_retries, wait_seconds, e)
+                time.sleep(wait_seconds)
+        # Deliberately includes any retry backoff sleep time, not just the
+        # final successful attempt -- latency_seconds is meant to answer
+        # "how long did this call actually take from the caller's side",
+        # and an unusually high value here is itself a useful signal that
+        # retries happened, without needing to cross-reference on_retry
+        # callback logs separately.
         elapsed = time.time() - start
 
         choice = response.choices[0]

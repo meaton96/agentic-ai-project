@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DecisionReviewBundleFact",
+  "description": "Deterministic tool output from get_decision_review_bundle. Built by environment/oversight.py::build_decision_review_bundle from a risky_decision message sent by Resource Allocation or Failure Recovery (environment/allocation.py::identify_risky_assignments) -- no field here is produced by an LLM. Every decision in risky_decisions has already passed the deterministic constraint gate and been committed; this bundle exists for advisory review, not to re-validate structurally.",
+  "type": "object",
+  "required": ["source_agent", "risky_decisions"],
+  "properties": {
+    "source_agent": {"enum": ["resource_allocation", "failure_recovery"]},
+    "risky_decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["task_id", "machine_id", "network_slice_id", "rationale", "risk_reason"],
+        "properties": {
+          "task_id": {"type": "string"},
+          "machine_id": {"type": "string"},
+          "network_slice_id": {"type": ["string", "null"]},
+          "rationale": {"type": ["string", "null"], "description": "The originating agent's own stated reason for this placement."},
+          "risk_reason": {"type": "string", "description": "Why environment/allocation.py flagged this decision, e.g. 'target machine M03 is Overloaded'."}
+        }
+      }
+    }
+  }
+}

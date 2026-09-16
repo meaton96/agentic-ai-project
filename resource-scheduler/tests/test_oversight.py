@@ -4,7 +4,30 @@ bundle assembly and, most importantly, the verdict-normalization rule:
 an unparseable or malformed LLM response must degrade to "flagged",
 never silently pass as "approved".
 """
-from resource_scheduler.environment.oversight import build_oversight_review_bundle, parse_oversight_verdict
+from resource_scheduler.environment.oversight import (
+    build_decision_review_bundle,
+    build_oversight_review_bundle,
+    parse_oversight_verdict,
+)
+
+
+def test_build_decision_review_bundle_carries_source_and_decisions():
+    message_payload = {
+        "source": "resource_allocation",
+        "risky_decisions": [
+            {"task_id": "T1", "machine_id": "M02", "network_slice_id": "NS_1",
+             "rationale": "no better option", "risk_reason": "target machine M02 is Overloaded"},
+        ],
+    }
+    bundle = build_decision_review_bundle(message_payload)
+    assert bundle["source_agent"] == "resource_allocation"
+    assert len(bundle["risky_decisions"]) == 1
+    assert bundle["risky_decisions"][0]["task_id"] == "T1"
+
+
+def test_build_decision_review_bundle_defaults_to_empty_list():
+    bundle = build_decision_review_bundle({"source": "failure_recovery"})
+    assert bundle["risky_decisions"] == []
 
 
 def test_build_oversight_review_bundle_carries_both_proposal_and_evidence():

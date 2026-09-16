@@ -34,6 +34,7 @@ from resource_scheduler.environment.allocation import (
     build_allocation_events,
     check_constraints,
     compute_slice_load,
+    identify_risky_assignments,
     validate_allocation_structure,
 )
 from resource_scheduler.environment.state import compute_snapshot
@@ -56,6 +57,7 @@ class ResourceAllocationStepResult:
     llm_proposal: Optional[dict] = None
     llm_raw_text: Optional[str] = None
     ranking_source: Optional[str] = None
+    sent_risky_decisions_to_human_oversight: bool = False
     stopped_reason: str = "completed"
     turns_used: int = 0
     messages: list[dict] = field(default_factory=list)
@@ -156,11 +158,25 @@ def run_resource_allocation_step(
             }
             events = build_allocation_events(assignments, violations_by_task, trigger_signal_by_task)
 
+    sent_risky = False
+    if accepted:
+        machine_status_for_risk = {m["machine_id"]: m["status"] for m in deterministic_facts["available_machines"]}
+        risky = identify_risky_assignments(accepted, machine_status_for_risk)
+        if risky:
+            mailbox.send(
+                sender="resource_allocation", recipient="human_oversight",
+                message_type="risky_decision",
+                payload={"source": "resource_allocation", "risky_decisions": risky},
+            )
+            sent_risky = True
+            emit_event(on_event, "resource_allocation", "a2a_sent", {"recipient": "human_oversight", "n_risky": len(risky)})
+
     emit_event(on_event, "resource_allocation", "resource_allocation_report", {
         "valid": valid,
         "n_accepted": len(accepted),
         "n_environment_rejected": len(environment_rejected),
         "n_agent_rejected": len(agent_rejected),
+        "sent_risky_decisions_to_human_oversight": sent_risky,
     })
 
     return ResourceAllocationStepResult(
@@ -175,6 +191,7 @@ def run_resource_allocation_step(
         llm_proposal=llm_parsed,
         llm_raw_text=result.final_text,
         ranking_source=ranking_message.sender,
+        sent_risky_decisions_to_human_oversight=sent_risky,
         stopped_reason=result.stopped_reason,
         turns_used=result.turns_used,
         messages=result.messages,
@@ -188,6 +205,7 @@ class RerouteValidationResult:
     environment_rejected: list[dict] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
     reroute_source: Optional[str] = None
+    sent_risky_decisions_to_human_oversight: bool = False
     stopped_reason: str = "completed"
 
 
@@ -254,8 +272,26 @@ def run_reroute_validation_step(
     trigger_signal_by_task = {a["task_id"]: "reroute_request (Failure Recovery, incident-triggered)" for a in as_assignments}
     events = build_allocation_events(as_assignments, violations_by_task, trigger_signal_by_task)
 
+    sent_risky = False
+    if accepted:
+        # sender is the reroute's true origin (Failure Recovery, from the
+        # original reroute_request message), not "resource_allocation" --
+        # this code re-validates the reroute, but the decision to place
+        # it here is Failure Recovery's, same attribution
+        # build_allocation_events already gives it via trigger_signal_by_task.
+        risky = identify_risky_assignments(accepted, machine_status)
+        if risky:
+            mailbox.send(
+                sender=message.sender, recipient="human_oversight",
+                message_type="risky_decision",
+                payload={"source": message.sender, "risky_decisions": risky},
+            )
+            sent_risky = True
+            emit_event(on_event, "resource_allocation", "a2a_sent", {"recipient": "human_oversight", "n_risky": len(risky)})
+
     emit_event(on_event, "resource_allocation", "reroute_validation_report", {
         "n_accepted": len(accepted), "n_environment_rejected": len(environment_rejected),
+        "sent_risky_decisions_to_human_oversight": sent_risky,
     })
 
     return RerouteValidationResult(
@@ -264,4 +300,5 @@ def run_reroute_validation_step(
         environment_rejected=environment_rejected,
         events=events,
         reroute_source=message.sender,
+        sent_risky_decisions_to_human_oversight=sent_risky,
     )

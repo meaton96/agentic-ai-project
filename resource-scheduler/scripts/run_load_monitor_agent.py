@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from resource_scheduler.cli_common import make_run_dir, make_tracer, make_transcript_writer, resolve_model_endpoint
+from resource_scheduler.cli_common import make_retry_logger, make_run_dir, make_tracer, make_transcript_writer, resolve_model_endpoint
 from resource_scheduler.environment.state import load_task_table
 from resource_scheduler.model_client import ModelClient
 from resource_scheduler.steps.load_monitor_step import run_load_monitor_step
@@ -54,7 +54,7 @@ def main():
         args.use_gateway, args.model, "qwen3:8b", "rit-qwen3-8b",
         use_local=args.use_local,
     )
-    client = ModelClient(base_url=base_url, api_key=api_key, default_model=default_model)
+    client = ModelClient(base_url=base_url, api_key=api_key, default_model=default_model, on_retry=make_retry_logger())
 
     result = run_load_monitor_step(
         df, variance_injected, client, window=args.window, trace_fn=lambda record: trace(**record),

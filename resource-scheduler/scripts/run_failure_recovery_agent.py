@@ -28,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from resource_scheduler.a2a.mailbox import Mailbox
-from resource_scheduler.cli_common import make_run_dir, make_tracer, make_transcript_writer, resolve_model_endpoint
+from resource_scheduler.cli_common import make_retry_logger, make_run_dir, make_tracer, make_transcript_writer, resolve_model_endpoint
 from resource_scheduler.environment.state import load_task_table
 from resource_scheduler.model_client import ModelClient
 from resource_scheduler.steps.failure_recovery_step import run_failure_recovery_step
@@ -81,7 +81,7 @@ def main():
         args.use_gateway, args.model, "qwen3:8b", "rit-qwen3-8b",
         use_local=args.use_local,
     )
-    client = ModelClient(base_url=base_url, api_key=api_key, default_model=default_model)
+    client = ModelClient(base_url=base_url, api_key=api_key, default_model=default_model, on_retry=make_retry_logger())
     mailbox = Mailbox(on_event=lambda e: trace(e["type"], **e["payload"]))
 
     if args.synthetic_committed:

@@ -19,6 +19,17 @@ import pandas as pd
 
 DEFAULT_SLICE_CAPACITY = 8  # max concurrent tasks a slice can carry before it's considered saturated
 BLOCKED_MACHINE_STATUSES = {"Maintenance"}  # machines in these statuses cannot receive new assignments
+# A machine in this status is NOT blocked by check_constraints -- it's a
+# legitimate, gate-passing target -- but committing a task to an already
+# Overloaded machine is exactly the kind of thing a human should get a
+# chance to glance at. This is what satisfies the spec's "surfaces
+# scheduling decisions above a risk threshold for human approval",
+# separate from and in addition to the traceable event every decision
+# already gets regardless of risk. Same signal reused for both
+# Resource Allocation's own assignments and Failure Recovery's
+# reroutes -- one consistent definition of "risky" across every path
+# that produces an assignment-shaped decision.
+RISKY_MACHINE_STATUSES = {"Overloaded"}
 
 
 def compute_slice_load(df: pd.DataFrame, window: int = 200) -> dict[str, int]:
@@ -183,3 +194,27 @@ def build_allocation_events(
             reason=violation["detail"] if violation else a.get("rationale"),
         ).to_dict())
     return events
+
+
+def identify_risky_assignments(assignments: list[dict], machine_status: dict[str, str]) -> list[dict]:
+    """Which of a batch of already-accepted assignments (or reroutes --
+    same dict shape) land on a machine in RISKY_MACHINE_STATUSES. Only
+    ever called on assignments that already passed check_constraints:
+    this is a second, softer pass identifying decisions worth a human's
+    attention, not a second gate -- nothing returned here gets
+    rejected, it gets surfaced to Human Oversight via the A2A mailbox
+    (steps/resource_allocation_step.py and
+    steps/failure_recovery_step.py both call this on their own accepted
+    lists)."""
+    risky = []
+    for a in assignments:
+        status = machine_status.get(a.get("machine_id"))
+        if status in RISKY_MACHINE_STATUSES:
+            risky.append({
+                "task_id": a.get("task_id"),
+                "machine_id": a.get("machine_id"),
+                "network_slice_id": a.get("network_slice_id"),
+                "rationale": a.get("rationale"),
+                "risk_reason": f"target machine {a.get('machine_id')} is {status}",
+            })
+    return risky

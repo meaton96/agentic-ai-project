@@ -10,10 +10,12 @@ import pandas as pd
 import pytest
 
 from resource_scheduler.environment.allocation import (
+    RISKY_MACHINE_STATUSES,
     build_allocation_events,
     build_task_lookup,
     check_constraints,
     compute_slice_load,
+    identify_risky_assignments,
     validate_allocation_structure,
 )
 from resource_scheduler.environment.state import load_task_table
@@ -147,3 +149,39 @@ def test_compute_slice_load_and_task_lookup_against_real_dataset():
     for entry in lookup.values():
         assert "task_type" in entry
         assert "previously_recorded_machine_id" in entry
+
+
+def test_identify_risky_assignments_flags_overloaded_machine():
+    assignments = [
+        {"task_id": "T1", "machine_id": "M01", "network_slice_id": "NS_1", "rationale": "fine"},
+        {"task_id": "T2", "machine_id": "M02", "network_slice_id": "NS_2", "rationale": "risky but needed"},
+    ]
+    machine_status = {"M01": "Active", "M02": "Overloaded"}
+    risky = identify_risky_assignments(assignments, machine_status)
+    assert len(risky) == 1
+    assert risky[0]["task_id"] == "T2"
+    assert risky[0]["rationale"] == "risky but needed"
+    assert risky[0]["risk_reason"] == "target machine M02 is Overloaded"
+
+
+def test_identify_risky_assignments_does_not_flag_maintenance():
+    """Maintenance is a hard block in check_constraints -- an assignment
+    to a Maintenance machine should never reach identify_risky_assignments
+    at all (it would already be environment-rejected), so this isn't in
+    RISKY_MACHINE_STATUSES. Confirms the two concepts stay separate."""
+    assert "Maintenance" not in RISKY_MACHINE_STATUSES
+    assignments = [{"task_id": "T1", "machine_id": "M01", "network_slice_id": "NS_1"}]
+    risky = identify_risky_assignments(assignments, {"M01": "Maintenance"})
+    assert risky == []
+
+
+def test_identify_risky_assignments_none_flagged_when_all_healthy():
+    assignments = [{"task_id": "T1", "machine_id": "M01", "network_slice_id": "NS_1"}]
+    assert identify_risky_assignments(assignments, {"M01": "Active"}) == []
+
+
+def test_identify_risky_assignments_unknown_machine_not_flagged():
+    """No fabricated risk for a machine that isn't in machine_status at
+    all -- absence of data is not itself a risk signal."""
+    assignments = [{"task_id": "T1", "machine_id": "M99", "network_slice_id": "NS_1"}]
+    assert identify_risky_assignments(assignments, {}) == []
