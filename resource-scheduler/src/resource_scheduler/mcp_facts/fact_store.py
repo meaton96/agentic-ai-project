@@ -1,0 +1,85 @@
+"""
+Deterministic JSON persistence for the facts gate_adapters.py's
+prepare_* gates publish for mcp_facts/server.py to serve to a propose_*
+agent step. Direct port of agentic_ml.mcp_facts.fact_store in the
+sibling agentic-ml-classification project -- same filesystem-first
+approach as events.jsonl and transcripts (paths.py).
+
+Writing is atomic (tmp file + rename) so a server read never observes a
+partially-written fact. No dataframes or raw file paths are ever passed
+to write_fact -- only the same JSON-safe payloads tools/*_tool.py's
+build_*_fact functions already return.
+"""
+from __future__ import annotations
+
+import copy
+import json
+import os
+from pathlib import Path
+
+from resource_scheduler.paths import run_dir
+
+
+class FactNotFoundError(LookupError):
+    def __init__(self, run_id: str, name: str):
+        self.run_id = run_id
+        self.name = name
+        super().__init__(f"No fact '{name}' recorded for run '{run_id}'")
+
+
+def _json_safe(obj):
+    """Recursively replace float NaN/Infinity with None -- json.dump's
+    default allow_nan=True writes literal NaN/Infinity tokens, which are
+    valid Python but not valid JSON."""
+    if isinstance(obj, float) and (obj != obj or obj in (float("inf"), float("-inf"))):
+        return None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
+def facts_dir(run_id: str) -> Path:
+    return run_dir(run_id) / "facts"
+
+
+def fact_path(run_id: str, name: str) -> Path:
+    return facts_dir(run_id) / f"{name}.json"
+
+
+def write_fact(run_id: str, name: str, payload: dict) -> Path:
+    path = fact_path(run_id, name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp_path, "w") as f:
+        json.dump(_json_safe(payload), f, default=str, allow_nan=False)
+    os.replace(tmp_path, path)
+    return path
+
+
+def read_fact(run_id: str, name: str) -> dict:
+    path = fact_path(run_id, name)
+    if not path.exists():
+        raise FactNotFoundError(run_id, name)
+    with open(path) as f:
+        return json.load(f)
+
+
+# Facts with a well-defined "nothing has happened yet" state, rather than
+# "not computed yet" (which stays a FactNotFoundError). None of
+# resource_scheduler's facts currently need this (unlike agentic_ml's
+# modeling_attempts, which accumulates across several gate calls) -- kept
+# for parity with the sibling project's fact_store shape, and because a
+# future accumulating fact (e.g. a per-run risky-decision log) would want
+# exactly this hook.
+FACT_DEFAULTS: dict[str, dict] = {}
+
+
+def read_fact_or_default(run_id: str, name: str) -> dict:
+    try:
+        return read_fact(run_id, name)
+    except FactNotFoundError:
+        if name not in FACT_DEFAULTS:
+            raise
+        return copy.deepcopy(FACT_DEFAULTS[name])

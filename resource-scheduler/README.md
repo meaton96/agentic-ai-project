@@ -82,6 +82,21 @@ This project deliberately reuses that project's infrastructure shape rather than
 | `src/agentic_ml/harness/` | `src/resource_scheduler/environment/` | Deterministic ground truth; agents never compute facts themselves |
 | `src/agentic_ml/tools/*_tool.py` | `src/resource_scheduler/tools/*_tool.py` | Binds environment facts to LLM-callable tools |
 | `src/agentic_ml/steps/*_step.py` | `src/resource_scheduler/steps/*_step.py` | One file per agent: prompt → tool call → validate → result |
+| `src/agentic_ml/gate_adapters.py` | `src/resource_scheduler/gate_adapters.py` | `prepare_*`/`*_decide` gate pairs for the agent-sandbox port — every LLM call moved out to a sandbox `AgentSpec` step |
+| `src/agentic_ml/mcp_facts/` | `src/resource_scheduler/mcp_facts/` | MCP server exposing harness/environment facts to a `propose_*` agent step, keyed by run_id |
 | `configs/schemas/*.json` | `configs/schemas/*.json` | Documentation-grade JSON Schemas for each agent's proposal shape |
 
-Not yet ported here: an orchestrator (static or dynamic), `mcp_facts/` MCP integration, and `priors/` — these get added once more than one agent exists and there's an actual coordination/negotiation problem to solve. `runs/` is gitignored here exactly as in the ML pipeline.
+`gate_adapters.py`/`mcp_facts/` exist to port this pipeline into
+`agent-sandbox` (see `spec/sandbox-port-spec.md`) — they don't change how
+`scripts/run_*.py`/`run_orchestrator.py` work standalone, which is still
+the officially supported CLI path and still makes its own LLM calls
+directly. `a2a/mailbox.py` additionally gained `PersistentMailbox`, a
+disk-backed counterpart to the in-process `Mailbox` above, needed only by
+`gate_adapters.py` (see that module's docstring) since a sandbox pipeline
+runs each gate as a separate call/process, unlike this project's own
+single-process orchestrator.
+
+Not yet ported here: `priors/`, and the continuous optimization loop
+staying sandbox-side (deliberately out of scope — see
+`spec/sandbox-port-spec.md` §7). `runs/` is gitignored here exactly as in
+the ML pipeline.
