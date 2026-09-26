@@ -21,8 +21,10 @@ import threading
 from typing import Any, Protocol
 
 import anyio
+import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import CallToolResult
@@ -95,7 +97,8 @@ class HttpMcpTransport:
         # __aexit__ wrap it in an opaque ExceptionGroup instead of the
         # clean McpToolError callers actually want to catch.
         try:
-            async with streamablehttp_client(self.url, timeout=self.timeout_seconds) as (read, write, _):
+            http_client = create_mcp_http_client(timeout=httpx.Timeout(self.timeout_seconds))
+            async with http_client, streamable_http_client(self.url, http_client=http_client) as (read, write, _):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     result = await session.call_tool(name, arguments)

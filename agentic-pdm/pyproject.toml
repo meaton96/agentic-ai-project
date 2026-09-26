@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agentic-pdm"
 version = "0.1.0"
-description = "Agentic predictive-maintenance pipeline: agents write model/augmentation plugins, a deterministic harness owns data, folds, and metrics"
+description = "Agentic predictive-maintenance pipeline: agents propose experiments from a catalog, a deterministic harness owns data, folds, training, and metrics"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.26",

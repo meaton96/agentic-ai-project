@@ -53,7 +53,7 @@ _CLEAN_PLACEMENT = {
 @pytest.fixture(autouse=True)
 def isolated_run_root(tmp_path, monkeypatch):
     for var in ("RESOURCE_SCHEDULER_DATA_ROOT", "RESOURCE_SCHEDULER_RUNS_DIR",
-                "RESOURCE_SCHEDULER_ARTIFACTS_DIR", "RESOURCE_SCHEDULER_DATASETS_DIR"):
+                "RESOURCE_SCHEDULER_ARTIFACTS_DIR", "RESOURCE_SCHEDULER_DATASETS_DIR", "GATE_SCRATCH_DIR"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.chdir(tmp_path)
     # PersistentMailbox's default root is an absolute, real-filesystem

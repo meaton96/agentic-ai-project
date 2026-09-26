@@ -18,9 +18,14 @@ A plugin is one Python file defining:
         Optional; AdamW(lr=config["lr"], weight_decay=config["weight_decay"])
         if absent.
 
+    configure_scheduler(optimizer, config: dict, total_steps: int) -> LR scheduler | None
+        Optional; none (constant learning rate) if absent. The harness calls
+        scheduler.step() after every optimizer step, so a schedule is
+        expressed over `total_steps` batches.
+
 The harness owns everything else: which sequences are in which fold,
-scaling, batching, the loss (soft-target cross-entropy), evaluation, and
-metrics. A plugin never receives validation data or labels outside the
+scaling, batching, the loss (see TrainConfig: cross-entropy or focal, with
+optional label smoothing), evaluation, and metrics. A plugin never receives validation data or labels outside the
 training batches it is handed.
 """
 from __future__ import annotations
@@ -40,6 +45,10 @@ def _identity_augment(x, y, generator, config):
     return x, y
 
 
+def _no_scheduler(optimizer, config, total_steps):
+    return None
+
+
 def _default_optimizer(model, config):
     return torch.optim.AdamW(
         model.parameters(),
@@ -55,6 +64,7 @@ class Plugin:
     build_model: Callable
     augment: Callable = _identity_augment
     configure_optimizer: Callable = _default_optimizer
+    configure_scheduler: Callable = _no_scheduler
 
 
 def load_plugin(path: str | Path) -> Plugin:
@@ -70,7 +80,7 @@ def load_plugin(path: str | Path) -> Plugin:
     if not callable(getattr(module, "build_model", None)):
         raise TypeError(f"plugin {path.name} must define a callable build_model(n_channels, seq_len, n_classes, config)")
     plugin = Plugin(name=path.stem, path=str(path), build_model=module.build_model)
-    for attr in ("augment", "configure_optimizer"):
+    for attr in ("augment", "configure_optimizer", "configure_scheduler"):
         fn = getattr(module, attr, None)
         if fn is not None:
             if not callable(fn):

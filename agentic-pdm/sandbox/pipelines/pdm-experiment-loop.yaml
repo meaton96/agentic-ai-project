@@ -1,0 +1,78 @@
+# Agents propose experiments from the catalog; gates decide; one job trains.
+# Seed task: a JSON run contract, e.g.
+#   {"dataset": "c28", "goal": "Beat the NGAFID-MC paper on C28",
+#    "target": {"metric": "roc_auc", "protocol": "last", "value": 0.83},
+#    "budget": {"max_experiments": 6, "max_minutes": 180},
+#    "reference": {"source": "Yang et al. 2021 Conv-MHSA (best-epoch)", "roc_auc": 0.826}}
+#
+# Step ids plan / train / analyze are conventions agentic_pdm.pipeline relies
+# on — keep them. `datasets` must list the contract's dataset.
+id: pdm-experiment-loop
+name: PdM experiment loop (catalog proposals)
+max_steps: 120
+steps:
+  - kind: gate
+    step_id: init
+    gate: "agentic_pdm.pipeline:init_run"
+    datasets: [c28]
+    on_result:
+      ready: brief
+      invalid_contract: __end__
+
+  # Reached only from `record`; declared here so it flows into `brief`.
+  - kind: agent
+    step_id: analyze
+    agent_id: pdm-analyst
+    task_template: "{{steps.record.output}}"
+
+  - kind: gate
+    step_id: brief
+    gate: "agentic_pdm.pipeline:compose_brief"
+    on_result:
+      ready: plan
+      budget_exhausted: finalize
+
+  - kind: agent
+    step_id: plan
+    agent_id: pdm-planner
+    task_template: "{{steps.brief.output}}"
+
+  - kind: gate
+    step_id: validate
+    gate: "agentic_pdm.pipeline:validate_proposal"
+    on_result:
+      valid: train
+      invalid: brief
+      give_up: finalize
+      budget_exhausted: finalize
+
+  - kind: job
+    step_id: train
+    gate: "agentic_pdm.pipeline:train_experiment"
+    timeout_s: 14400
+    resources:
+      cpus: 3
+      mem: 8g
+    datasets: [c28]
+    on_result:
+      done: record
+      __error__: record
+
+  - kind: gate
+    step_id: record
+    gate: "agentic_pdm.pipeline:record_results"
+    on_result:
+      continue: analyze
+      target_met: finalize
+      budget_exhausted: finalize
+
+  - kind: gate
+    step_id: finalize
+    gate: "agentic_pdm.pipeline:finalize"
+    on_result:
+      done: report
+
+  - kind: agent
+    step_id: report
+    agent_id: pdm-reporter
+    task_template: "{{steps.finalize.output}}"

@@ -17,7 +17,16 @@ Resolution order per root, checked at CALL time (not import time):
      _ARTIFACTS_DIR / _DATASETS_DIR), if set.
   2. RESOURCE_SCHEDULER_DATA_ROOT/<runs|artifacts|datasets>, if
      RESOURCE_SCHEDULER_DATA_ROOT is set.
-  3. "<runs|artifacts|datasets>" relative to the current working
+  3. GATE_SCRATCH_DIR/resource-scheduler/<runs|artifacts|datasets>, if
+     GATE_SCRATCH_DIR is set: the per-owner scratch volume agent-sandbox
+     mounts into every gate container. Without this, a gate would write its
+     facts to a cwd-relative "runs" inside a throwaway container, where no
+     MCP server could read them. The agentic-ml-facts MCP server (the
+     agentic-mcp deployment) mounts the same volume and reads them with
+     RESOURCE_SCHEDULER_DATA_ROOT set to this directory. The
+     "resource-scheduler" subdirectory keeps these runs apart from
+     agentic_ml's, which use GATE_SCRATCH_DIR/runs on the same volume.
+  4. "<runs|artifacts|datasets>" relative to the current working
      directory.
 """
 from __future__ import annotations
@@ -33,6 +42,9 @@ def _resolve_root(specific_env: str, subdir_name: str) -> Path:
     data_root = os.environ.get("RESOURCE_SCHEDULER_DATA_ROOT")
     if data_root:
         return Path(data_root) / subdir_name
+    scratch = os.environ.get("GATE_SCRATCH_DIR")
+    if scratch:
+        return Path(scratch) / "resource-scheduler" / subdir_name
     return Path(subdir_name)
 
 

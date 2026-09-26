@@ -441,6 +441,25 @@ prepare_oversight [env] → propose_oversight → oversight_decide [env] → __e
 
 ## 5. AgentSpec YAMLs — the `propose_*` steps
 
+> **Superseded (2026-09-26): don't use the stdio binding below.** The
+> sandbox can't spawn `python -m resource_scheduler.mcp_facts.server`, and
+> that module no longer runs a server anyway. The agentic-ml-facts MCP
+> server (the `agentic-mcp` deployment) serves these tools over HTTP next
+> to agentic_ml's, so bind each propose agent to it instead:
+>
+> ```yaml
+> mcp_servers:
+>   - name: agentic-ml-facts
+>     transport: http
+>     connection: {url: "https://agentsandbox.gccis.rit.edu/agentic-ml-facts/mcp"}
+>     credential_ref: <the credential holding AGENTIC_ML_MCP_AUTH_TOKEN>
+>     allowed_tools: ["get_task_queue_profile"]
+>     logging_policy: full
+> ```
+>
+> Gates write facts to `GATE_SCRATCH_DIR/resource-scheduler/runs/`
+> (see `paths.py`), which that server reads from the same scratch volume.
+
 Eight new `agents/*.yaml` files, one per row in §3's table, each following
 `file-writer.yaml`'s stdio-MCP pattern (the only working precedent in this
 repo for an agent that actually uses `mcp_servers`) rather than

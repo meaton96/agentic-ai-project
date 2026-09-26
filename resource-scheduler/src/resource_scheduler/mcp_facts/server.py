@@ -10,28 +10,20 @@ already compute, and it never touches raw dataframes or file paths --
 every tool here is a read-only view over runs/<run_id>/facts/<name>.json,
 written by a prepare_* gate via fact_store.write_fact.
 
-Unlike agentic_ml's mcp_facts/server.py, there is no LocalToolProvider/
-McpToolProvider split and no HTTP/bearer-auth path -- resource_scheduler's
-sandbox port only ever serves this over stdio, spawned fresh per agent
-run by Strands' MCPClient (an AgentSpec.mcp_servers stdio binding), torn
-down when that run ends. There is no persistent, concurrently-shared
-listener to secure, so that whole layer (agentic_ml's
-AUTH_TOKEN_ENV/build_http_app/BearerTokenMiddleware) would be
-unused generality here. Revisit only if a persistent, concurrently-shared
-fact server becomes necessary (e.g. driving a live pipeline from the
-continuous optimization loop) -- see spec/sandbox-port-spec.md §5.
+This module only builds the server; it never runs one. The agentic-ml-facts
+MCP server (the agentic-mcp deployment) registers these tools next to
+agentic_ml's and serves them over HTTP with its own bearer token. Agents
+reach them at https://agentsandbox.gccis.rit.edu/agentic-ml-facts/mcp.
+That server mounts the owner's scratch volume, where the prepare_* gates
+write facts (see paths.py for GATE_SCRATCH_DIR).
 
-`enabled_tools` in config is still the configurable surface: a tool
-absent from it is never registered, so one deployment can serve a
-restricted subset with no code changes -- kept for parity with
-agentic_ml's server.py even though nothing here needs it yet.
-
-Run standalone (what an AgentSpec's stdio mcp_servers binding actually
-invokes): `python -m resource_scheduler.mcp_facts.server`
+`enabled_tools` in config is the configurable surface: a tool absent from
+it is never registered, so one deployment can serve a restricted subset
+with no code changes.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Iterable, Optional
 
 from mcp.server.fastmcp import FastMCP
 
@@ -101,18 +93,14 @@ ALL_TOOL_NAMES: tuple[str, ...] = tuple(_RUN_SCOPED_FACT_TOOLS)
 FACT_TOOL_NAMES: dict[str, str] = {fact: tool for tool, (fact, _) in _RUN_SCOPED_FACT_TOOLS.items()}
 
 
-def build_server(config: Optional[dict] = None) -> FastMCP:
-    config = config or {}
-    enabled = set(config.get("enabled_tools", ALL_TOOL_NAMES))
+def register_tools(server: FastMCP, enabled_tools: Optional[Iterable[str]] = None) -> None:
+    """Add this package's fact tools to `server`, which may be another
+    package's server (agentic-mcp adds them to agentic_ml's).
+    enabled_tools: the tool names to register; None for all of them."""
+    enabled = set(ALL_TOOL_NAMES if enabled_tools is None else enabled_tools)
     unknown = enabled - set(ALL_TOOL_NAMES)
     if unknown:
         raise ValueError(f"Unknown tool(s) in enabled_tools config: {sorted(unknown)}")
-
-    server = FastMCP(
-        name=config.get("name", "resource-scheduler-facts"),
-        host=config.get("host", "127.0.0.1"),
-        port=config.get("port", 8766),
-    )
 
     for tool_name, (fact_name, description) in _RUN_SCOPED_FACT_TOOLS.items():
         if tool_name not in enabled:
@@ -125,8 +113,13 @@ def build_server(config: Optional[dict] = None) -> FastMCP:
 
         server.tool(name=tool_name, description=description)(make_handler(fact_name))
 
+
+def build_server(config: Optional[dict] = None) -> FastMCP:
+    config = config or {}
+    server = FastMCP(
+        name=config.get("name", "resource-scheduler-facts"),
+        host=config.get("host", "127.0.0.1"),
+        port=config.get("port", 8766),
+    )
+    register_tools(server, config.get("enabled_tools"))
     return server
-
-
-if __name__ == "__main__":
-    build_server().run(transport="stdio")

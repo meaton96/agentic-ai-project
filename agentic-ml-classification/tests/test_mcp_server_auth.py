@@ -17,7 +17,7 @@ from starlette.testclient import TestClient
 
 from agentic_ml.mcp_facts.fact_store import write_fact
 from agentic_ml.mcp_facts.server import AUTH_TOKEN_ENV, build_http_app, build_server
-from agentic_ml.mcp_facts.transport import InMemoryMcpTransport, McpToolError
+from agentic_ml.mcp_facts.transport import HttpMcpTransport, InMemoryMcpTransport, McpToolError
 
 _BASE_URL = "http://127.0.0.1:8765"  # FastMCP's DNS-rebinding guard only admits loopback Host headers
 _INITIALIZE = {
@@ -91,3 +91,38 @@ def test_non_loopback_host_requires_a_token():
 def test_loopback_host_without_token_still_serves_for_local_use():
     with TestClient(build_http_app(), base_url=_BASE_URL) as client:
         assert client.post("/mcp", json=_INITIALIZE, headers=_MCP_HEADERS).status_code == 200
+
+
+# --- 3. HttpMcpTransport over a real socket ---
+
+@pytest.fixture
+def live_server_url():
+    import socket
+    import threading
+    import time
+
+    import uvicorn
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(build_http_app(), host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started:
+        assert time.monotonic() < deadline, "uvicorn didn't start"
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}/mcp"
+    server.should_exit = True
+    thread.join(timeout=10)
+
+
+def test_http_transport_calls_a_tool(live_server_url):
+    result = HttpMcpTransport(live_server_url).call_tool("list_feature_ops", {})
+    assert result["feature_ops"]
+
+
+def test_http_transport_reports_an_unreachable_server():
+    with pytest.raises(McpToolError, match="failed to reach MCP server"):
+        HttpMcpTransport("http://127.0.0.1:9/mcp", timeout_seconds=2).call_tool("list_feature_ops", {})
