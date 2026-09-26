@@ -30,12 +30,15 @@ a livelier feed is available.
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
+from urllib.parse import urlparse
 
 import numpy as np
 import pandas as pd
+import requests
 
 JITTERED_COLUMNS = ("Execution_Time", "Latency_ms", "Sensor_Temp_C", "URLLC_Score")
 # Relative jitter std as a fraction of the column's (constant) value --
@@ -43,6 +46,80 @@ JITTERED_COLUMNS = ("Execution_Time", "Latency_ms", "Sensor_Temp_C", "URLLC_Scor
 # mean +/- k*std thresholding (see compute_thresholds) has something to
 # key off of.
 JITTER_RELATIVE_STD = 0.08
+
+
+_ALLOWED_URL_SCHEMES = ("http", "https")
+NETWORK_FETCH_TIMEOUT_SECONDS = 30
+# The shipped table is ~100 KB; this only stops a wrong URL from filling
+# the disk or memory.
+MAX_TASK_TABLE_BYTES = 200_000_000
+_NETWORK_CHUNK_BYTES = 1_000_000
+
+
+def resolve_task_table_path(
+    source: str,
+    cache_dir: str | Path,
+    max_bytes: int = MAX_TASK_TABLE_BYTES,
+    on_network_fetch: Optional[Callable[[dict], None]] = None,
+    timeout: float = NETWORK_FETCH_TIMEOUT_SECONDS,
+) -> str:
+    """A local path to the task table named by `source`: `source` itself
+    when it's a local path, or, for an http(s) URL (e.g. a raw GitHub
+    link), the file it was downloaded to in `cache_dir`. Port of
+    agentic_ml.harness.dataset.resolve_dataset_path.
+
+    An agent-sandbox gate container has no copy of datasets/, so a
+    pipeline's seed task is a URL. The first gate downloads it once into
+    the run directory and records the local path; every later gate reads
+    that file, never the network, so the table can't change mid-run.
+
+    Streamed, with a size limit checked against Content-Length and again
+    while downloading. Schemes other than http/https (file://, ftp://, ...)
+    are refused. on_network_fetch, if given, receives the fetch's metadata
+    (url, local path, status, bytes, elapsed seconds)."""
+    source = str(source)
+    scheme = urlparse(source).scheme
+    if not scheme:
+        return source
+    if scheme not in _ALLOWED_URL_SCHEMES:
+        raise ValueError(f"Unsupported task table source scheme {scheme!r} in {source!r}: "
+                         "only http/https URLs or local paths are allowed.")
+
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = cache_dir / "source_task_table.csv"
+
+    started = time.time()
+    with requests.get(source, stream=True, timeout=timeout) as response:
+        response.raise_for_status()
+        content_length = response.headers.get("Content-Length")
+        if content_length is not None and int(content_length) > max_bytes:
+            raise ValueError(f"Task table at {source} reports {int(content_length) / 1e6:.0f}MB, over the "
+                             f"{max_bytes / 1e6:.0f}MB limit; refusing to download it.")
+        bytes_downloaded = 0
+        try:
+            with open(dest_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=_NETWORK_CHUNK_BYTES):
+                    bytes_downloaded += len(chunk)
+                    if bytes_downloaded > max_bytes:
+                        raise ValueError(f"Task table at {source} exceeded the {max_bytes / 1e6:.0f}MB "
+                                         "download limit; aborted mid-download.")
+                    f.write(chunk)
+        except Exception:
+            dest_path.unlink(missing_ok=True)
+            raise
+        metadata = {
+            "url": source,
+            "local_path": str(dest_path),
+            "status_code": response.status_code,
+            "content_type": response.headers.get("Content-Type"),
+            "bytes_downloaded": bytes_downloaded,
+            "elapsed_seconds": round(time.time() - started, 3),
+        }
+
+    if on_network_fetch is not None:
+        on_network_fetch(metadata)
+    return str(dest_path)
 
 
 def load_task_table(

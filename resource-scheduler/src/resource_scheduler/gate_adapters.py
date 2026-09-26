@@ -117,7 +117,7 @@ from resource_scheduler.environment.oversight import (
 )
 from resource_scheduler.environment.policy_evidence import validate_policy_proposal
 from resource_scheduler.environment.queue import is_ranking_score_consistent, validate_ranking_proposal
-from resource_scheduler.environment.state import compute_snapshot, load_task_table
+from resource_scheduler.environment.state import compute_snapshot, load_task_table, resolve_task_table_path
 from resource_scheduler.events import emit_event, make_event_emitter, make_event_logger
 from resource_scheduler.mcp_facts.fact_store import read_fact, write_fact
 from resource_scheduler.mcp_facts.server import FACT_TOOL_NAMES
@@ -242,9 +242,17 @@ def _flags_match(reported: object, authoritative: list[dict]) -> bool:
 
 
 def prepare_load_monitor(outputs: dict[str, str]) -> tuple[str, str]:
-    csv_path = outputs["__task__"]
     run_id, run_dir = make_run_dir(None)
     on_event = make_event_emitter(run_id, persist_fn=make_event_logger(run_dir))
+    # The seed task is a local CSV path or an http(s) URL (in the sandbox, a
+    # raw GitHub link: gate containers have no copy of datasets/). A URL is
+    # downloaded once into run_dir, and the manifest records that local
+    # copy, so every later gate (and failure recovery, via
+    # accepted_assignments) reads the same file without touching the network.
+    csv_path = resolve_task_table_path(
+        outputs["__task__"].strip(), cache_dir=run_dir,
+        on_network_fetch=lambda meta: emit_event(on_event, "load_monitor", "network_fetch", meta),
+    )
 
     df, variance_injected = load_task_table(csv_path)
     fact = build_resource_snapshot_fact(df, variance_injected, window=_DEFAULT_SNAPSHOT_WINDOW)

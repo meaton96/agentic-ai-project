@@ -223,6 +223,67 @@ def test_load_monitor_prepare_publishes_snapshot_and_returns_bare_run_id(dataset
     assert fact["flags"], "fixture must produce at least one flag (M01/M03 sit at 100% utilization)"
 
 
+
+@pytest.fixture
+def served_dir(tmp_path):
+    """A local HTTP server over tmp_path/served, standing in for raw GitHub."""
+    import functools
+    import http.server
+    import threading
+
+    root = tmp_path / "served"
+    root.mkdir()
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root))
+    handler.log_message = lambda *a: None
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield root, f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+
+
+def test_load_monitor_prepare_fetches_a_url_task_once_into_run_dir(dataset_csv, served_dir):
+    root, base_url = served_dir
+    (root / "tasks.csv").write_bytes(Path(dataset_csv).read_bytes())
+    _, run_id = ga.prepare_load_monitor({"__task__": f"  {base_url}/tasks.csv\n"})
+
+    manifest = json.loads((ga.resolve_run_dir(run_id) / f"{ga.STEP_PREPARE_LOAD_MONITOR}_manifest.json").read_text())
+    local = Path(manifest["csv_path"])
+    assert local.parent == ga.resolve_run_dir(run_id) and local.read_bytes() == Path(dataset_csv).read_bytes()
+    assert read_fact(run_id, "resource_snapshot")["flags"]
+    events = [json.loads(line) for line in (ga.resolve_run_dir(run_id) / "events.jsonl").read_text().splitlines()]
+    assert any("network_fetch" in json.dumps(e) for e in events)
+
+    # Later gates read the local copy, not the URL: they still work with the server's file gone.
+    (root / "tasks.csv").unlink()
+    manifest_path = ga.load_monitor_decide({
+        ga.STEP_PREPARE_LOAD_MONITOR: run_id,
+        ga.STEP_PROPOSE_LOAD_MONITOR: json.dumps({"flags": [], "narrative_summary": "x"}),
+    })[1]
+    _, run_id_2 = ga.prepare_task_prioritization({ga.STEP_LOAD_MONITOR_DECIDE: manifest_path})
+    assert read_fact(run_id_2, "task_queue_profile")["pending_tasks"]
+
+
+def test_load_monitor_prepare_url_errors(served_dir):
+    _, base_url = served_dir
+    import requests
+
+    with pytest.raises(requests.HTTPError):
+        ga.prepare_load_monitor({"__task__": f"{base_url}/missing.csv"})
+    with pytest.raises(ValueError, match="Unsupported task table source scheme"):
+        ga.prepare_load_monitor({"__task__": "file:///etc/passwd"})
+
+
+def test_task_table_download_size_limit(served_dir, tmp_path):
+    from resource_scheduler.environment.state import resolve_task_table_path
+
+    root, base_url = served_dir
+    (root / "big.csv").write_bytes(b"x" * 5000)
+    with pytest.raises(ValueError, match="limit"):
+        resolve_task_table_path(f"{base_url}/big.csv", cache_dir=tmp_path / "cache", max_bytes=1000)
+    assert not (tmp_path / "cache" / "source_task_table.csv").exists()
+    assert resolve_task_table_path("datasets/local.csv", cache_dir=tmp_path) == "datasets/local.csv"
+
 def test_load_monitor_decide_no_mismatch_when_flags_match(dataset_csv):
     manifest_path = _prepare_through_load_monitor_decide(dataset_csv)
     manifest = json.loads(Path(manifest_path).read_text())

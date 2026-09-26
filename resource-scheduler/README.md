@@ -35,6 +35,14 @@ All six agents are now scaffolded. What's not built: no orchestrator tying all s
 
 **Known data-quality issue:** `Execution_Time`, `Latency_ms`, `Sensor_Temp_C`, and `URLLC_Score` are constant across every row in this file — zero variance, zero signal for anything that needs to *detect* change (confirmed directly, see `tests/test_environment_state.py::test_real_dataset_has_known_constant_columns`). `environment/state.py::load_task_table` injects small seeded jitter into those columns by default (`inject_variance=True`) so early development has something real to threshold against; this is never silent — every snapshot's `synthetic_variance_injected` field says exactly which columns are fake. Pass `--no-inject-variance` once a livelier feed replaces this file.
 
+**In agent-sandbox**, gate containers have no copy of `datasets/`, so the main pipeline's seed task is the raw GitHub URL of this file:
+
+```
+https://raw.githubusercontent.com/meaton96/agentic-ai-project/main/resource-scheduler/datasets/raw/industrial_scheduling_dataset.csv
+```
+
+`prepare_load_monitor` downloads it once into the run directory (`environment/state.py::resolve_task_table_path`, a port of agentic_ml's `resolve_dataset_path`). Every later gate reads that local copy, so the gate step only needs network access to `raw.githubusercontent.com`. A local path still works for CLI use. The failure-recovery pipeline's seed task is a finished main run's `run_id`, not a URL.
+
 There's also no timestamp column, so `environment/state.py::compute_snapshot` treats row order (by `Task_ID`) as a proxy for time and replays the most recent `window` rows as "current" state. This is a stand-in for a real live queue/stream — swap the data source in `load_task_table` without touching any agent or step code.
 
 ## Quickstart
