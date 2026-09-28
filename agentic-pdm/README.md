@@ -75,7 +75,7 @@ by gates and the job.
 The seed task is a JSON run contract:
 
 ```json
-{"dataset": "c28", "goal": "Beat the NGAFID-MC paper on C28",
+{"dataset": "ngafid_c28", "goal": "Beat the NGAFID-MC paper on C28",
  "target": {"metric": "roc_auc", "protocol": "last", "value": 0.83},
  "budget": {"max_experiments": 6, "max_minutes": 180},
  "reference": {"source": "Yang et al. 2021 Conv-MHSA (best-epoch)", "roc_auc": 0.826}}
@@ -85,8 +85,12 @@ To use it in agent-sandbox:
 1. Import this package on the Packages page (repo `agentic-ai-project`,
    subdirectory `agentic-pdm`). Set `RUNNER_PIP_EXTRA_INDEX_URL` to the
    PyTorch CPU index on a GPU-less host.
-2. Put the ingested store in the sandbox's datasets directory as `c28/`
-   (`X.f32`, `meta.csv`, `manifest.json`, and optionally `baselines.json`).
+2. Add a `pdm-train-job` credential holding a pdm-data-server `pdm_export`
+   token for the contract's dataset. The `init` gate downloads the dataset's
+   export, builds the tensor store in `<scratch>/pdm-datasets/<id>/<key>/`
+   (cached by content hash) and records its path for later steps. A store
+   already at `<datasets dir>/<id>/manifest.json` is used instead, with no
+   download, which is how local runs with `PDM_DATASETS_DIR` work.
 3. Create the three agents from `sandbox/agents/*.yaml` and the pipeline
    from `sandbox/pipelines/pdm-experiment-loop.yaml`.
 

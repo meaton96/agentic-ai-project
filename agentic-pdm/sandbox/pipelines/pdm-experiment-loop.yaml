@@ -1,12 +1,13 @@
 # Agents propose experiments from the catalog; gates decide; one job trains.
 # Seed task: a JSON run contract, e.g.
-#   {"dataset": "c28", "goal": "Beat the NGAFID-MC paper on C28",
+#   {"dataset": "ngafid_c28", "goal": "Beat the NGAFID-MC paper on C28",
 #    "target": {"metric": "roc_auc", "protocol": "last", "value": 0.83},
 #    "budget": {"max_experiments": 6, "max_minutes": 180},
 #    "reference": {"source": "Yang et al. 2021 Conv-MHSA (best-epoch)", "roc_auc": 0.826}}
 #
 # Step ids plan / train / analyze are conventions agentic_pdm.pipeline relies
-# on — keep them. `datasets` must list the contract's dataset.
+# on — keep them. init needs a `pdm-train-job` credential (a pdm-data
+# `pdm_export` token for the contract's dataset).
 id: pdm-experiment-loop
 name: PdM experiment loop (catalog proposals)
 max_steps: 120
@@ -14,7 +15,10 @@ steps:
   - kind: gate
     step_id: init
     gate: "agentic_pdm.pipeline:init_run"
-    datasets: [c28]
+    timeout_s: 1800
+    resources: {cpus: 2, mem: 4g}
+    credentials:
+      PDM_DATA_TOKEN: pdm-train-job
     on_result:
       ready: brief
       invalid_contract: __end__
@@ -53,7 +57,6 @@ steps:
     resources:
       cpus: 3
       mem: 8g
-    datasets: [c28]
     on_result:
       done: record
       __error__: record

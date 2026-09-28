@@ -22,6 +22,7 @@ def env(long_csv, tmp_path, monkeypatch):
     monkeypatch.setenv("PDM_DATASETS_DIR", str(datasets))
     monkeypatch.setenv("PDM_WORK_DIR", str(tmp_path / "work"))
     monkeypatch.delenv("GATE_SCRATCH_DIR", raising=False)
+    monkeypatch.delenv("PDM_DATA_TOKEN", raising=False)  # never download in local-store tests
     monkeypatch.setenv("OMP_NUM_THREADS", "1")
     return tmp_path
 

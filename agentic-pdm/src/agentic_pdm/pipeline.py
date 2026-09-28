@@ -37,9 +37,14 @@ brief).
 
 Where things live:
     work dir:     $GATE_SCRATCH_DIR, else $PDM_WORK_DIR, else ./pdm-work
-    datasets dir: inputs["__datasets_dir__"], else $DATASETS_DIR, else
-                  $SANDBOX_DATASETS_DIR, else $PDM_DATASETS_DIR; dataset
-                  <id> is a tensor store (see ingest.py) at <dir>/<id>
+    store_dir:    the dataset's tensor store (see ingest.py), resolved once
+                  by init and recorded in dataset.json; every later step
+                  reads it from there. init uses <datasets dir>/<id> when it
+                  has a manifest.json (datasets dir: outputs["__datasets_dir__"],
+                  else $DATASETS_DIR, $SANDBOX_DATASETS_DIR, $PDM_DATASETS_DIR),
+                  else downloads it from pdm-data-server ($PDM_DATA_URL,
+                  $PDM_DATA_TOKEN; see remote.py) into
+                  <work>/pdm-datasets/<id>/<key>/, cached by content hash
 """
 from __future__ import annotations
 
@@ -58,6 +63,7 @@ import numpy as np
 
 from agentic_pdm.catalog import DatasetFacts, build_experiment, validate_experiment
 from agentic_pdm.harness.trainer import run_cv
+from agentic_pdm.remote import RemoteDataError, fetch_store
 from agentic_pdm.store import load_store
 
 HIGHER_IS_BETTER = {"roc_auc": True, "pr_auc": True, "accuracy": True, "log_loss": False}
@@ -79,13 +85,30 @@ def _work_dir() -> Path:
     return Path(base)
 
 
-def _datasets_dir(outputs: dict) -> Path:
+def _datasets_dir(outputs: dict) -> Optional[Path]:
     for value in (outputs.get("__datasets_dir__"), os.environ.get("DATASETS_DIR"),
                   os.environ.get("SANDBOX_DATASETS_DIR"), os.environ.get("PDM_DATASETS_DIR")):
         if value:
             return Path(value)
-    raise RuntimeError("no datasets directory: list the dataset under this step's `datasets:` "
-                       "(or set PDM_DATASETS_DIR when running outside the sandbox)")
+    return None
+
+
+class StoreNotFound(RuntimeError):
+    pass
+
+
+def _resolve_store_dir(dataset_id: str, outputs: dict) -> Path:
+    """A local (or mounted) store if there is one, else a pdm-data-server
+    download cached in the work dir."""
+    datasets_dir = _datasets_dir(outputs)
+    if datasets_dir is not None and (datasets_dir / dataset_id / "manifest.json").exists():
+        return datasets_dir / dataset_id
+    if os.environ.get("PDM_DATA_TOKEN"):
+        return fetch_store(dataset_id, _work_dir() / "pdm-datasets")
+    where = f"not found at {datasets_dir / dataset_id}" if datasets_dir is not None else "not found locally"
+    raise StoreNotFound(f"{where}; give the init step a `pdm-train-job` credential (PDM_DATA_TOKEN) to "
+                        "download it from pdm-data-server, or set PDM_DATASETS_DIR to a directory "
+                        "holding <id>/manifest.json when running outside the sandbox")
 
 
 def _read(path: Path) -> Any:
@@ -171,7 +194,7 @@ DEFAULT_BUDGET = {"max_experiments": 6, "max_minutes": 120.0}
 
 def parse_contract(task: str) -> tuple[Optional[dict], list[str]]:
     """The seed task is a JSON object:
-        {"dataset": "c28", "goal": "...",
+        {"dataset": "ngafid_c28", "goal": "...",
          "target": {"metric": "roc_auc", "protocol": "last", "value": 0.80},
          "budget": {"max_experiments": 6, "max_minutes": 120},
          "reference": {"source": "...", "roc_auc": 0.826}}
@@ -187,7 +210,7 @@ def parse_contract(task: str) -> tuple[Optional[dict], list[str]]:
         return None, ["the seed task must be a JSON object"]
     dataset = raw.get("dataset")
     if not isinstance(dataset, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", dataset):
-        errors.append("contract.dataset is required: a dataset id like \"c28\"")
+        errors.append("contract.dataset is required: a dataset id like \"ngafid_c28\"")
     target = {**DEFAULT_TARGET, **(raw.get("target") or {})}
     if target["metric"] not in HIGHER_IS_BETTER:
         errors.append(f"target.metric must be one of {sorted(HIGHER_IS_BETTER)}")
@@ -247,20 +270,21 @@ def init_run(outputs: dict) -> tuple[str, str]:
     contract, errors = parse_contract(outputs["__task__"])
     if errors:
         return "invalid_contract", "Invalid run contract:\n- " + "\n- ".join(errors)
-    dataset_dir = _datasets_dir(outputs) / contract["dataset"]
-    if not (dataset_dir / "manifest.json").exists():
-        return "invalid_contract", f"dataset {contract['dataset']!r} not found at {dataset_dir}"
-    store = load_store(dataset_dir)
+    try:
+        store_dir = _resolve_store_dir(contract["dataset"], outputs)
+    except (RemoteDataError, StoreNotFound) as e:
+        return "invalid_contract", f"dataset {contract['dataset']!r}: {e}"
+    store = load_store(store_dir)
     facts = DatasetFacts.from_store(store)
 
     run_id = datetime.now(timezone.utc).strftime("%y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
     run_dir = _work_dir() / "pdm-runs" / run_id
-    baselines_path = dataset_dir / "baselines.json"
+    baselines_path = store_dir / "baselines.json"
     baselines = ({name: result["mean"] for name, result in _read(baselines_path).items()}
                  if baselines_path.exists() else {})
     _write(run_dir / "contract.json", contract)
-    _write(run_dir / "dataset.json", {"facts": facts.to_dict(), "profile": _dataset_profile(store),
-                                      "baselines": baselines})
+    _write(run_dir / "dataset.json", {"store_dir": str(store_dir), "facts": facts.to_dict(),
+                                      "profile": _dataset_profile(store), "baselines": baselines})
     _write(run_dir / "state.json", {
         "created_at": _now(), "experiments_submitted": 0, "minutes_spent": 0.0,
         "consecutive_invalid": 0, "pending": None, "last_invalid": None,
@@ -268,7 +292,8 @@ def init_run(outputs: dict) -> tuple[str, str]:
         # plus "default" for architectures not measured yet.
         "calibration": {"default": 1.0}, "time_ratios": {},
     })
-    return "ready", json.dumps({"pdm_run_dir": str(run_dir), "dataset": contract["dataset"], "run_id": run_id})
+    return "ready", json.dumps({"pdm_run_dir": str(run_dir), "store_dir": str(store_dir),
+                                "dataset": contract["dataset"], "run_id": run_id})
 
 
 def compose_brief(outputs: dict) -> tuple[str, str]:
@@ -541,7 +566,7 @@ def train_experiment(inputs: dict) -> tuple[str, str]:
     results.json (rewritten every epoch) into the experiment directory.
     Its printed per-epoch lines are the job's visible progress."""
     run_dir = _run_dir(inputs)
-    contract, state = _read(run_dir / "contract.json"), _state(run_dir)
+    state = _state(run_dir)
     pending = state.get("pending")
     if not pending:
         raise RuntimeError("no experiment is pending — validate_proposal must accept one first")
@@ -549,7 +574,7 @@ def train_experiment(inputs: dict) -> tuple[str, str]:
     normalized = _read(exp_dir / "config.json")["normalized"]
     threads = int(os.environ.get("OMP_NUM_THREADS", "0")) or None
     plugin, cfg, folds = build_experiment(normalized, threads=threads)
-    store = load_store(_datasets_dir(inputs) / contract["dataset"])
+    store = load_store(Path(_read(run_dir / "dataset.json")["store_dir"]))
     started = time.perf_counter()
     print(f"experiment {normalized['name']}: folds {folds}, {cfg.epochs} epochs, ensemble {cfg.ensemble}, "
           f"threads {threads or 'default'}", flush=True)
