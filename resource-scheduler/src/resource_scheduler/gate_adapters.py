@@ -39,9 +39,32 @@ it's directly comparable. The other five agents follow the same shape.
 """
 
 import json
+import os
+import urllib.request
+from pathlib import Path
 
 from resource_scheduler.environment.state import load_task_table
 from resource_scheduler.tools.load_monitor_tool import build_resource_snapshot_fact
+
+
+def _resolve_task_table_path(csv_path_or_url: str) -> str:
+    """outputs["__task__"] is a local path for headless/local-dev use, but
+    a gate container has no access to a caller's filesystem -- nothing
+    outside the installed package and $GATE_SCRATCH_DIR is reachable (see
+    agent-sandbox's own docs, "What your gate runs inside"). So on
+    agent-sandbox, the seed task is instead the file's raw GitHub URL,
+    downloaded once into GATE_SCRATCH_DIR and reused from there on later
+    calls -- same "Library data paths" pattern those docs describe.
+    Local-dev callers passing a plain path are unaffected."""
+    if not csv_path_or_url.startswith(("http://", "https://")):
+        return csv_path_or_url
+
+    scratch_dir = os.environ.get("GATE_SCRATCH_DIR", "/tmp")
+    dest = Path(scratch_dir) / "resource_scheduler_task_table.csv"
+    if not dest.exists():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(csv_path_or_url, dest)
+    return str(dest)
 
 
 def _flags_match(reported: object, authoritative: list[dict]) -> bool:
@@ -69,7 +92,7 @@ def prepare_load_monitor(outputs: dict[str, str]) -> tuple[str, str]:
     (not a file path) -- small enough to inline directly into the next
     step's task_template, same "small object -> plain string, large
     object -> path" judgment call agent-sandbox's own docs describe."""
-    csv_path = outputs["__task__"]
+    csv_path = _resolve_task_table_path(outputs["__task__"])
     df, variance_injected = load_task_table(csv_path)
     fact = build_resource_snapshot_fact(df, variance_injected)
     return "reported", json.dumps(fact, indent=2, default=str)
