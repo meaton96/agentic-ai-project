@@ -47,15 +47,22 @@ from resource_scheduler.environment.state import load_task_table
 from resource_scheduler.tools.load_monitor_tool import build_resource_snapshot_fact
 
 
+_BUNDLED_TASK_TABLE = Path(__file__).parent / "data" / "industrial_scheduling_dataset.csv"
+
+
 def _resolve_task_table_path(csv_path_or_url: str) -> str:
     """outputs["__task__"] is a local path for headless/local-dev use, but
     a gate container has no access to a caller's filesystem -- nothing
     outside the installed package and $GATE_SCRATCH_DIR is reachable (see
     agent-sandbox's own docs, "What your gate runs inside"). So on
-    agent-sandbox, the seed task is instead the file's raw GitHub URL,
+    agent-sandbox the seed task is either the literal word "bundled"
+    (the copy of the dataset shipped inside this package as package
+    data, needing no network at all) or the file's raw GitHub URL,
     downloaded once into GATE_SCRATCH_DIR and reused from there on later
-    calls -- same "Library data paths" pattern those docs describe.
+    calls (needs that host on the account's egress allowlist).
     Local-dev callers passing a plain path are unaffected."""
+    if csv_path_or_url.strip().lower() == "bundled":
+        return str(_BUNDLED_TASK_TABLE)
     if not csv_path_or_url.startswith(("http://", "https://")):
         return csv_path_or_url
 
