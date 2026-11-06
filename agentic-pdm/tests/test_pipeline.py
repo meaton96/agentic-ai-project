@@ -176,3 +176,41 @@ def test_proposal_extraction_variants():
     assert pipeline._extract_json_object('```json\n{"a": 2}\n```') == {"a": 2}
     with pytest.raises(ValueError, match="no JSON object"):
         pipeline._extract_json_object("no braces here")
+
+
+@pytest.mark.parametrize("features", ["last_record", "summary_stats", "both"])
+def test_gbm_runs_through_the_real_gates_and_job(env, features):
+    _, outputs = start(contract())
+    experiment = {"name": f"g-{features}", "architecture": {"id": "gbm", "params": {"features": features, "max_iter": 10}},
+                  "input": {"max_len": 64, "pool": 1}}
+    assert propose(outputs, experiment) == "valid"
+    decision, record = train_and_record(outputs)
+    assert decision == "continue" and experiment["name"] in record
+    entry = pipeline._leaderboard(pipeline._run_dir(outputs))[-1]
+    assert entry["status"] == "completed" and entry["full_cv"]
+    assert entry["config_summary"]["training"]["epochs"] == 10
+    # entry["minutes"] rounds to 0.01, so a job this small can show 0.0: check the seconds it recorded.
+    results = json.loads(next(pipeline._run_dir(outputs).rglob("results.json")).read_text())
+    assert sum(h["train_seconds"] for fold in results["folds"].values() for h in fold["history"]) > 0
+
+
+def test_gbm_does_not_move_the_default_calibration_but_gets_its_own(env):
+    _, outputs = start(contract())
+    gbm = {"name": "g", "architecture": {"id": "gbm", "params": {"features": "last_record", "max_iter": 10}},
+           "input": {"max_len": 64, "pool": 1}}
+    assert propose(outputs, gbm) == "valid"
+    train_and_record(outputs)
+    calibration = pipeline._state(pipeline._run_dir(outputs))["calibration"]
+    assert calibration["default"] == 1.0 and calibration["gbm"] > 0
+    assert propose(outputs, TINY) == "valid"
+    train_and_record(outputs)
+    calibration = pipeline._state(pipeline._run_dir(outputs))["calibration"]
+    assert calibration["default"] == calibration["small_cnn"]
+
+
+def test_gbm_with_augmentations_goes_back_to_the_planner_with_the_fix(env):
+    _, outputs = start(contract())
+    experiment = {"name": "g", "architecture": {"id": "gbm"}, "augmentations": [{"id": "jitter"}],
+                  "input": {"max_len": 64, "pool": 1}}
+    assert propose(outputs, experiment) == "invalid"
+    assert "no augmentations" in outputs["validate"]

@@ -62,6 +62,8 @@ from typing import Any, Optional
 import numpy as np
 
 from agentic_pdm.catalog import DatasetFacts, build_experiment, validate_experiment
+from agentic_pdm.catalog.architectures import TABULAR_ARCHITECTURES
+from agentic_pdm.harness.tabular import run_tabular_cv
 from agentic_pdm.harness.trainer import run_cv
 from agentic_pdm.remote import RemoteDataError, fetch_store
 from agentic_pdm.store import load_store
@@ -488,7 +490,9 @@ def record_results(outputs: dict) -> tuple[str, str]:
             ratios = state["time_ratios"]
             ratios.setdefault(arch, []).append(minutes / pending["uncalibrated_minutes"])
             state["calibration"] = {
-                "default": round(statistics.median([r for rs in ratios.values() for r in rs]), 3),
+                # A tabular model's ratio says nothing about neural networks' FLOPs.
+                "default": round(statistics.median(
+                    [r for a, rs in ratios.items() if a not in TABULAR_ARCHITECTURES for r in rs] or [1.0]), 3),
                 **{a: round(statistics.median(rs), 3) for a, rs in ratios.items()},
             }
     else:
@@ -573,12 +577,17 @@ def train_experiment(inputs: dict) -> tuple[str, str]:
     exp_dir = Path(pending["dir"])
     normalized = _read(exp_dir / "config.json")["normalized"]
     threads = int(os.environ.get("OMP_NUM_THREADS", "0")) or None
-    plugin, cfg, folds = build_experiment(normalized, threads=threads)
     store = load_store(Path(_read(run_dir / "dataset.json")["store_dir"]))
     started = time.perf_counter()
-    print(f"experiment {normalized['name']}: folds {folds}, {cfg.epochs} epochs, ensemble {cfg.ensemble}, "
-          f"threads {threads or 'default'}", flush=True)
-    results = run_cv(store, plugin, cfg, exp_dir, folds=folds)
+    if normalized["architecture"]["id"] in TABULAR_ARCHITECTURES:
+        print(f"experiment {normalized['name']}: folds {normalized['folds']}, {normalized['training']['epochs']} "
+              f"boosting stages, threads {threads or 'default'}", flush=True)
+        results = run_tabular_cv(store, normalized, exp_dir)
+    else:
+        plugin, cfg, folds = build_experiment(normalized, threads=threads)
+        print(f"experiment {normalized['name']}: folds {folds}, {cfg.epochs} epochs, ensemble {cfg.ensemble}, "
+              f"threads {threads or 'default'}", flush=True)
+        results = run_cv(store, plugin, cfg, exp_dir, folds=folds)
     summary = results["summary"]
     return "done", json.dumps({
         "pdm_experiment": normalized["name"],

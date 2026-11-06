@@ -364,4 +364,24 @@ ARCHITECTURES: dict[str, CatalogEntry] = {e.id: e for e in (
         },
         builder=lambda c, t, k, p: WindowStatsMLP(c, k, p["width"], p["depth"], p["dropout"]),
     ),
+    CatalogEntry(
+        "gbm", "architecture",
+        "Gradient boosting on tabular features computed from each sequence, not a neural network. The features "
+        "parameter sets what it reads: the final timestep's values, per-channel summary statistics of the "
+        "sequence, or both. Takes no augmentations, and schedule, loss, batch size and epochs don't apply; "
+        "max_iter sets the number of boosting stages. Requires input.pool = 1.",
+        {
+            "features": ParamSpec("choice", "both", "last_record: final timestep only; summary_stats: 12 statistics "
+                                  "per channel; both: the two together",
+                                  choices=("last_record", "summary_stats", "both")),
+            "max_iter": ParamSpec("int", 100, "boosting stages, reported like epochs", min=10, max=100),
+            "learning_rate": ParamSpec("float", 0.1, "shrinkage per stage", min=0.01, max=0.5, log_scale=True),
+            "max_leaf_nodes": ParamSpec("int", 31, "leaves per tree", min=4, max=127),
+            "min_samples_leaf": ParamSpec("int", 20, "minimum examples per leaf", min=5, max=200),
+            "l2_regularization": ParamSpec("float", 0.0, "L2 penalty on leaf values", min=0.0, max=10.0),
+        },
+    ),
 )}
+
+# Not torch modules: these train through harness.tabular, not harness.trainer.
+TABULAR_ARCHITECTURES = {"gbm"}

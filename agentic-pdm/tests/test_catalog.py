@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from agentic_pdm.catalog import DatasetFacts, build_experiment, catalog_summary, describe_entry, validate_experiment
-from agentic_pdm.catalog.architectures import ARCHITECTURES
+from agentic_pdm.catalog.architectures import ARCHITECTURES, TABULAR_ARCHITECTURES
 from agentic_pdm.catalog.augmentations import AUGMENTATIONS
 from agentic_pdm.catalog.experiment import COST_FLOOR_FLOPS_PER_INPUT_VALUE, NEEDS_UNPOOLED_INPUT
 from agentic_pdm.catalog.params import validate_params
@@ -20,7 +20,7 @@ def exp(**fields):
     return {"name": "e1", "architecture": {"id": "small_cnn"}, "input": {"max_len": 512, "pool": 4}, **fields}
 
 
-@pytest.mark.parametrize("arch_id", sorted(ARCHITECTURES))
+@pytest.mark.parametrize("arch_id", sorted(set(ARCHITECTURES) - TABULAR_ARCHITECTURES))
 def test_every_architecture_builds_with_defaults_and_maps_to_logits(arch_id):
     pool = 1 if arch_id in NEEDS_UNPOOLED_INPUT else 4
     report = validate_experiment(exp(architecture={"id": arch_id}, input={"max_len": 512, "pool": pool}), FACTS)
@@ -219,3 +219,54 @@ def test_an_empty_gflops_setting_means_the_default(monkeypatch):
     report = validate_experiment(exp(), FACTS)
     assert report["valid"], report["errors"]
     assert report["estimate"]["effective_gflops"] == 175.0
+
+
+def gbm(params=None, **fields):
+    return exp(architecture={"id": "gbm", "params": params or {}}, input={"max_len": 512, "pool": 1}, **fields)
+
+
+def test_gbm_defaults_are_the_library_defaults_and_its_stages_are_its_epochs():
+    report = validate_experiment(gbm(), FACTS)
+    assert report["valid"], report["errors"]
+    params = report["normalized"]["architecture"]["params"]
+    assert (params["max_iter"], params["learning_rate"], params["max_leaf_nodes"], params["min_samples_leaf"],
+            params["l2_regularization"]) == (100, 0.1, 31, 20, 0.0)
+    assert report["normalized"]["training"]["epochs"] == 100 and report["warnings"] == []
+
+
+def test_gbm_rejects_what_it_cannot_use_all_at_once():
+    report = validate_experiment(exp(architecture={"id": "gbm"}, augmentations=[{"id": "jitter"}],
+                                     input={"max_len": 512, "pool": 4}, training={"ensemble": 2}), FACTS)
+    assert not report["valid"]
+    joined = " ".join(report["errors"])
+    assert "no augmentations" in joined and "input.pool must be 1" in joined and "ensemble must be 1" in joined
+
+
+def test_gbm_warns_about_settings_it_ignores():
+    report = validate_experiment(gbm({"max_iter": 50}, training={"epochs": 20}, schedule={"id": "cosine"}), FACTS)
+    assert report["valid"], report["errors"]
+    assert report["normalized"]["training"]["epochs"] == 50
+    joined = " ".join(report["warnings"])
+    assert "training.epochs" in joined and "schedule" in joined
+
+
+def test_gbm_normalized_config_validates_again_unchanged():
+    first = validate_experiment(gbm({"max_iter": 50}), FACTS)["normalized"]
+    second = validate_experiment(first, FACTS)
+    assert second["valid"], second["errors"]
+    assert second["normalized"] == first
+
+
+def test_gbm_cost_needs_no_model_and_uses_only_its_own_calibration():
+    plain = validate_experiment(gbm(), FACTS)["estimate"]
+    assert plain["n_params"] == 0 and plain["total_minutes"] > 0
+    assert validate_experiment(gbm(), FACTS, calibration={"default": 9.0})["estimate"]["calibration"] == 1.0
+    scaled = validate_experiment(gbm(), FACTS, calibration={"default": 9.0, "gbm": 2.0})["estimate"]
+    assert scaled["total_minutes"] == pytest.approx(2 * plain["total_minutes"])
+    fewer = validate_experiment(gbm({"features": "last_record"}), FACTS)["estimate"]
+    assert fewer["total_minutes"] < plain["total_minutes"]
+
+
+def test_build_experiment_refuses_a_tabular_model():
+    with pytest.raises(ValueError, match="run_tabular_cv"):
+        build_experiment(validate_experiment(gbm(), FACTS)["normalized"])

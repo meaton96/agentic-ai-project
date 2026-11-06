@@ -28,7 +28,8 @@ from typing import Any, Optional
 import torch
 from torch.utils.flop_counter import FlopCounterMode
 
-from agentic_pdm.catalog.architectures import ARCHITECTURES
+from agentic_pdm.baselines import STAT_NAMES
+from agentic_pdm.catalog.architectures import ARCHITECTURES, TABULAR_ARCHITECTURES
 from agentic_pdm.catalog.augmentations import AUGMENTATIONS, compose
 from agentic_pdm.catalog.params import CatalogEntry, ParamSpec, validate_params
 from agentic_pdm.catalog.training import LOSSES, SCHEDULES
@@ -74,7 +75,12 @@ MIN_MODEL_INPUT_LENGTH = 32
 # host, against 3.7-15.6 for small_cnn's first experiment on the same data.
 COST_FLOOR_FLOPS_PER_INPUT_VALUE = {"last_record_mlp": 1000.0, "window_stats_mlp": 1000.0}
 # Architectures that read the final timestep exactly.
-NEEDS_UNPOOLED_INPUT = {"last_record_mlp"}
+NEEDS_UNPOOLED_INPUT = {"last_record_mlp", "gbm"}
+# Measured for gbm on 3 threads of a CPU-only host: seconds per stage, row and
+# feature; seconds per fit; seconds per stored value for the summary statistics.
+GBM_SECONDS_PER_STAGE_ROW_FEATURE = 1e-7
+GBM_SECONDS_PER_FIT = 2.0
+GBM_SECONDS_PER_STAT_VALUE = 3.7e-7
 # Change the final timestep's values without changing the label.
 CHANGES_FINAL_RECORD = {"cutout", "cutmix", "channel_mixup", "channel_dropout", "window_slice"}
 
@@ -192,7 +198,7 @@ def normalize_experiment(config: Any, facts: DatasetFacts) -> tuple[Optional[dic
                           f"(minimum {MIN_MODEL_INPUT_LENGTH})")
         architecture = out.get("architecture")
         if architecture and architecture["id"] in NEEDS_UNPOOLED_INPUT and pool != 1:
-            errors.append(f"{architecture['id']} reads the final timestep exactly, so input.pool must be 1, got {pool}")
+            errors.append(f"{architecture['id']} reads the unpooled sequence, so input.pool must be 1, got {pool}")
 
     folds = config.get("folds", "all")
     if folds == "all":
@@ -207,10 +213,28 @@ def normalize_experiment(config: Any, facts: DatasetFacts) -> tuple[Optional[dic
     else:
         errors.append(f"folds must be \"all\" or a non-empty list of fold numbers from {facts.folds}")
 
+    architecture = out.get("architecture")
+    if architecture and architecture["id"] in TABULAR_ARCHITECTURES:
+        if out["augmentations"]:
+            errors.append(f"{architecture['id']} takes no augmentations; use []")
+        if not training_errors and out["training"]["ensemble"] != 1:
+            errors.append(f"{architecture['id']} has no random training steps to average, "
+                          "so training.ensemble must be 1")
+
     if errors:
         return None, errors, warnings
 
     arch_id = out["architecture"]["id"]
+    if arch_id in TABULAR_ARCHITECTURES:
+        stages = out["architecture"]["params"]["max_iter"]
+        requested = (config.get("training") or {}).get("epochs")
+        if requested is not None and requested != stages:
+            warnings.append(f"{arch_id} ignores training.epochs ({requested}); it runs "
+                            f"architecture.params.max_iter ({stages}) stages")
+        ignored = sorted({"schedule", "loss"} & set(config))
+        if ignored:
+            warnings.append(f"{arch_id} ignores {ignored}")
+        out["training"]["epochs"] = stages  # so the leaderboard reports what ran
     if arch_id == "conv_mhsa" and not out["augmentations"]:
         warnings.append("conv_mhsa without augmentation overfit badly in the NGAFID paper")
     changing = sorted(CHANGES_FINAL_RECORD & set(ids))
@@ -245,10 +269,37 @@ def calibration_for(calibration: "float | dict | None", arch_id: str) -> float:
     return float(calibration)
 
 
+def _estimate_tabular_cost(normalized: dict, facts: DatasetFacts, calibration: "float | dict | None") -> dict:
+    """No FLOPs to count: minutes from rows, features and stages, measured on a
+    CPU-only host. Only gbm's own measured factor applies, because a factor
+    measured on neural networks says nothing about it."""
+    arch_id, params = normalized["architecture"]["id"], normalized["architecture"]["params"]
+    c, n_stats = facts.n_channels, len(STAT_NAMES)
+    n_features = {"last_record": c, "summary_stats": c * n_stats, "both": c * (n_stats + 1)}[params["features"]]
+    stat_values = 0 if params["features"] == "last_record" else facts.n_sequences * c * normalized["input"]["max_len"]
+    per_fold_train = facts.n_sequences * (1 - 1 / len(facts.folds))
+    stage_seconds = params["max_iter"] * per_fold_train * n_features * GBM_SECONDS_PER_STAGE_ROW_FEATURE
+    raw_seconds = (stat_values * GBM_SECONDS_PER_STAT_VALUE
+                   + len(normalized["folds"]) * (GBM_SECONDS_PER_FIT + stage_seconds))
+    factor = float(calibration.get(arch_id, 1.0)) if isinstance(calibration, dict) else calibration_for(calibration, arch_id)
+    return {
+        "n_params": 0,
+        "forward_mflops_per_sequence": 0.0,
+        "model_input_shape": [n_features],
+        "seconds_per_epoch": raw_seconds / params["max_iter"] * factor,
+        "total_minutes": raw_seconds / 60 * factor,
+        "uncalibrated_minutes": raw_seconds / 60,
+        "effective_gflops": float(os.environ.get("PDM_EFFECTIVE_GFLOPS") or DEFAULT_EFFECTIVE_GFLOPS),
+        "calibration": factor,
+    }
+
+
 def estimate_cost(normalized: dict, facts: DatasetFacts, calibration: "float | dict | None" = 1.0) -> dict:
     """Minutes this experiment should take on this deployment: forward FLOPs
     of the actual model (counted, not guessed), x3 for training, times
     sequences, epochs, folds and ensemble members, at the effective rate."""
+    if normalized["architecture"]["id"] in TABULAR_ARCHITECTURES:
+        return _estimate_tabular_cost(normalized, facts, calibration)
     model = build_model_for(normalized, facts).eval()
     length = normalized["input"]["max_len"] // normalized["input"]["pool"]
     with FlopCounterMode(display=False) as counter, torch.no_grad():
@@ -293,6 +344,8 @@ def validate_experiment(config: Any, facts: DatasetFacts, calibration: "float | 
 
 def build_experiment(normalized: dict, threads: Optional[int] = None) -> tuple[Plugin, TrainConfig, list[int]]:
     """Turns a normalized (validated) experiment into the harness's inputs."""
+    if normalized["architecture"]["id"] in TABULAR_ARCHITECTURES:
+        raise ValueError(f"{normalized['architecture']['id']} trains through harness.tabular.run_tabular_cv")
     arch = ARCHITECTURES[normalized["architecture"]["id"]]
     arch_params = normalized["architecture"]["params"]
     augment = compose([AUGMENTATIONS[a["id"]].builder(a["params"]) for a in normalized["augmentations"]])
