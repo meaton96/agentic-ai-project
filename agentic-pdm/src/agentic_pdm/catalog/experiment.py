@@ -65,6 +65,19 @@ KINDS = {
 DEFAULT_EFFECTIVE_GFLOPS = 175.0
 MIN_MODEL_INPUT_LENGTH = 32
 
+# Models that read a summary of the input do almost no FLOPs, so their time is
+# mostly moving the batch: copying, scaling and augmenting every input value.
+# Counted FLOPs alone would estimate nearly zero, and that ratio would then
+# distort the calibration applied to every other architecture. This floor, in
+# FLOPs per input value, applies to these models only. With it, measured time
+# divided by the estimate was 0.5-1.3 at 23 x 4096 and 5-32 at 6 x 64 on a CPU-only
+# host, against 3.7-15.6 for small_cnn's first experiment on the same data.
+COST_FLOOR_FLOPS_PER_INPUT_VALUE = {"last_record_mlp": 1000.0, "window_stats_mlp": 1000.0}
+# Architectures that read the final timestep exactly.
+NEEDS_UNPOOLED_INPUT = {"last_record_mlp"}
+# Change the final timestep's values without changing the label.
+CHANGES_FINAL_RECORD = {"cutout", "cutmix", "channel_mixup", "channel_dropout", "window_slice"}
+
 
 @dataclass
 class DatasetFacts:
@@ -177,6 +190,9 @@ def normalize_experiment(config: Any, facts: DatasetFacts) -> tuple[Optional[dic
         elif max_len // pool < MIN_MODEL_INPUT_LENGTH:
             errors.append(f"max_len / pool = {max_len // pool} model inputs is too short "
                           f"(minimum {MIN_MODEL_INPUT_LENGTH})")
+        architecture = out.get("architecture")
+        if architecture and architecture["id"] in NEEDS_UNPOOLED_INPUT and pool != 1:
+            errors.append(f"{architecture['id']} reads the final timestep exactly, so input.pool must be 1, got {pool}")
 
     folds = config.get("folds", "all")
     if folds == "all":
@@ -197,6 +213,11 @@ def normalize_experiment(config: Any, facts: DatasetFacts) -> tuple[Optional[dic
     arch_id = out["architecture"]["id"]
     if arch_id == "conv_mhsa" and not out["augmentations"]:
         warnings.append("conv_mhsa without augmentation overfit badly in the NGAFID paper")
+    changing = sorted(CHANGES_FINAL_RECORD & set(ids))
+    if arch_id in COST_FLOOR_FLOPS_PER_INPUT_VALUE and changing:
+        warnings.append(f"{changing} can change the final timestep {arch_id} reads, without changing the label")
+    if arch_id == "window_stats_mlp" and out["input"]["pool"] != 1:
+        warnings.append("with input.pool > 1, window_stats_mlp's last value is averaged with earlier timesteps")
     if out["schedule"]["id"] == "constant":
         warnings.append("a constant learning rate made the reference model's last-epoch score swing widely; "
                         "final-epoch ('last') results are what the leaderboard ranks")
@@ -233,6 +254,8 @@ def estimate_cost(normalized: dict, facts: DatasetFacts, calibration: "float | d
     with FlopCounterMode(display=False) as counter, torch.no_grad():
         model(torch.zeros(1, facts.n_channels, length))
     forward = counter.get_total_flops()
+    floor = COST_FLOOR_FLOPS_PER_INPUT_VALUE.get(normalized["architecture"]["id"], 0.0)
+    forward = max(forward, floor * facts.n_channels * length)
     n_params = sum(p.numel() for p in model.parameters())
     # `or`: an empty value (e.g. docker compose's "${PDM_EFFECTIVE_GFLOPS:-}") means unset.
     gflops = float(os.environ.get("PDM_EFFECTIVE_GFLOPS") or DEFAULT_EFFECTIVE_GFLOPS)

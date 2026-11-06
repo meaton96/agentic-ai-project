@@ -5,6 +5,7 @@ import torch
 from agentic_pdm.catalog import DatasetFacts, build_experiment, catalog_summary, describe_entry, validate_experiment
 from agentic_pdm.catalog.architectures import ARCHITECTURES
 from agentic_pdm.catalog.augmentations import AUGMENTATIONS
+from agentic_pdm.catalog.experiment import COST_FLOOR_FLOPS_PER_INPUT_VALUE, NEEDS_UNPOOLED_INPUT
 from agentic_pdm.catalog.params import validate_params
 from agentic_pdm.catalog.training import SCHEDULES
 from agentic_pdm.harness.plugin import check_augment_output
@@ -21,11 +22,82 @@ def exp(**fields):
 
 @pytest.mark.parametrize("arch_id", sorted(ARCHITECTURES))
 def test_every_architecture_builds_with_defaults_and_maps_to_logits(arch_id):
-    report = validate_experiment(exp(architecture={"id": arch_id}), FACTS)
+    pool = 1 if arch_id in NEEDS_UNPOOLED_INPUT else 4
+    report = validate_experiment(exp(architecture={"id": arch_id}, input={"max_len": 512, "pool": pool}), FACTS)
     assert report["valid"], report["errors"]
     assert report["estimate"]["n_params"] > 0 and report["estimate"]["forward_mflops_per_sequence"] > 0
     model = ARCHITECTURES[arch_id].builder(3, 128, 2, report["normalized"]["architecture"]["params"]).eval()
     assert model(torch.randn(4, 3, 128)).shape == (4, 2)
+
+
+def test_last_record_mlp_reads_only_the_final_timestep_and_needs_pool_1():
+    model = ARCHITECTURES["last_record_mlp"].builder(3, 64, 2, {"width": 16, "depth": 1, "dropout": 0.0}).eval()
+    x = torch.rand(4, 3, 64)
+    changed = x.clone()
+    changed[:, :, :-1] = 0.5
+    torch.testing.assert_close(model(x), model(changed))
+    rejected = validate_experiment(exp(architecture={"id": "last_record_mlp"}), FACTS)
+    assert not rejected["valid"] and "input.pool must be 1" in rejected["errors"][0]
+
+
+def test_window_stats_ignore_padding():
+    model = ARCHITECTURES["window_stats_mlp"].builder(2, 8, 2, {"width": 16, "depth": 1, "dropout": 0.0})
+    captured = {}
+    model.net.register_forward_pre_hook(lambda _, args: captured.update(features=args[0]))
+    x = torch.zeros(1, 2, 8)  # 5 padded steps, then 3 observed ones
+    x[0, 0, 5:] = torch.tensor([0.2, 0.4, 0.6])
+    x[0, 1, 5:] = torch.tensor([0.9, 0.9, 0.9])
+    model.eval()(x)
+    # Per channel: last, mean, std, min, max, slope; then the observed fraction.
+    last, mean, std, low, high, slope, fraction = (captured["features"][0, :2], captured["features"][0, 2:4],
+                                                   captured["features"][0, 4:6], captured["features"][0, 6:8],
+                                                   captured["features"][0, 8:10], captured["features"][0, 10:12],
+                                                   captured["features"][0, 12])
+    torch.testing.assert_close(last, torch.tensor([0.6, 0.9]))
+    torch.testing.assert_close(mean, torch.tensor([0.4, 0.9]), atol=1e-6, rtol=1e-5)
+    torch.testing.assert_close(low, torch.tensor([0.2, 0.9]))
+    torch.testing.assert_close(high, torch.tensor([0.6, 0.9]))
+    assert std[1] < 1e-3 and std[0] > 0.1  # padding zeros don't inflate the spread
+    assert slope[0] > 0 and abs(slope[1]) < 1e-5
+    assert fraction.item() == pytest.approx(3 / 8)
+
+
+def test_window_stats_survive_an_all_zero_sequence():
+    model = ARCHITECTURES["window_stats_mlp"].builder(2, 8, 2, {"width": 16, "depth": 1, "dropout": 0.0}).eval()
+    assert torch.isfinite(model(torch.zeros(2, 2, 8))).all()
+
+
+@pytest.mark.parametrize("arch_id", ["last_record_mlp", "window_stats_mlp"])
+def test_mlps_train_with_a_final_batch_of_one(arch_id):
+    model = ARCHITECTURES[arch_id].builder(3, 64, 2, {"width": 16, "depth": 2, "dropout": 0.1}).train()
+    assert model(torch.rand(1, 3, 64)).shape == (1, 2)
+
+
+@pytest.mark.parametrize("arch_id", ["last_record_mlp", "window_stats_mlp"])
+def test_warns_when_an_augmentation_can_change_the_final_record(arch_id):
+    config = exp(architecture={"id": arch_id}, input={"max_len": 512, "pool": 1}, augmentations=[{"id": "cutout"}])
+    assert any("final timestep" in w for w in validate_experiment(config, FACTS)["warnings"])
+    clean = exp(architecture={"id": arch_id}, input={"max_len": 512, "pool": 1}, augmentations=[{"id": "jitter"}])
+    assert not any("final timestep" in w for w in validate_experiment(clean, FACTS)["warnings"])
+
+
+def test_cost_floor_applies_only_to_the_summary_models():
+    assert set(COST_FLOOR_FLOPS_PER_INPUT_VALUE) == {"last_record_mlp", "window_stats_mlp"}
+    floor = COST_FLOOR_FLOPS_PER_INPUT_VALUE["last_record_mlp"]
+    estimate = validate_experiment(exp(architecture={"id": "last_record_mlp"}, input={"max_len": 512, "pool": 1}),
+                                   FACTS)["estimate"]
+    assert estimate["forward_mflops_per_sequence"] == pytest.approx(floor * 3 * 512 / 1e6, rel=0.01)
+
+
+def test_original_architectures_have_no_floor_or_pool_rule():
+    original = {"small_cnn", "inception_time", "tcn", "resnet1d", "conv_mhsa"}
+    assert not original & set(COST_FLOOR_FLOPS_PER_INPUT_VALUE) and not original & NEEDS_UNPOOLED_INPUT
+    # Recorded from version 0.1.3: the earlier runs' budget checks relied on these estimates.
+    ngafid = DatasetFacts(n_sequences=5089, n_channels=23, seq_len=4096, n_classes=2, folds=[0, 1, 2, 3, 4])
+    recorded = {"small_cnn": 4.232564066986666, "tcn": 9.275274910719997, "resnet1d": 9.385811790506665}
+    for arch_id, minutes in recorded.items():
+        config = {"name": "x", "architecture": {"id": arch_id}, "input": {"max_len": 4096, "pool": 4}}
+        assert validate_experiment(config, ngafid)["estimate"]["uncalibrated_minutes"] == pytest.approx(minutes)
 
 
 @pytest.mark.parametrize("aug_id", sorted(AUGMENTATIONS))

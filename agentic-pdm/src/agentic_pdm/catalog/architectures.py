@@ -199,6 +199,63 @@ class ConvMHSA(nn.Module):
         return self.linear(self.dropout(self.norm(h.mean(dim=1))))
 
 
+# -- last_record_mlp / window_stats_mlp ------------------------------------------------
+
+
+def _mlp(c_in, n_classes, width, depth, dropout):
+    """LayerNorm, not BatchNorm: a final training batch of one example has no
+    time axis here to compute batch statistics over."""
+    layers = []
+    for _ in range(depth):
+        layers += [nn.Linear(c_in, width), nn.LayerNorm(width), nn.ReLU(inplace=True), nn.Dropout(dropout)]
+        c_in = width
+    layers.append(nn.Linear(c_in, n_classes))
+    return nn.Sequential(*layers)
+
+
+class LastRecordMLP(nn.Module):
+    """An MLP on the final timestep alone."""
+
+    def __init__(self, n_channels, n_classes, width, depth, dropout):
+        super().__init__()
+        self.net = _mlp(n_channels, n_classes, width, depth, dropout)
+
+    def forward(self, x):
+        return self.net(x[:, :, -1])
+
+
+class WindowStatsMLP(nn.Module):
+    """An MLP on per-channel statistics of the window: last value, mean, std,
+    min, max and slope, plus the fraction of the window that is observed.
+
+    The harness turns NaN padding into 0 after scaling, so a timestep where
+    every channel is exactly 0 is treated as padding. The final timestep always
+    counts as observed: sequences are left-padded, so it holds the latest data."""
+
+    N_STATS = 6
+
+    def __init__(self, n_channels, n_classes, width, depth, dropout):
+        super().__init__()
+        self.net = _mlp(self.N_STATS * n_channels + 1, n_classes, width, depth, dropout)
+
+    def forward(self, x):
+        observed = (x != 0).any(dim=1, keepdim=True)  # (B, 1, T)
+        observed[:, :, -1] = True
+        mask = observed.to(x.dtype)
+        count = mask.sum(dim=2, keepdim=True)
+        mean = (x * mask).sum(dim=2, keepdim=True) / count
+        centered = (x - mean) * mask
+        std = ((centered ** 2).sum(dim=2) / count.squeeze(2) + 1e-8).sqrt()
+        low = x.masked_fill(~observed, float("inf")).amin(dim=2)
+        high = x.masked_fill(~observed, float("-inf")).amax(dim=2)
+        # Time runs from 0 to 1 across the window, so slopes don't depend on its length.
+        time = torch.linspace(0.0, 1.0, x.shape[2], dtype=x.dtype).view(1, 1, -1)
+        time_centered = (time - (time * mask).sum(dim=2, keepdim=True) / count) * mask
+        slope = (time_centered * centered).sum(dim=2) / (time_centered ** 2).sum(dim=2).clamp(min=1e-8)
+        fraction = count.squeeze(2) / x.shape[2]
+        return self.net(torch.cat([x[:, :, -1], mean.squeeze(2), std, low, high, slope, fraction], dim=1))
+
+
 # -- catalog --------------------------------------------------------------------------
 # builder(n_channels, seq_len, n_classes, params) -> nn.Module
 
@@ -282,5 +339,29 @@ ARCHITECTURES: dict[str, CatalogEntry] = {e.id: e for e in (
         constraint=_heads_divide,
         builder=lambda c, t, k, p: ConvMHSA(c, k, t, p["d_model"], p["heads"], p["layers"], p["max_tokens"],
                                             p["dropout"]),
+    ),
+    CatalogEntry(
+        "last_record_mlp", "architecture",
+        "MLP on the final timestep only; everything earlier in the sequence is ignored. Suits data where the "
+        "readings at the end of the sequence determine the label. Requires input.pool = 1, because pooling "
+        "would average the final record with earlier ones.",
+        {
+            "width": ParamSpec("int", 64, "units per hidden layer", min=16, max=256),
+            "depth": ParamSpec("int", 2, "hidden layers", min=1, max=4),
+            "dropout": ParamSpec("float", 0.1, "dropout after each hidden layer", min=0.0, max=0.7),
+        },
+        builder=lambda c, t, k, p: LastRecordMLP(c, k, p["width"], p["depth"], p["dropout"]),
+    ),
+    CatalogEntry(
+        "window_stats_mlp", "architecture",
+        "MLP on per-channel summary statistics of the window (last value, mean, std, min, max, slope), ignoring "
+        "padding. Exact ordering within the window is lost. Suits data where recent values and overall level "
+        "and trend matter more than fine temporal patterns. input.pool = 1 keeps the last value exact.",
+        {
+            "width": ParamSpec("int", 128, "units per hidden layer", min=16, max=256),
+            "depth": ParamSpec("int", 2, "hidden layers", min=1, max=4),
+            "dropout": ParamSpec("float", 0.1, "dropout after each hidden layer", min=0.0, max=0.7),
+        },
+        builder=lambda c, t, k, p: WindowStatsMLP(c, k, p["width"], p["depth"], p["dropout"]),
     ),
 )}

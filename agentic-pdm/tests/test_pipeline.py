@@ -57,6 +57,24 @@ def train_and_record(outputs):
     return decision, out
 
 
+@pytest.mark.parametrize("arch_id,pool", [("last_record_mlp", 1), ("window_stats_mlp", 1), ("window_stats_mlp", 2)])
+def test_new_models_run_through_the_real_gates_and_job(env, arch_id, pool):
+    decision, outputs = start(contract())
+    assert decision == "ready"
+    experiment = {"name": f"t-{arch_id}-{pool}", "architecture": {"id": arch_id, "params": {"width": 16, "depth": 1}},
+                  "input": {"max_len": 64, "pool": pool}, "training": {"epochs": 2, "batch_size": 16}}
+    assert propose(outputs, experiment) == "valid"
+    decision, record = train_and_record(outputs)
+    assert decision == "continue" and experiment["name"] in record
+
+
+def test_last_record_mlp_with_pooling_goes_back_to_the_planner_with_the_fix(env):
+    _, outputs = start(contract())
+    experiment = {"name": "t", "architecture": {"id": "last_record_mlp"}, "input": {"max_len": 64, "pool": 2}}
+    assert propose(outputs, experiment) == "invalid"
+    assert "input.pool must be 1" in outputs["validate"]
+
+
 def test_contract_parsing():
     parsed, errors = pipeline.parse_contract(contract())
     assert not errors and parsed["budget"]["max_experiments"] == 3 and parsed["target"]["protocol"] == "best"
